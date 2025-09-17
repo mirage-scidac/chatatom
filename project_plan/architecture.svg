@@ -1,0 +1,125 @@
+<svg width="1200" height="850" viewBox="0 0 1200 850" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif">
+    <defs>
+        <style>
+            .title { font-size: 24px; font-weight: bold; text-anchor: middle; }
+            .subtitle { font-size: 18px; font-weight: bold; text-anchor: middle; fill: #333; }
+            .box { fill: #e3f2fd; stroke: #1565c0; stroke-width: 2; rx: 8; }
+            .agent-box { fill: #fff3e0; stroke: #ef6c00; stroke-width: 2; rx: 8; }
+            .tool-box { fill: #e8f5e9; stroke: #2e7d32; stroke-width: 2; rx: 8; }
+            .endpoint-box { fill: #fce4ec; stroke: #ad1457; stroke-width: 2; rx: 8; }
+            .plan-box { fill: #fafafa; stroke: #424242; stroke-width: 1.5; rx: 8; }
+            .box-text { font-size: 14px; text-anchor: middle; }
+            .plan-text { font-size: 13px; }
+            .plan-title { font-size: 15px; font-weight: bold; }
+            .arrow-line { stroke: #555; stroke-width: 2; }
+            .arrow-dashed { stroke: #555; stroke-width: 2; stroke-dasharray: 6 4; }
+        </style>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#555" />
+        </marker>
+    </defs>
+
+    <!-- Background and Titles -->
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+    <text x="600" y="40" class="title">LLM Molecular Dynamics Studio: Architecture &amp; Implementation Plan</text>
+
+    <!-- Architecture Section -->
+    <g id="architecture">
+        <text x="300" y="90" class="subtitle">System Architecture</text>
+        
+        <!-- Boxes -->
+        <rect x="150" y="120" width="300" height="60" class="box" />
+        <text x="300" y="150" class="box-text" dominant-baseline="middle">User via Browser (HTML/JS/CSS)</text>
+
+        <rect x="150" y="220" width="300" height="60" class="box" />
+        <text x="300" y="250" class="box-text" dominant-baseline="middle">Python Backend Server (Flask)</text>
+
+        <rect x="50" y="320" width="500" height="200" class="agent-box" />
+        <text x="300" y="345" class="box-text" style="font-weight:bold;">Agentic Workflow</text>
+        
+        <rect x="175" y="370" width="250" height="50" class="agent-box" style="fill:#fff8e1;" />
+        <text x="300" y="395" class="box-text" dominant-baseline="middle">Orchestrator Agent</text>
+
+        <rect x="75" y="450" width="180" height="50" class="agent-box" style="fill:#fff8e1;" />
+        <text x="165" y="475" class="box-text" dominant-baseline="middle">Generator Agents</text>
+
+        <rect x="345" y="450" width="180" height="50" class="agent-box" style="fill:#fff8e1;" />
+        <text x="435" y="475" class="box-text" dominant-baseline="middle">Reviewer Agents</text>
+
+        <rect x="150" y="560" width="300" height="60" class="endpoint-box" />
+        <text x="300" y="580" class="box-text">OpenAI-Compatible Endpoint</text>
+        <text x="300" y="600" class="box-text" style="font-size:12px;">(Argo Bridge, LM Studio, etc.)</text>
+
+        <rect x="50" y="660" width="500" height="150" class="tool-box" />
+        <text x="300" y="685" class="box-text" style="font-weight:bold;">Tools Layer</text>
+
+        <rect x="75" y="710" width="140" height="40" class="tool-box" style="fill:#f1f8e9;" />
+        <text x="145" y="730" class="box-text" dominant-baseline="middle">NIST Search</text>
+
+        <rect x="230" y="710" width="140" height="40" class="tool-box" style="fill:#f1f8e9;" />
+        <text x="300" y="730" class="box-text" dominant-baseline="middle">LAMMPS Runner</text>
+
+        <rect x="385" y="710" width="140" height="40" class="tool-box" style="fill:#f1f8e9;" />
+        <text x="455" y="730" class="box-text" dominant-baseline="middle">OVITO Runner</text>
+        
+        <!-- Arrows -->
+        <line x1="300" y1="180" x2="300" y2="220" class="arrow-line" marker-end="url(#arrowhead)"/>
+        <text x="315" y="205" font-size="12">API Call</text>
+        <line x1="300" y1="280" x2="300" y2="370" class="arrow-line" marker-end="url(#arrowhead)"/>
+        <text x="270" y="320" font-size="12">Prompt</text>
+        <path d="M 300 420 Q 215 420 165 445" stroke="#555" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+        <path d="M 300 420 Q 385 420 435 445" stroke="#555" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+        <path d="M 165 500 Q 255 520 300 560" stroke="#555" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>
+        <path d="M 435 500 Q 345 520 300 560" stroke="#555" stroke-width="2" fill="none"/>
+        <path d="M 175 410 Q 100 520 80 660" stroke="#555" stroke-width="2" fill="none" class="arrow-dashed" marker-end="url(#arrowhead)"/>
+        <text x="100" y="550" font-size="12" transform="rotate(-30 100,550)">Tool Call</text>
+
+    </g>
+
+    <!-- Divider -->
+    <line x1="600" y1="70" x2="600" y2="830" stroke="#bdbdbd" stroke-width="2"/>
+
+    <!-- Implementation Plan Section -->
+    <g id="plan">
+        <text x="900" y="90" class="subtitle">Implementation Plan</text>
+        
+        <!-- MVP 1 -->
+        <rect x="650" y="120" width="500" height="130" class="plan-box" />
+        <text x="665" y="145" class="plan-title">MVP 1: The "LAMMPS Scripting Co-pilot"</text>
+        <text x="670" y="170" class="plan-text" >- Setup Server, UI, and Agent Workflow</text>
+        <text x="670" y="190" class="plan-text" >- Implement LLM-based script generation and review</text>
+        <text x="670" y="210" class="plan-text" >- Tool: Live search of NIST potential database</text>
+        <text x="670" y="230" class="plan-text" >- Testing: Verify NIST tool and LLM communication</text>
+        
+        <!-- MVP 2 -->
+        <rect x="650" y="270" width="500" height="150" class="plan-box" />
+        <text x="665" y="295" class="plan-title">MVP 2: The "Local Simulation Runner"</text>
+        <text x="670" y="320" class="plan-text" >- Tool: Execute LAMMPS simulations locally</text>
+        <text x="670" y="340" class="plan-text" >- Tool: Parse `log.lammps` with Pandas</text>
+        <text x="670" y="360" class="plan-text" >- Tool: Render trajectory with OVITO to GLTF</text>
+        <text x="670" y="380" class="plan-text" >- UI: Display plots (Chart.js) and 3D view (three.js)</text>
+        <text x="670" y="400" class="plan-text" >- Testing: Run a real, small LAMMPS simulation</text>
+
+        <!-- MVP 3 -->
+        <rect x="650" y="440" width="500" height="110" class="plan-box" />
+        <text x="665" y="465" class="plan-title">MVP 3: The "OVITO Automation Studio"</text>
+        <text x="670" y="490" class="plan-text" >- Agents: Generate and review OVITO Python scripts</text>
+        <text x="670" y="510" class="plan-text" >- Tool: Execute generated OVITO scripts for analysis</text>
+        <text x="670" y="530" class="plan-text" >- Testing: Run a real OVITO analysis script</text>
+        
+        <!-- Post-MVP -->
+        <rect x="650" y="570" width="500" height="110" class="plan-box" />
+        <text x="665" y="595" class="plan-title">Post-MVP Enhancements</text>
+        <text x="670" y="620" class="plan-text" >- Optimization: Migrate prompt logic to DSPy</text>
+        <text x="670" y="640" class="plan-text" >- Features: Add long-term memory, dynamic tool use</text>
+        <text x="670" y="660" class="plan-text" >- Polish: Package as a user-friendly Electron App</text>
+
+        <!-- Arrows for plan flow -->
+        <line x1="900" y1="250" x2="900" y2="270" class="arrow-line" marker-end="url(#arrowhead)"/>
+        <line x1="900" y1="420" x2="900" y2="440" class="arrow-line" marker-end="url(#arrowhead)"/>
+        <line x1="900" y1="550" x2="900" y2="570" class="arrow-line" marker-end="url(#arrowhead)"/>
+
+    </g>
+
+</svg>
+
