@@ -17,7 +17,7 @@ Exposes a single API endpoint (/api/llm-command) to the front-end.
 
 Orchestrates a team of LLM agents (Generator, Reviewer) that communicate with any standard OpenAI-compatible API endpoint (e.g., LM Studio, OpenAI, or the provided Argo Bridge).
 
-Provides agents with tools to interact with external data (NIST) and the filesystem.
+Provides agents with tools to interact with the filesystem and execute simulations.
 
 Reads its configuration (e.g., LLM endpoint URL, API key) from a local file or environment variables.
 
@@ -31,7 +31,7 @@ LLM API Connectivity: Makes a small, real API call to the configured LLM endpoin
 4. Testing Strategy
 We will adopt a multi-layered testing approach focused on real-world integration to ensure the application is robust. We will avoid using mocks and instead test the actual functionality of our components.
 
-Tool-Level Integration Tests: These will test individual functions in tools.py by having them perform their real action. For example, the NIST tool will make a real web request, and the LAMMPS tool will run a real (but small) simulation.
+Tool-Level Integration Tests: These will test individual functions in tools.py by having them perform their real action. For example, the LAMMPS tool will run a real (but small) simulation.
 
 End-to-End Workflow Tests: These will test the full agent workflow by making small, inexpensive calls to the configured LLM endpoint to verify the entire communication pipeline and logic flow are correct.
 
@@ -39,7 +39,7 @@ Framework: We will use the pytest framework for all backend testing. Install it 
 
 5. Phased MVP Implementation Checklist
 MVP 1: The "LAMMPS Scripting Co-pilot"
-Goal: Deliver a usable chat application that can intelligently generate and review LAMMPS input scripts, data files, and find correct potentials, without actually running the simulation.
+Goal: Deliver a usable chat application that can intelligently generate and review LAMMPS input scripts that use modern, standard-compliant potentials (KIM).
 
 Tasks:
 
@@ -85,44 +85,40 @@ Tasks:
 
 [ ] Create the OrchestratorAgent class.
 
-[ ] Task 1.6: NIST Potential Tool
-
-[ ] Create tools.py.
-
-[ ] Install requests and beautifulsoup4.
-
-[ ] Implement search_nist_potentials(elements).
-
-[ ] Task 1.7: LAMMPS Generation Agent
+[ ] Task 1.6: LAMMPS Generation Agent
 
 [ ] Create LammpsGeneratorAgent in agents.py.
 
-[ ] Write its system prompt.
+[ ] Write its system prompt. Crucially, instruct the agent that it MUST use the kim command to automatically fetch interatomic potentials and should not use external potential files.
 
-[ ] Task 1.8: LAMMPS Reviewer Agent
+[ ] Task 1.7: LAMMPS Reviewer Agent
 
 [ ] Create LammpsReviewerAgent in agents.py.
 
-[ ] Write its system prompt.
+[ ] Write its system prompt. Add a rule for the reviewer to check that the kim command is used for potentials.
 
-[ ] Task 1.9: Wire the Agent Workflow
+[ ] Task 1.8: Wire the Agent Workflow
 
 [ ] Implement the core logic in the /api/llm-command endpoint to coordinate the agent calls.
 
-[ ] Task 1.10: MVP 1 Testing
+[ ] Task 1.9: MVP 1 Testing
 
 [ ] Create a tests/ directory.
 
-[ ] Write a live integration test for tools.search_nist_potentials. The test should make a real web request to the NIST website for a common potential (e.g., ['Ni']) and assert that a valid URL string is returned.
-
-[ ] Write a simple end-to-end test for the agent workflow. The test should make a real, small, and inexpensive LLM API call that requires the agents to generate and review a trivial one-line script. This verifies the agent logic and communication pipeline is working correctly.
+[ ] Write a simple end-to-end test for the agent workflow. The test prompt should ask for a simulation using a specific material (e.g., Silicon). The test should make a real, small LLM API call and assert that the generated script contains the kim command as expected. This verifies the agent logic and communication pipeline is working correctly.
 
 MVP 2: The "Local Simulation Runner"
-Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS script and visualize the results directly in the application.
+Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS script and visualize the results directly in the application, using efficient in-memory data extraction.
 
-[ ] Task 2.1: Execution Tool
+[ ] Task 2.1: Execution Tool with In-Memory Data Extraction
 
-[ ] In tools.py, implement run_lammps_simulation(script_string) using the lammps library.
+[ ] In tools.py, implement run_lammps_simulation(script_string).
+
+[ ] This tool will use the lammps Python library.
+
+[ ] After the simulation runs, use the lammps instance's methods (e.g., callbacks or get_thermo()) to extract thermodynamic data directly into a Python data structure (e.g., a list of dictionaries or a pandas DataFrame). Do not parse the log.lammps file.
+
+[ ] The function should return both the file paths to visualization outputs (like dump.atom) and the in-memory thermodynamic data.
 
 [ ] Task 2.2: UI Visualization Panels
 
@@ -132,9 +128,7 @@ Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS scrip
 
 [ ] Add Chart.js to index.html.
 
-[ ] In tools.py, implement get_log_data(log_file_path) using pandas.
-
-[ ] In JavaScript, implement drawPlot(data).
+[ ] In JavaScript, implement drawPlot(data). This function will receive the JSON-formatted thermodynamic data extracted directly from the LAMMPS run.
 
 [ ] Task 2.4: 3D Viewer Integration
 
@@ -146,15 +140,17 @@ Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS scrip
 
 [ ] Task 2.5: Update Orchestrator Logic
 
-[ ] Teach the OrchestratorAgent to use the new simulation and visualization tools.
+[ ] Teach the OrchestratorAgent to use the new simulation and visualization tools, and to correctly handle the direct data returned by run_lammps_simulation.
 
 [ ] Task 2.6: MVP 2 Testing
 
-[ ] Create a tests/test_assets/ directory. Inside, create a very simple, fast-running LAMMPS script (in.test_lj) for a few hundred atoms and a few dozen steps.
+[ ] Create a tests/test_assets/ directory. Inside, create a very simple, fast-running LAMMPS script (in.test_lj) that uses a KIM potential.
 
-[ ] Write a live integration test for tools.run_lammps_simulation. The test should read the in.test_lj script, pass it to the tool, and assert that the expected output files (log.lammps, dump.atom) are successfully created.
+[ ] Write a live integration test for tools.run_lammps_simulation. The test should read the in.test_lj script, pass it to the tool, and assert that:
 
-[ ] Write an integration test for tools.get_log_data. This test should use the log.lammps file generated by the previous test to ensure it can be parsed correctly by pandas.
+[ ] The expected output file (dump.atom) is successfully created.
+
+[ ] The function returns a valid data structure (e.g., a list of dictionaries) containing the thermo data.
 
 [ ] Write an integration test for tools.render_trajectory. This test should use the dump.atom file from the simulation test, run it through the real ovito library, and assert that a valid .gltf file is created.
 
