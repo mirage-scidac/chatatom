@@ -43,69 +43,69 @@ Goal: Deliver a usable chat application that can intelligently generate and revi
 
 Tasks:
 
-[ ] Task 1.0: Implement Startup Health Checks
+[x] Task 1.0: Implement Startup Health Checks
 
-[ ] In app.py, create a function check_dependencies(). This function will use subprocess to run a small Python script that attempts to import lammps and ovito. If it fails, print a clear error message and exit.
+[x] In app.py, create a function check_dependencies(). This function will use subprocess to run a small Python script that attempts to import lammps and ovito. If it fails, print a clear error message and exit.
 
-[ ] In app.py, create a function check_llm_api(). This function will use the OpenAI client to make a simple, non-streaming chat completion call (e.g., "respond with only the word 'ok'"). If it fails, catch the exception, print a detailed error message (e.g., "Could not connect to LLM endpoint at {API_BASE_URL}. Is the server running and is the API key valid?"), and exit.
+[x] In app.py, create a function check_llm_api(). This function will use the OpenAI client to make a simple, non-streaming chat completion call (e.g., "respond with only the word 'ok'"). If it fails, catch the exception, print a detailed error message (e.g., "Could not connect to LLM endpoint at {API_BASE_URL}. Is the server running and is the API key valid?"), and exit.
 
-[ ] At the bottom of app.py, before app.run(), call both check_dependencies() and check_llm_api().
+[x] At the bottom of app.py, before app.run(), call both check_dependencies() and check_llm_api().
 
-[ ] Task 1.1: LLM Endpoint Configuration
+[x] Task 1.1: LLM Endpoint Configuration
 
-[ ] Create config.py.
+[x] Create config.py.
 
-[ ] Define API_BASE_URL and API_KEY.
+[x] Define API_BASE_URL and API_KEY.
 
-[ ] Add config.py to .gitignore.
+[x] Add config.py to .gitignore.
 
-[ ] Task 1.2: Unified Server Setup
+[x] Task 1.2: Unified Server Setup
 
-[ ] Create app.py with Flask.
+[x] Create app.py with Flask.
 
-[ ] Set up a route to serve index.html.
+[x] Set up a route to serve index.html.
 
-[ ] Set up the /api/llm-command endpoint.
+[x] Set up the /api/llm-command endpoint.
 
-[ ] Task 1.3: Basic Chat UI
+[x] Task 1.3: Basic Chat UI
 
-[ ] Build the UI in index.html with Tailwind CSS.
+[x] Build the UI in index.html with Tailwind CSS.
 
-[ ] Write JavaScript to handle sending user input to the backend via fetch().
+[x] Write JavaScript to handle sending user input to the backend via fetch().
 
-[ ] Task 1.4: Agent LLM Client
+[x] Task 1.4: Agent LLM Client
 
-[ ] Install openai library.
+[x] Install openai library.
 
-[ ] Create the global OpenAI client in app.py.
+[x] Create the global OpenAI client in app.py.
 
-[ ] Task 1.5: Orchestrator Agent
+[x] Task 1.5: Orchestrator Agent
 
-[ ] Create agents.py with a base Agent class.
+[x] Create agents.py with a base Agent class.
 
-[ ] Create the OrchestratorAgent class.
+[x] Create the OrchestratorAgent class.
 
-[ ] Task 1.6: LAMMPS Generation Agent
+[x] Task 1.6: LAMMPS Generation Agent
 
-[ ] Create LammpsGeneratorAgent in agents.py.
+[x] Create LammpsGeneratorAgent in agents.py.
 
-[ ] Write its system prompt. Crucially, instruct the agent that it MUST use the kim command to automatically fetch interatomic potentials and should not use external potential files.
+[x] Write its system prompt. Crucially, instruct the agent that it MUST use the kim command to automatically fetch interatomic potentials and should not use external potential files.
 
-[ ] Task 1.7: LAMMPS Reviewer Agent
+[x] Task 1.7: LAMMPS Reviewer Agent
 
-[ ] Create LammpsReviewerAgent in agents.py.
+[x] Create LammpsReviewerAgent in agents.py.
 
-[ ] Write its system prompt. Add a rule for the reviewer to check that the kim command is used for potentials.
+[x] Write its system prompt. Add a rule for the reviewer to check that the kim command is used for potentials.
 
-[ ] Task 1.8: Wire the Agent Workflow
+[x] Task 1.8: Wire the Agent Workflow
 
-[ ] Implement the core logic in the /api/llm-command endpoint to coordinate the agent calls.
+[x] Implement the core logic in the /api/llm-command endpoint to coordinate the agent calls.
 
-[ ] Task 1.9: MVP 1 Testing
+[x] Task 1.9: MVP 1 Testing
 
-[ ] Create a tests/ directory.
+[x] Create a tests/ directory.
 
-[ ] Write a simple end-to-end test for the agent workflow. The test prompt should ask for a simulation using a specific material (e.g., Silicon). The test should make a real, small LLM API call and assert that the generated script contains the kim command as expected. This verifies the agent logic and communication pipeline is working correctly.
+[x] Write a simple end-to-end test for the agent workflow. The test prompt should ask for a simulation using a specific material (e.g., Silicon). The test should make a real, small LLM API call and assert that the generated script contains the kim command as expected. This verifies the agent logic and communication pipeline is working correctly.
 
 MVP 2: The "Local Simulation Runner"
 Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS script and visualize the results directly in the application, using efficient in-memory data extraction.
