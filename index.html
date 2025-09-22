@@ -22,16 +22,16 @@
         }
     </style>
 </head>
-<body class="bg-gray-900 text-white">
-    <div class="container mx-auto p-4">
-        <h1 class="text-3xl font-bold mb-4">LLM Molecular Dynamics Studio</h1>
+<body class="bg-gray-900 text-white h-screen overflow-hidden">
+    <div class="container mx-auto p-4 h-full grid grid-rows-[auto_1fr_auto] gap-4">
+        <h1 class="text-3xl font-bold">ChatMD</h1>
         
         <!-- Main content area with chat and visualization panels -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
             <!-- Chat panel -->
-            <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
-                <h2 class="text-xl font-semibold mb-2">Chat</h2>
-                <div id="chat-container" class="h-80 overflow-y-auto mb-4 bg-gray-700 p-2 rounded">
+            <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr_auto] gap-2 min-h-0">
+                <h2 class="text-xl font-semibold">Chat</h2>
+                <div id="chat-container" class="overflow-y-auto bg-gray-700 p-2 rounded min-h-0">
                     <!-- Chat messages will appear here -->
                 </div>
                 <div class="flex">
@@ -41,9 +41,9 @@
             </div>
             
             <!-- Thermodynamic plot panel -->
-            <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
-                <h2 class="text-xl font-semibold mb-2">Thermodynamic Data</h2>
-                <div id="plot-container" class="h-80 bg-gray-700 p-2 rounded flex items-center justify-center">
+            <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr] gap-2 min-h-0">
+                <h2 class="text-xl font-semibold">Thermodynamic Data</h2>
+                <div id="plot-container" class="bg-gray-700 p-2 rounded flex items-center justify-center min-h-0">
                     <canvas id="thermo-chart" class="hidden"></canvas>
                     <div id="plot-placeholder" class="text-gray-400">
                         Run a simulation to see thermodynamic data
@@ -74,8 +74,26 @@
         function addMessage(sender, message) {
             const chatContainer = document.getElementById('chat-container');
             const messageElement = document.createElement('div');
-            messageElement.classList.add('mb-2');
-            messageElement.innerHTML = `<p><strong>${sender}:</strong> ${message}</p>`;
+            messageElement.classList.add('mb-3', 'p-2', 'rounded');
+            
+            // Check if this is a user message
+            if (sender === 'You') {
+                messageElement.classList.add('bg-purple-800', 'border-l-4', 'border-purple-400');
+                messageElement.innerHTML = `
+                    <div class="flex items-start">
+                        <span class="mr-2 text-lg">👤</span>
+                        <div class="flex-1">
+                            <strong class="text-white">${sender}:</strong>
+                            <div class="mt-1 text-gray-100">${message.replace(/\n/g, '<br>')}</div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                // Keep original styling for non-user messages
+                messageElement.classList.add('mb-2');
+                messageElement.innerHTML = `<p><strong>${sender}:</strong> ${message}</p>`;
+            }
+            
             chatContainer.appendChild(messageElement);
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
