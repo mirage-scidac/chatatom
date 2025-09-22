@@ -1,13 +1,18 @@
 LAMMPS (29 Aug 2024)
 OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
   using 1 OpenMP thread(s) per MPI task
-units metal
-dimension 3
-boundary p p p
-atom_style atomic
+# LAMMPS input script for Si NPT simulation at 300 K
+# This script uses a KIM potential.
 
-# Initialize KIM model for Silicon
-kim init SW_StillingerWeber_1985_Si__MO_405512056662_005 metal  # Install model if needed: kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
+# --- Initialization ---
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+# --- KIM Model Initialization ---
+# Install model if needed: kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
+kim init SW_StillingerWeber_1985_Si__MO_405512056662_005 metal
 #=== KIM is looking for 'Portable Models' in these directories ===
 #  1: .
 #  2: /path/to/.kim-api/2.4.0-git+Clang.Clang.GNU.2025-03-25-17-46-17/portable-models-dir
@@ -36,18 +41,19 @@ This model has 9 mutable parameters.
 #=== END kim init ============================================
 
 
-lattice diamond 5.431
-Lattice spacing in x,y,z = 5.431 5.431 5.431
-region box block 0 10 0 10 0 10
-create_box 1 box
-Created orthogonal box = (0 0 0) to (54.31 54.31 54.31)
+# --- Atom and Box Definition ---
+lattice         diamond 5.43
+Lattice spacing in x,y,z = 5.43 5.43 5.43
+region          box block 0 5 0 5 0 5
+create_box      1 box
+Created orthogonal box = (0 0 0) to (27.15 27.15 27.15)
   1 by 1 by 1 MPI processor grid
-create_atoms 1 box
-Created 8000 atoms
-  using lattice units in orthogonal box = (0 0 0) to (54.31 54.31 54.31)
+create_atoms    1 box
+Created 1000 atoms
+  using lattice units in orthogonal box = (0 0 0) to (27.15 27.15 27.15)
   create_atoms CPU = 0.000 seconds
 
-# Define KIM interactions
+# --- KIM Force Field Definition ---
 kim interactions Si
 #=== BEGIN kim interactions ==================================
 pair_style kim SW_StillingerWeber_1985_Si__MO_405512056662_005
@@ -55,23 +61,24 @@ pair_coeff * * Si
 #=== END kim interactions ====================================
 
 
-# Set mass for Silicon
-mass 1 28.0855
+# --- Settings ---
+mass            1 28.0855
 
-# Neighbor settings
-neighbor 2.0 bin
-neigh_modify delay 0 every 1 check yes
+# --- Velocity Initialization (CRITICAL for NVT/NPT) ---
+velocity        all create 300.0 12345 dist gaussian
 
-# Define NVT ensemble
-fix 1 all nvt temp 300.0 300.0 0.1
+# --- Neighbor and Timestep Settings ---
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+timestep        0.001
 
-# Thermo settings
-thermo 100
-thermo_style custom step temp pe ke etotal
+# --- Ensemble and Output ---
+fix             1 all npt temp 300.0 300.0 0.1 iso 0.0 0.0 1.0
+thermo_style    custom step temp press vol pe ke etotal
+thermo          100
 
-# Run simulation
-timestep 0.001
-run 1000
+# --- Run Simulation ---
+run             1000
 
 CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
 
@@ -100,52 +107,54 @@ Neighbor list info ...
   max neighbors/atom: 2000, page size: 100000
   master list distance cutoff = 5.77118
   ghost atom cutoff = 5.77118
-  binsize = 2.88559, bins = 19 19 19
+  binsize = 2.88559, bins = 10 10 10
   1 neighbor lists, perpetual/occasional/extra = 1 0 0
   (1) pair kim, perpetual
       attributes: full, newton off
       pair build: full/bin/atomonly
       stencil: full/bin/3d
       bin: standard
-Per MPI rank memory allocation (min/avg/max) = 4.307 | 4.307 | 4.307 Mbytes
-   Step          Temp          PotEng         KinEng         TotEng    
-         0   0             -34691.2        0             -34691.2      
-       100   6.4559732e-23 -34691.2        6.6751658e-23 -34691.2      
-       200   5.5448128e-23 -34691.2        5.7330697e-23 -34691.2      
-       300   5.3042406e-23 -34691.2        5.4843297e-23 -34691.2      
-       400   6.9615369e-23 -34691.2        7.1978943e-23 -34691.2      
-       500   6.9769338e-23 -34691.2        7.2138139e-23 -34691.2      
-       600   7.115119e-23  -34691.2        7.3566908e-23 -34691.2      
-       700   7.3642533e-23 -34691.2        7.6142837e-23 -34691.2      
-       800   7.9190231e-23 -34691.2        8.187889e-23  -34691.2      
-       900   8.5865563e-23 -34691.2        8.8780862e-23 -34691.2      
-      1000   9.3019647e-23 -34691.2        9.6177841e-23 -34691.2      
-Loop time of 3.72541 on 1 procs for 1000 steps with 8000 atoms
+Per MPI rank memory allocation (min/avg/max) = 3.275 | 3.275 | 3.275 Mbytes
+   Step          Temp          Press          Volume         PotEng         KinEng         TotEng    
+         0   300            2600.1171      20012.876     -4336.3983      38.739265     -4297.659     
+       100   161.65215     -1227.5479      20091.403     -4314.8848      20.874285     -4294.0105    
+       200   147.20269      422.2033       20063.593     -4307.0308      19.008413     -4288.0224    
+       300   212.11095      982.19655      20056.19      -4308.1178      27.390075     -4280.7277    
+       400   265.55863     -1519.6793      20117.093     -4307.0884      34.291821     -4272.7965    
+       500   292.67107      2272.0256      20049.161     -4302.7855      37.792875     -4264.9926    
+       600   323.98582     -1045.6321      20119.588     -4300.2895      41.836576     -4258.4529    
+       700   326.77309     -93.5094        20100.716     -4296.5604      42.196499     -4254.3639    
+       800   292.51698      1214.9378      20077.254     -4292.1336      37.772977     -4254.3606    
+       900   300.00089     -1598.5498      20132.343     -4296.5813      38.73938      -4257.8419    
+      1000   295.75417      1742.0477      20057.863     -4299.2718      38.190997     -4261.0808    
+Loop time of 1.04221 on 1 procs for 1000 steps with 1000 atoms
 
-Performance: 23.192 ns/day, 1.035 hours/ns, 268.427 timesteps/s, 2.147 Matom-step/s
+Performance: 82.900 ns/day, 0.290 hours/ns, 959.496 timesteps/s, 959.496 katom-step/s
 100.0% CPU use with 1 MPI tasks x 1 OpenMP threads
 
 MPI task timing breakdown:
 Section |  min time  |  avg time  |  max time  |%varavg| %total
 ---------------------------------------------------------------
-Pair    | 3.6216     | 3.6216     | 3.6216     |   0.0 | 97.21
+Pair    | 1.02       | 1.02       | 1.02       |   0.0 | 97.87
 Neigh   | 0          | 0          | 0          |   0.0 |  0.00
-Comm    | 0.019873   | 0.019873   | 0.019873   |   0.0 |  0.53
-Output  | 0.00030529 | 0.00030529 | 0.00030529 |   0.0 |  0.01
-Modify  | 0.072991   | 0.072991   | 0.072991   |   0.0 |  1.96
-Other   |            | 0.01063    |            |       |  0.29
+Comm    | 0.004789   | 0.004789   | 0.004789   |   0.0 |  0.46
+Output  | 0.00017108 | 0.00017108 | 0.00017108 |   0.0 |  0.02
+Modify  | 0.015635   | 0.015635   | 0.015635   |   0.0 |  1.50
+Other   |            | 0.001606   |            |       |  0.15
 
-Nlocal:           8000 ave        8000 max        8000 min
+Nlocal:           1000 ave        1000 max        1000 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-Nghost:           6725 ave        6725 max        6725 min
+Nghost:           2060 ave        2060 max        2060 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
 Neighs:              0 ave           0 max           0 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
-FullNghs:       272000 ave      272000 max      272000 min
+FullNghs:        34000 ave       34000 max       34000 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
 
-Total # of neighbors = 272000
+Total # of neighbors = 34000
 Ave neighs/atom = 34
 Neighbor list builds = 0
 Dangerous builds = 0
-Total wall time: 0:00:03
+
+# --- End of Script ---
+Total wall time: 0:00:01

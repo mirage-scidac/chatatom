@@ -3,19 +3,24 @@ from openai import OpenAI
 import config
 
 class Agent:
-    def __init__(self, system_prompt):
+    def __init__(self, system_prompt, model=None, default_temperature=0.1):
         self.system_prompt = system_prompt
+        self.model = model or config.DEFAULT_MODEL
+        self.default_temperature = default_temperature
         self.client = OpenAI(base_url=config.API_BASE_URL, api_key=config.API_KEY)
 
-    def execute(self, user_prompt, temperature=0.1):
+    def execute(self, user_prompt, temperature=None):
+        # Use provided temperature, or agent's default, or fallback to 0.1
+        temp = temperature if temperature is not None else self.default_temperature
+        
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_prompt}
         ]
         completion = self.client.chat.completions.create(
-            model="gpt4o",  # Or whatever model is appropriate
+            model=self.model,
             messages=messages,
-            temperature=temperature,
+            temperature=temp,
         )
         return completion.choices[0].message.content
 
@@ -24,12 +29,14 @@ class OrchestratorAgent(Agent):
         super().__init__(
             "You are an orchestrator agent. Your job is to coordinate other agents to fulfill the user's request. "
             "You will receive a request from the user, then decide which agent to call first. "
-            "For now, you will always follow this sequence: LammpsGeneratorAgent -> LammpsReviewerAgent."
+            "For now, you will always follow this sequence: LammpsGeneratorAgent -> LammpsReviewerAgent.",
+            model=config.ORCHESTRATOR_MODEL,
+            default_temperature=config.ORCHESTRATOR_TEMPERATURE
         )
 
 class LammpsGeneratorAgent(Agent):
     def __init__(self):
-        self.system_prompt = """You are an expert LAMMPS script generator specialized in KIM (Knowledge Base of Interatomic Models) potentials. Your role is to create accurate, executable LAMMPS input scripts using ONLY KIM potentials for realistic, reproducible simulations.
+        system_prompt = """You are an expert LAMMPS script generator specialized in KIM (Knowledge Base of Interatomic Models) potentials. Your role is to create accurate, executable LAMMPS input scripts using ONLY KIM potentials for realistic, reproducible simulations.
 
 IMPORTANT: This system ONLY supports KIM potentials. Do not generate scripts with pair_style or pair_coeff commands.
 
@@ -41,6 +48,7 @@ Key guidelines:
 5. Ensure proper boundary conditions and timesteps
 6. Your output should be only the raw LAMMPS script content. Do not include any markdown formatting, code block markers, or any text other than the LAMMPS commands.
 7. Include a comment about model installation if the model might not be available
+8. CRITICAL: Always initialize velocities for temperature-controlled simulations
 
 Required LAMMPS script structure with KIM:
 - units metal (required)
@@ -51,7 +59,9 @@ Required LAMMPS script structure with KIM:
 - create_box and create_atoms
 - KIM interactions (AFTER create_box)
 - mass definitions (REQUIRED even with KIM)
+- velocity initialization (REQUIRED for NVT/NPT simulations)
 - neighbor settings
+- ensemble fixes (NVE, NVT, NPT)
 - thermo output
 - run command
 
@@ -60,6 +70,14 @@ MANDATORY KIM command sequence:
 2. [create simulation box and atoms]
 3. kim interactions <species>   (AFTER create_box)
 4. mass <type> <mass_value>     (REQUIRED - KIM doesn't set masses automatically)
+5. velocity all create <temp> <seed>  (REQUIRED for NVT/NPT - use same temp as thermostat)
+
+CRITICAL TEMPERATURE REQUIREMENTS:
+- For NVT/NPT simulations: ALWAYS include "velocity all create <temp> <seed>" command
+- The velocity temperature MUST match the thermostat target temperature
+- Place velocity command AFTER mass definitions but BEFORE fix commands
+- Use a random seed (e.g., 12345) for reproducible results
+- Example: "velocity all create 300.0 12345" for 300K simulation
 
 Verified KIM model IDs (use these):
 - LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004 (Argon LJ)
@@ -83,13 +101,18 @@ ALWAYS include:
 - Model installation comment: # Install model if needed: kim-api-collections-management install user <MODEL_ID>
 - Proper thermo output for monitoring
 - Appropriate timestep and neighbor settings
+- Velocity initialization for temperature-controlled simulations
 
 If a user requests a material/element, select the most appropriate KIM model from the verified list above."""
-        super().__init__(self.system_prompt)
+        super().__init__(
+            system_prompt,
+            model=config.LAMMPS_GENERATOR_MODEL,
+            default_temperature=config.LAMMPS_GENERATOR_TEMPERATURE
+        )
 
 class LammpsReviewerAgent(Agent):
     def __init__(self):
-        self.system_prompt = """You are an expert LAMMPS script reviewer specialized in KIM (Knowledge Base of Interatomic Models) potentials. Your role is to analyze LAMMPS input scripts for correctness, completeness, and best practices.
+        system_prompt = """You are an expert LAMMPS script reviewer specialized in KIM (Knowledge Base of Interatomic Models) potentials. Your role is to analyze LAMMPS input scripts for correctness, completeness, and best practices.
 
 IMPORTANT: This system ONLY supports KIM potentials. Any script using pair_style or pair_coeff commands should be REJECTED.
 
@@ -102,6 +125,7 @@ Review criteria:
 6. Proper boundary conditions and system setup
 7. Missing or redundant commands
 8. Proper units (should be 'metal' for KIM models)
+9. CRITICAL: Temperature initialization for temperature-controlled simulations
 
 MANDATORY KIM requirements to verify:
 - kim init appears BEFORE create_box
@@ -112,6 +136,12 @@ MANDATORY KIM requirements to verify:
 - Units set to 'metal' (required for most KIM models)
 - Valid KIM model ID used
 
+CRITICAL TEMPERATURE REQUIREMENTS to verify:
+- If script contains 'fix nvt' or 'fix npt': MUST have 'velocity all create' command
+- Velocity temperature should match thermostat target temperature (within reasonable tolerance)
+- Velocity command should appear AFTER mass definitions but BEFORE fix commands
+- For NVE simulations: velocity initialization is optional but recommended for realistic dynamics
+
 AUTOMATIC REJECTION criteria:
 - Any use of pair_style or pair_coeff commands
 - Missing kim init command
@@ -119,11 +149,23 @@ AUTOMATIC REJECTION criteria:
 - Missing mass definitions
 - kim init appearing after create_box
 - kim interactions appearing before create_box
+- fix nvt/npt without velocity initialization (CRITICAL - causes 0K simulations)
+- Mismatched temperatures between velocity create and thermostat (>10K difference)
+- velocity command appearing before mass definitions
+
+COMMON PHYSICS ERRORS to catch:
+- Temperature-controlled simulation without velocity initialization (results in 0K simulation)
+- Velocity temperature significantly different from thermostat temperature
+- Missing velocity command when user requests specific temperature simulation
 
 Provide feedback in this format:
 REVIEW: [PASS/FAIL]
 ISSUES: [List any problems found, or "None" if script is acceptable]
 SUGGESTIONS: [Optional improvements or optimizations]
 
-Focus on critical errors that would prevent execution. Scripts using non-KIM potentials should automatically FAIL review."""
-        super().__init__(self.system_prompt)
+Focus on critical errors that would prevent execution or cause physically incorrect results. Scripts using non-KIM potentials or missing velocity initialization for temperature-controlled simulations should automatically FAIL review."""
+        super().__init__(
+            system_prompt,
+            model=config.LAMMPS_REVIEWER_MODEL,
+            default_temperature=config.LAMMPS_REVIEWER_TEMPERATURE
+        )

@@ -166,3 +166,17 @@ memory-bank/
 
 # Gemini context file
 GEMINI.md
+
+# Git internal files (should never be tracked)
+.git/
+
+# Cache and temporary files
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# Test output files
+tests/test_assets/kim.log
