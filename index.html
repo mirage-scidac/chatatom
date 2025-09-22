@@ -65,6 +65,69 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        function addConversationMessage(agent, content, type) {
+            const chatContainer = document.getElementById('chat-container');
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('mb-3', 'p-2', 'rounded');
+            
+            // Color coding for different agents
+            let colorClass = '';
+            let agentIcon = '';
+            
+            switch(agent) {
+                case 'Orchestrator':
+                    colorClass = 'bg-blue-800 border-l-4 border-blue-400';
+                    agentIcon = '🎯';
+                    break;
+                case 'Generator':
+                    colorClass = 'bg-green-800 border-l-4 border-green-400';
+                    agentIcon = '⚙️';
+                    break;
+                case 'Reviewer':
+                    colorClass = 'bg-yellow-800 border-l-4 border-yellow-400';
+                    agentIcon = '🔍';
+                    break;
+                case 'System':
+                    if (type === 'error') {
+                        colorClass = 'bg-red-800 border-l-4 border-red-400';
+                        agentIcon = '❌';
+                    } else if (type === 'success') {
+                        colorClass = 'bg-green-800 border-l-4 border-green-400';
+                        agentIcon = '✅';
+                    } else {
+                        colorClass = 'bg-gray-700 border-l-4 border-gray-400';
+                        agentIcon = 'ℹ️';
+                    }
+                    break;
+                default:
+                    colorClass = 'bg-gray-700';
+                    agentIcon = '💬';
+            }
+            
+            messageElement.classList.add(...colorClass.split(' '));
+            
+            // Format content based on type
+            let formattedContent = content;
+            if (type === 'script') {
+                formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${content}</code></pre>`;
+            } else {
+                formattedContent = content.replace(/\n/g, '<br>');
+            }
+            
+            messageElement.innerHTML = `
+                <div class="flex items-start">
+                    <span class="mr-2 text-lg">${agentIcon}</span>
+                    <div class="flex-1">
+                        <strong class="text-white">${agent}:</strong>
+                        <div class="mt-1 text-gray-100">${formattedContent}</div>
+                    </div>
+                </div>
+            `;
+            
+            chatContainer.appendChild(messageElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
         function updateStatus(message) {
             const statusContainer = document.getElementById('status-container');
             statusContainer.textContent = message;
@@ -222,13 +285,43 @@
                 }
 
                 const data = await response.json();
-                addMessage('Assistant', data.response);
-
-                // Check if the response contains thermodynamic data
-                if (data.thermo_data && Array.isArray(data.thermo_data)) {
-                    drawPlot(data.thermo_data);
-                } else {
+                
+                // Handle new conversation format
+                if (data.conversation && Array.isArray(data.conversation)) {
+                    // Display each agent's contribution with color coding
+                    data.conversation.forEach(entry => {
+                        addConversationMessage(entry.agent, entry.content, entry.type);
+                    });
+                    
+                    // Update status based on the result
+                    switch(data.status) {
+                        case 'simulation_complete':
+                            updateStatus('Simulation completed successfully');
+                            break;
+                        case 'simulation_failed':
+                            updateStatus('Simulation failed');
+                            break;
+                        case 'script_ready':
+                            updateStatus('Script ready - add "run" to execute');
+                            break;
+                        case 'review_failed':
+                            updateStatus('Script review failed');
+                            break;
+                        default:
+                            updateStatus('Ready to run simulations');
+                    }
+                    
+                    // Check if the response contains thermodynamic data
+                    if (data.thermo_data && Array.isArray(data.thermo_data)) {
+                        drawPlot(data.thermo_data);
+                    }
+                } else if (data.response) {
+                    // Fallback for old response format
+                    addMessage('Assistant', data.response);
                     updateStatus('Ready to run simulations');
+                } else if (data.error) {
+                    addMessage('Error', data.error);
+                    updateStatus('Error occurred');
                 }
 
             } catch (error) {

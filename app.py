@@ -118,16 +118,35 @@ def llm_command():
     reviewer = LammpsReviewerAgent()
 
     try:
+        # Track the full conversation
+        conversation = []
+        
         # 1. Orchestrator decides the plan (for now, it's a fixed sequence)
         plan = orchestrator.execute(user_command)
+        conversation.append({
+            "agent": "Orchestrator",
+            "content": plan,
+            "type": "plan"
+        })
 
         # 2. Generator creates the LAMMPS script
         lammps_script = generator.execute(user_command)
+        conversation.append({
+            "agent": "Generator",
+            "content": lammps_script,
+            "type": "script"
+        })
 
         # 3. Reviewer checks the script
         review = reviewer.execute(lammps_script)
+        conversation.append({
+            "agent": "Reviewer",
+            "content": review,
+            "type": "review"
+        })
 
-        if "APPROVED" in review:
+        # Check if review passed (fix: look for "PASS" instead of "APPROVED")
+        if "REVIEW: PASS" in review:
             # Check if user wants to run the simulation
             user_command_lower = user_command.lower()
             should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform'])
@@ -137,29 +156,56 @@ def llm_command():
                 try:
                     output_files, thermo_data = run_lammps_simulation(lammps_script)
                     
-                    response_text = f"LAMMPS simulation completed successfully!\n\n"
-                    response_text += f"Generated script:\n```lammps\n{lammps_script}\n```\n\n"
-                    response_text += f"Output files: {list(output_files.keys())}\n"
-                    response_text += f"Captured {len(thermo_data)} thermodynamic data points."
+                    conversation.append({
+                        "agent": "System",
+                        "content": f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points.",
+                        "type": "success"
+                    })
                     
                     return jsonify({
-                        "response": response_text,
+                        "conversation": conversation,
                         "thermo_data": thermo_data,
                         "output_files": output_files,
-                        "script": lammps_script
+                        "script": lammps_script,
+                        "status": "simulation_complete"
                     })
                     
                 except Exception as e:
-                    response_text = f"Simulation execution failed: {str(e)}\n\n"
-                    response_text += f"Generated script:\n```lammps\n{lammps_script}\n```"
-                    return jsonify({"response": response_text})
+                    conversation.append({
+                        "agent": "System",
+                        "content": f"Simulation execution failed: {str(e)}",
+                        "type": "error"
+                    })
+                    
+                    return jsonify({
+                        "conversation": conversation,
+                        "script": lammps_script,
+                        "status": "simulation_failed"
+                    })
             else:
-                response_text = f"LAMMPS script generated and approved:\n```lammps\n{lammps_script}\n```\n\n"
-                response_text += "Add 'run' or 'execute' to your command to run the simulation."
+                conversation.append({
+                    "agent": "System",
+                    "content": "LAMMPS script generated and approved. Add 'run' or 'execute' to your command to run the simulation.",
+                    "type": "info"
+                })
+                
+                return jsonify({
+                    "conversation": conversation,
+                    "script": lammps_script,
+                    "status": "script_ready"
+                })
         else:
-            response_text = f"Script review failed: {review}"
-
-        return jsonify({"response": response_text})
+            conversation.append({
+                "agent": "System",
+                "content": "Script review failed. Please check the issues identified by the reviewer.",
+                "type": "error"
+            })
+            
+            return jsonify({
+                "conversation": conversation,
+                "script": lammps_script,
+                "status": "review_failed"
+            })
         
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
