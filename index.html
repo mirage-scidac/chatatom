@@ -295,6 +295,7 @@
         let currentAgentMessages = {};
         let isStreaming = false;
         let conversationContext = '';  // Store context for phase 2 conversations
+        let executionIntent = false;  // Track if original request implied execution
         let messageCounter = 0;  // Counter to ensure unique message IDs
 
         function addTypingIndicator(agent) {
@@ -457,6 +458,14 @@
             currentAgentMessages = {};
 
             try {
+                // Detect execution intent from the original request if this is a new conversation
+                if (!conversationContext) {
+                    const messageLower = message.toLowerCase();
+                    executionIntent = ['simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'].some(keyword => 
+                        messageLower.includes(keyword)
+                    );
+                }
+                
                 // Build URL parameters
                 const params = new URLSearchParams({
                     command: message
@@ -465,6 +474,8 @@
                 // Add conversation context if we're in phase 2
                 if (conversationContext) {
                     params.append('context', conversationContext);
+                    // Pass execution intent to backend
+                    params.append('execution_intent', executionIntent.toString());
                     // Clear context after use
                     conversationContext = '';
                 }

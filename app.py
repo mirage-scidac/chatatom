@@ -109,6 +109,7 @@ from tools import run_lammps_simulation
 def llm_stream():
     user_command = request.args.get('command')
     conversation_context = request.args.get('context', '')  # For phase 2 conversations
+    execution_intent = request.args.get('execution_intent', 'false').lower() == 'true'  # Track execution intent
 
     if not user_command:
         return jsonify({"error": "Command not provided"}), 400
@@ -122,6 +123,15 @@ def llm_stream():
 
             # Send initial status
             yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
+
+            # Detect execution intent from the original request if this is Phase 1
+            original_execution_intent = False
+            if not conversation_context:
+                # Phase 1: Check if the original request implies execution
+                user_command_lower = user_command.lower()
+                original_execution_intent = any(keyword in user_command_lower for keyword in [
+                    'simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'
+                ])
 
             # Determine if this is Phase 1 (initial request) or Phase 2 (user response)
             if conversation_context:
@@ -209,14 +219,38 @@ Process the user's feedback and provide final simulation parameters using the SI
 
             # Check if review passed
             if "REVIEW: PASS" in review:
-                # Check if user wants to run the simulation
-                # Check both the current command and original command for execution intent
+                # Enhanced execution logic with intent tracking
                 user_command_lower = user_command.lower()
+                should_run = False
+                
+                # Check for explicit execution keywords in current command
                 should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform', 'go ahead', 'proceed', 'start'])
                 
-                # If we're in phase 2 (conversation_context exists), also check for confirmation words
+                # If we're in phase 2 (conversation_context exists), check for confirmation words
                 if conversation_context and not should_run:
                     should_run = any(keyword in user_command_lower for keyword in ['yes', 'ok', 'confirm', 'go', 'ahead'])
+                
+                # NEW: If we're in phase 2 and have execution intent from original request, auto-execute
+                if conversation_context and execution_intent and not should_run:
+                    # Check if this looks like a parameter modification (not a rejection)
+                    is_parameter_change = any(phrase in user_command_lower for phrase in [
+                        'make it', 'change', 'set', 'use', 'atoms', 'temperature', 'pressure', 'time', 'duration'
+                    ])
+                    
+                    if is_parameter_change:
+                        should_run = True
+                        yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                        auto_run_message = f"Parameter updated: {user_command}. Running simulation automatically based on your original request."
+                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': auto_run_message, 'message_type': 'info'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                
+                # NEW: If we're in phase 1 and detected original execution intent, auto-execute
+                if not conversation_context and original_execution_intent and not should_run:
+                    should_run = True
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    auto_run_message = "Running simulation automatically based on your request."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': auto_run_message, 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                 
                 if should_run:
                     # 4. Execute the simulation
