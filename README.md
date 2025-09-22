@@ -49,7 +49,7 @@ The application will be available at `http://localhost:5001`.
 To verify the installation and run the end-to-end tests for the agent workflow, use `pytest` from the project root:
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ## Troubleshooting

@@ -107,8 +107,8 @@ Tasks:
 
 [x] Write a simple end-to-end test for the agent workflow. The test prompt should ask for a simulation using a specific material (e.g., Silicon). The test should make a real, small LLM API call and assert that the generated script contains the kim command as expected. This verifies the agent logic and communication pipeline is working correctly.
 
-MVP 2: The "Local Simulation Runner"
-Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS script and visualize the results directly in the application, using efficient in-memory data extraction.
+MVP 2: The "LAMMPS Execution & Live Monitoring"
+Goal: Execute LAMMPS simulations and display live thermodynamic data with real-time plotting capabilities.
 
 [ ] Task 2.1: Execution Tool with In-Memory Data Extraction
 
@@ -118,11 +118,11 @@ Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS scrip
 
 [ ] After the simulation runs, use the lammps instance's methods (e.g., callbacks or get_thermo()) to extract thermodynamic data directly into a Python data structure (e.g., a list of dictionaries or a pandas DataFrame). Do not parse the log.lammps file.
 
-[ ] The function should return both the file paths to visualization outputs (like dump.atom) and the in-memory thermodynamic data.
+[ ] The function should return both the file paths to output files (like dump.atom) and the in-memory thermodynamic data.
 
-[ ] Task 2.2: UI Visualization Panels
+[ ] Task 2.2: UI Thermodynamic Panels
 
-[ ] In index.html, add plot-container and viewer-container divs.
+[ ] In index.html, add a plot-container div for displaying thermodynamic plots.
 
 [ ] Task 2.3: Data Plotting Integration
 
@@ -130,19 +130,11 @@ Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS scrip
 
 [ ] In JavaScript, implement drawPlot(data). This function will receive the JSON-formatted thermodynamic data extracted directly from the LAMMPS run.
 
-[ ] Task 2.4: 3D Viewer Integration
+[ ] Task 2.4: Update Orchestrator for Simulation Execution
 
-[ ] Add three.js to index.html.
+[ ] Teach the OrchestratorAgent to use the new simulation tool and to correctly handle the direct data returned by run_lammps_simulation.
 
-[ ] In tools.py, implement render_trajectory(dump_file_path) using ovito.
-
-[ ] In JavaScript, implement loadViewer(model_url).
-
-[ ] Task 2.5: Update Orchestrator Logic
-
-[ ] Teach the OrchestratorAgent to use the new simulation and visualization tools, and to correctly handle the direct data returned by run_lammps_simulation.
-
-[ ] Task 2.6: MVP 2 Testing
+[ ] Task 2.5: MVP 2 Testing
 
 [ ] Create a tests/test_assets/ directory. Inside, create a very simple, fast-running LAMMPS script (in.test_lj) that uses a KIM potential.
 
@@ -152,28 +144,53 @@ Goal: Build on MVP 1 by adding the ability to execute the validated LAMMPS scrip
 
 [ ] The function returns a valid data structure (e.g., a list of dictionaries) containing the thermo data.
 
-[ ] Write an integration test for tools.render_trajectory. This test should use the dump.atom file from the simulation test, run it through the real ovito library, and assert that a valid .gltf file is created.
+MVP 3: The "3D Trajectory Visualization"
+Goal: Add 3D molecular visualization capabilities using OVITO integration for rendering atomic trajectories.
 
-MVP 3: The "OVITO Automation Studio"
+[ ] Task 3.1: UI 3D Viewer Panel
+
+[ ] In index.html, add a viewer-container div for displaying 3D molecular visualizations.
+
+[ ] Task 3.2: 3D Viewer Integration
+
+[ ] Add three.js to index.html.
+
+[ ] In JavaScript, implement loadViewer(model_url) to display 3D molecular structures.
+
+[ ] Task 3.3: Trajectory Rendering Tool
+
+[ ] In tools.py, implement render_trajectory(dump_file_path) using ovito.
+
+[ ] This function should convert LAMMPS dump files to web-compatible 3D formats (e.g., .gltf).
+
+[ ] Task 3.4: Update Orchestrator for 3D Visualization
+
+[ ] Teach the OrchestratorAgent to use the trajectory rendering tool when 3D visualization is requested.
+
+[ ] Task 3.5: MVP 3 Testing
+
+[ ] Write an integration test for tools.render_trajectory. This test should use the dump.atom file from the MVP 2 tests, run it through the real ovito library, and assert that a valid .gltf file is created.
+
+MVP 4: The "OVITO Automation Studio"
 Goal: Extend the agentic system to also automate post-processing and advanced visualizations using OVITO.
 
-[ ] Task 3.1: OVITO Generation Agent
+[ ] Task 4.1: OVITO Generation Agent
 
 [ ] In agents.py, create the OvitoGeneratorAgent class and its system prompt.
 
-[ ] Task 3.2: OVITO Reviewer Agent
+[ ] Task 4.2: OVITO Reviewer Agent
 
 [ ] In agents.py, create the OvitoReviewerAgent class and its system prompt.
 
-[ ] Task 3.3: OVITO Execution Tool
+[ ] Task 4.3: OVITO Execution Tool
 
 [ ] In tools.py, implement run_ovito_script(...).
 
-[ ] Task 3.4: Expand Orchestrator Intelligence
+[ ] Task 4.4: Expand Orchestrator Intelligence
 
 [ ] Update the OrchestratorAgent to handle complex, multi-stage LAMMPS + OVITO workflows.
 
-[ ] Task 3.5: MVP 3 Testing
+[ ] Task 4.5: MVP 4 Testing
 
 [ ] Write a simple end-to-end test for the new OVITO agent workflow (Generator -> Reviewer), making a real LLM call to generate a trivial OVITO script (e.g., "just load the file").
 
