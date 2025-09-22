@@ -24,12 +24,85 @@ class Agent:
         )
         return completion.choices[0].message.content
 
+    def execute_stream(self, user_prompt, temperature=None):
+        # Use provided temperature, or agent's default, or fallback to 0.1
+        temp = temperature if temperature is not None else self.default_temperature
+        
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        try:
+            # Try streaming first
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temp,
+                stream=True,
+            )
+            
+            for chunk in completion:
+                if chunk.choices[0].delta.content is not None:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            # Fallback to non-streaming if streaming fails
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temp,
+            )
+            
+            # Simulate streaming by yielding the content in chunks
+            content = completion.choices[0].message.content
+            chunk_size = 50  # Characters per chunk
+            for i in range(0, len(content), chunk_size):
+                yield content[i:i + chunk_size]
+
 class OrchestratorAgent(Agent):
     def __init__(self):
+        system_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. Your role is to:
+
+1. Extract key simulation parameters from user requests
+2. Identify any missing critical information
+3. Ask for clarification when needed
+4. Provide a clear summary of what will be simulated
+
+Required parameters to extract:
+- Material/Element (e.g., Si, Ar, Cu, Al)
+- Temperature (in K)
+- Ensemble (NVE, NVT, or NPT)
+- Simulation duration (in ps, ns, or timesteps)
+
+Optional parameters to consider:
+- System size (number of atoms or unit cells, default: 5x5x5 unit cells)
+- Number of cores for parallel execution (default: serial)
+- Thermodynamic output frequency (default: every 100 steps)
+- Trajectory output frequency (default: every 100 steps)
+- Initial structure (default: appropriate crystal structure for material)
+
+Analysis process:
+1. First, provide a user-friendly summary of what you understand from the request
+2. If any required parameters are missing, ask specific questions
+3. Suggest reasonable defaults for optional parameters
+4. If all required information is present, provide a structured summary
+
+Output format when all parameters are available:
+SIMULATION PARAMETERS:
+- Material: [element/compound]
+- Temperature: [value] K
+- Ensemble: [NVE/NVT/NPT]
+- Duration: [value] [units]
+- System size: [value] unit cells (approximately [N] atoms)
+- Cores: [number]
+- Thermo output: every [N] steps
+- Trajectory output: every [N] steps
+
+If information is missing, ask clear, specific questions to gather the needed details. Be helpful and educational about the choices."""
+        
         super().__init__(
-            "You are an orchestrator agent. Your job is to coordinate other agents to fulfill the user's request. "
-            "You will receive a request from the user, then decide which agent to call first. "
-            "For now, you will always follow this sequence: LammpsGeneratorAgent -> LammpsReviewerAgent.",
+            system_prompt,
             model=config.ORCHESTRATOR_MODEL,
             default_temperature=config.ORCHESTRATOR_TEMPERATURE
         )

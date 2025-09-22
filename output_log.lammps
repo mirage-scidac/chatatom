@@ -1,16 +1,16 @@
 LAMMPS (29 Aug 2024)
 OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
   using 1 OpenMP thread(s) per MPI task
-# LAMMPS input script for Si NPT simulation at 300 K
-# This script uses a KIM potential.
+# LAMMPS input script for Si using a KIM potential
+# Simulation of bulk Silicon at 300K under NPT ensemble
 
-# --- Initialization ---
+# 1. Initialization
 units           metal
 dimension       3
 boundary        p p p
 atom_style      atomic
 
-# --- KIM Model Initialization ---
+# 2. KIM Potential Setup (BEFORE creating box)
 # Install model if needed: kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
 kim init SW_StillingerWeber_1985_Si__MO_405512056662_005 metal
 #=== KIM is looking for 'Portable Models' in these directories ===
@@ -41,11 +41,11 @@ This model has 9 mutable parameters.
 #=== END kim init ============================================
 
 
-# --- Atom and Box Definition ---
+# 3. Atom and Box Configuration
 lattice         diamond 5.43
 Lattice spacing in x,y,z = 5.43 5.43 5.43
-region          box block 0 5 0 5 0 5
-create_box      1 box
+region          simbox block 0 5 0 5 0 5 units lattice
+create_box      1 simbox
 Created orthogonal box = (0 0 0) to (27.15 27.15 27.15)
   1 by 1 by 1 MPI processor grid
 create_atoms    1 box
@@ -53,7 +53,7 @@ Created 1000 atoms
   using lattice units in orthogonal box = (0 0 0) to (27.15 27.15 27.15)
   create_atoms CPU = 0.000 seconds
 
-# --- KIM Force Field Definition ---
+# 4. KIM Force Field Interactions (AFTER creating box)
 kim interactions Si
 #=== BEGIN kim interactions ==================================
 pair_style kim SW_StillingerWeber_1985_Si__MO_405512056662_005
@@ -61,23 +61,28 @@ pair_coeff * * Si
 #=== END kim interactions ====================================
 
 
-# --- Settings ---
+# 5. Settings
+# Mass must be set explicitly even when using KIM models
 mass            1 28.0855
 
-# --- Velocity Initialization (CRITICAL for NVT/NPT) ---
+# CRITICAL: Initialize velocities for temperature-controlled simulations
 velocity        all create 300.0 12345 dist gaussian
 
-# --- Neighbor and Timestep Settings ---
 neighbor        2.0 bin
 neigh_modify    every 1 delay 0 check yes
+
+# 6. Ensemble and Timestep
+# NPT ensemble for 1 ps (1000 steps * 0.001 ps/step)
+# Temp: 300K -> 300K, Pressure: 0 bar -> 0 bar
+fix             1 all npt temp 300.0 300.0 0.1 iso 0.0 0.0 1.0
 timestep        0.001
 
-# --- Ensemble and Output ---
-fix             1 all npt temp 300.0 300.0 0.1 iso 0.0 0.0 1.0
-thermo_style    custom step temp press vol pe ke etotal
+# 7. Outputs
 thermo          100
+thermo_style    custom step temp press pe ke etotal vol density
+dump            1 all custom 100 trajectory.lammpstrj id type x y z
 
-# --- Run Simulation ---
+# 8. Run Simulation
 run             1000
 
 CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
@@ -115,32 +120,32 @@ Neighbor list info ...
       stencil: full/bin/3d
       bin: standard
 Per MPI rank memory allocation (min/avg/max) = 3.275 | 3.275 | 3.275 Mbytes
-   Step          Temp          Press          Volume         PotEng         KinEng         TotEng    
-         0   300            2600.1171      20012.876     -4336.3983      38.739265     -4297.659     
-       100   161.65215     -1227.5479      20091.403     -4314.8848      20.874285     -4294.0105    
-       200   147.20269      422.2033       20063.593     -4307.0308      19.008413     -4288.0224    
-       300   212.11095      982.19655      20056.19      -4308.1178      27.390075     -4280.7277    
-       400   265.55863     -1519.6793      20117.093     -4307.0884      34.291821     -4272.7965    
-       500   292.67107      2272.0256      20049.161     -4302.7855      37.792875     -4264.9926    
-       600   323.98582     -1045.6321      20119.588     -4300.2895      41.836576     -4258.4529    
-       700   326.77309     -93.5094        20100.716     -4296.5604      42.196499     -4254.3639    
-       800   292.51698      1214.9378      20077.254     -4292.1336      37.772977     -4254.3606    
-       900   300.00089     -1598.5498      20132.343     -4296.5813      38.73938      -4257.8419    
-      1000   295.75417      1742.0477      20057.863     -4299.2718      38.190997     -4261.0808    
-Loop time of 1.04221 on 1 procs for 1000 steps with 1000 atoms
+   Step          Temp          Press          PotEng         KinEng         TotEng         Volume        Density    
+         0   300            2600.1171     -4336.3983      38.739265     -4297.659       20012.876      2.330353     
+       100   161.65215     -1227.5479     -4314.8848      20.874285     -4294.0105      20091.403      2.3212448    
+       200   147.20269      422.2033      -4307.0308      19.008413     -4288.0224      20063.593      2.3244623    
+       300   212.11095      982.19655     -4308.1178      27.390075     -4280.7277      20056.19       2.3253203    
+       400   265.55863     -1519.6793     -4307.0884      34.291821     -4272.7965      20117.093      2.3182805    
+       500   292.67107      2272.0256     -4302.7855      37.792875     -4264.9926      20049.161      2.3261355    
+       600   323.98582     -1045.6321     -4300.2895      41.836576     -4258.4529      20119.588      2.3179931    
+       700   326.77309     -93.5094       -4296.5604      42.196499     -4254.3639      20100.716      2.3201694    
+       800   292.51698      1214.9378     -4292.1336      37.772977     -4254.3606      20077.254      2.3228807    
+       900   300.00089     -1598.5498     -4296.5813      38.73938      -4257.8419      20132.343      2.3165245    
+      1000   295.75417      1742.0477     -4299.2718      38.190997     -4261.0808      20057.863      2.3251264    
+Loop time of 1.0649 on 1 procs for 1000 steps with 1000 atoms
 
-Performance: 82.900 ns/day, 0.290 hours/ns, 959.496 timesteps/s, 959.496 katom-step/s
-100.0% CPU use with 1 MPI tasks x 1 OpenMP threads
+Performance: 81.135 ns/day, 0.296 hours/ns, 939.057 timesteps/s, 939.057 katom-step/s
+99.1% CPU use with 1 MPI tasks x 1 OpenMP threads
 
 MPI task timing breakdown:
 Section |  min time  |  avg time  |  max time  |%varavg| %total
 ---------------------------------------------------------------
-Pair    | 1.02       | 1.02       | 1.02       |   0.0 | 97.87
+Pair    | 1.0361     | 1.0361     | 1.0361     |   0.0 | 97.29
 Neigh   | 0          | 0          | 0          |   0.0 |  0.00
-Comm    | 0.004789   | 0.004789   | 0.004789   |   0.0 |  0.46
-Output  | 0.00017108 | 0.00017108 | 0.00017108 |   0.0 |  0.02
-Modify  | 0.015635   | 0.015635   | 0.015635   |   0.0 |  1.50
-Other   |            | 0.001606   |            |       |  0.15
+Comm    | 0.0050058  | 0.0050058  | 0.0050058  |   0.0 |  0.47
+Output  | 0.0058017  | 0.0058017  | 0.0058017  |   0.0 |  0.54
+Modify  | 0.016326   | 0.016326   | 0.016326   |   0.0 |  1.53
+Other   |            | 0.00169    |            |       |  0.16
 
 Nlocal:           1000 ave        1000 max        1000 min
 Histogram: 1 0 0 0 0 0 0 0 0 0
@@ -156,5 +161,6 @@ Ave neighs/atom = 34
 Neighbor list builds = 0
 Dangerous builds = 0
 
-# --- End of Script ---
+print "Simulation complete."
+Simulation complete.
 Total wall time: 0:00:01

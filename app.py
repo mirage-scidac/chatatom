@@ -85,7 +85,8 @@ import subprocess
 import sys
 import os
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
+import json
 
 
 import config
@@ -104,6 +105,123 @@ def serve_index():
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
 from tools import run_lammps_simulation
 
+@app.route('/api/llm-stream', methods=['GET'])
+def llm_stream():
+    user_command = request.args.get('command')
+
+    if not user_command:
+        return jsonify({"error": "Command not provided"}), 400
+
+    def generate():
+        try:
+            # Instantiate agents
+            orchestrator = OrchestratorAgent()
+            generator = LammpsGeneratorAgent()
+            reviewer = LammpsReviewerAgent()
+
+            # Send initial status
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
+
+            # 1. Orchestrator analyzes the request
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
+            
+            orchestrator_prompt = f"Analyze this simulation request: {user_command}"
+            analysis_chunks = []
+            analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
+            for chunk in analysis_generator:
+                analysis_chunks.append(chunk)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'analysis'})}\n\n"
+            
+            analysis = ''.join(analysis_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+
+            # Check if orchestrator needs more information
+            if "SIMULATION PARAMETERS:" not in analysis:
+                # Orchestrator is asking for more information
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                info_message = "The orchestrator needs more information to proceed. Please provide the requested details."
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                yield f"data: {json.dumps({'type': 'needs_more_info', 'analysis': analysis})}\n\n"
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                return
+
+            # 2. Generator creates the LAMMPS script using structured parameters
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
+            
+            generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
+            lammps_script_chunks = []
+            script_generator = generator.execute_stream(generator_prompt)
+            for chunk in script_generator:
+                lammps_script_chunks.append(chunk)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': chunk, 'message_type': 'script'})}\n\n"
+            
+            lammps_script = ''.join(lammps_script_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
+
+            # 3. Reviewer checks the script
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
+            
+            reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
+            review_generator = reviewer.execute_stream(reviewer_prompt)
+            review_chunks = []
+            for chunk in review_generator:
+                review_chunks.append(chunk)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': chunk, 'message_type': 'review'})}\n\n"
+            
+            review = ''.join(review_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
+
+            # Check if review passed
+            if "REVIEW: PASS" in review:
+                # Check if user wants to run the simulation
+                user_command_lower = user_command.lower()
+                should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform'])
+                
+                if should_run:
+                    # 4. Execute the simulation
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Running LAMMPS simulation...', 'message_type': 'info'})}\n\n"
+                    
+                    try:
+                        output_files, thermo_data = run_lammps_simulation(lammps_script)
+                        
+                        success_message = f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points."
+                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': success_message, 'message_type': 'success'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'simulation_complete', 'thermo_data': thermo_data, 'output_files': output_files, 'script': lammps_script})}\n\n"
+                        
+                    except Exception as e:
+                        error_message = f"Simulation execution failed: {str(e)}"
+                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'simulation_failed', 'script': lammps_script})}\n\n"
+                    
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    info_message = "LAMMPS script generated and approved. Add 'run' or 'execute' to your command to run the simulation."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                error_message = "Script review failed. Please check the issues identified by the reviewer."
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
+                yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script})}\n\n"
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+
+            # Send completion signal
+            yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'An error occurred: {str(e)}'})}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream", headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+    })
+
 @app.route('/api/llm-command', methods=['POST'])
 def llm_command():
     data = request.get_json()
@@ -121,16 +239,33 @@ def llm_command():
         # Track the full conversation
         conversation = []
         
-        # 1. Orchestrator decides the plan (for now, it's a fixed sequence)
-        plan = orchestrator.execute(user_command)
+        # 1. Orchestrator analyzes the request
+        orchestrator_prompt = f"Analyze this simulation request: {user_command}"
+        analysis = orchestrator.execute(orchestrator_prompt)
         conversation.append({
             "agent": "Orchestrator",
-            "content": plan,
-            "type": "plan"
+            "content": analysis,
+            "type": "analysis"
         })
 
-        # 2. Generator creates the LAMMPS script
-        lammps_script = generator.execute(user_command)
+        # Check if orchestrator needs more information
+        if "SIMULATION PARAMETERS:" not in analysis:
+            # Orchestrator is asking for more information
+            conversation.append({
+                "agent": "System",
+                "content": "The orchestrator needs more information to proceed. Please provide the requested details.",
+                "type": "info"
+            })
+            
+            return jsonify({
+                "conversation": conversation,
+                "status": "needs_more_info",
+                "analysis": analysis
+            })
+
+        # 2. Generator creates the LAMMPS script using structured parameters
+        generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
+        lammps_script = generator.execute(generator_prompt)
         conversation.append({
             "agent": "Generator",
             "content": lammps_script,
@@ -138,7 +273,8 @@ def llm_command():
         })
 
         # 3. Reviewer checks the script
-        review = reviewer.execute(lammps_script)
+        reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
+        review = reviewer.execute(reviewer_prompt)
         conversation.append({
             "agent": "Reviewer",
             "content": review,

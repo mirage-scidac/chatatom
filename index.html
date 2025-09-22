@@ -6,6 +6,21 @@
     <title>LLM Molecular Dynamics Studio</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .typing-dots {
+            display: inline-block;
+        }
+        .typing-dots::after {
+            content: '...';
+            animation: typing 1.5s infinite;
+        }
+        @keyframes typing {
+            0%, 20% { content: ''; }
+            40% { content: '.'; }
+            60% { content: '..'; }
+            80%, 100% { content: '...'; }
+        }
+    </style>
 </head>
 <body class="bg-gray-900 text-white">
     <div class="container mx-auto p-4">
@@ -277,73 +292,232 @@
             updateStatus(`Plotted ${thermoData.length} data points`);
         }
 
+        let currentAgentMessages = {};
+        let isStreaming = false;
+
+        function addTypingIndicator(agent) {
+            const chatContainer = document.getElementById('chat-container');
+            const typingElement = document.createElement('div');
+            typingElement.classList.add('mb-3', 'p-2', 'rounded');
+            typingElement.id = `typing-${agent}`;
+            
+            let colorClass = '';
+            let agentIcon = '';
+            
+            switch(agent) {
+                case 'Orchestrator':
+                    colorClass = 'bg-blue-800 border-l-4 border-blue-400';
+                    agentIcon = '🎯';
+                    break;
+                case 'Generator':
+                    colorClass = 'bg-green-800 border-l-4 border-green-400';
+                    agentIcon = '⚙️';
+                    break;
+                case 'Reviewer':
+                    colorClass = 'bg-yellow-800 border-l-4 border-yellow-400';
+                    agentIcon = '🔍';
+                    break;
+                case 'System':
+                    colorClass = 'bg-gray-700 border-l-4 border-gray-400';
+                    agentIcon = 'ℹ️';
+                    break;
+            }
+            
+            typingElement.classList.add(...colorClass.split(' '));
+            typingElement.innerHTML = `
+                <div class="flex items-start">
+                    <span class="mr-2 text-lg">${agentIcon}</span>
+                    <div class="flex-1">
+                        <strong class="text-white">${agent}:</strong>
+                        <div class="mt-1 text-gray-100">
+                            <span class="typing-dots">Thinking...</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            chatContainer.appendChild(typingElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function removeTypingIndicator(agent) {
+            const typingElement = document.getElementById(`typing-${agent}`);
+            if (typingElement) {
+                typingElement.remove();
+            }
+        }
+
+        function addStreamingMessage(agent, content, messageType) {
+            const messageId = `message-${agent}`;
+            let messageElement = document.getElementById(messageId);
+            
+            if (!messageElement) {
+                // Create new message element
+                const chatContainer = document.getElementById('chat-container');
+                messageElement = document.createElement('div');
+                messageElement.classList.add('mb-3', 'p-2', 'rounded');
+                messageElement.id = messageId;
+                
+                let colorClass = '';
+                let agentIcon = '';
+                
+                switch(agent) {
+                    case 'Orchestrator':
+                        colorClass = 'bg-blue-800 border-l-4 border-blue-400';
+                        agentIcon = '🎯';
+                        break;
+                    case 'Generator':
+                        colorClass = 'bg-green-800 border-l-4 border-green-400';
+                        agentIcon = '⚙️';
+                        break;
+                    case 'Reviewer':
+                        colorClass = 'bg-yellow-800 border-l-4 border-yellow-400';
+                        agentIcon = '🔍';
+                        break;
+                    case 'System':
+                        if (messageType === 'error') {
+                            colorClass = 'bg-red-800 border-l-4 border-red-400';
+                            agentIcon = '❌';
+                        } else if (messageType === 'success') {
+                            colorClass = 'bg-green-800 border-l-4 border-green-400';
+                            agentIcon = '✅';
+                        } else {
+                            colorClass = 'bg-gray-700 border-l-4 border-gray-400';
+                            agentIcon = 'ℹ️';
+                        }
+                        break;
+                    default:
+                        colorClass = 'bg-gray-700';
+                        agentIcon = '💬';
+                }
+                
+                messageElement.classList.add(...colorClass.split(' '));
+                messageElement.innerHTML = `
+                    <div class="flex items-start">
+                        <span class="mr-2 text-lg">${agentIcon}</span>
+                        <div class="flex-1">
+                            <strong class="text-white">${agent}:</strong>
+                            <div class="mt-1 text-gray-100" id="content-${agent}"></div>
+                        </div>
+                    </div>
+                `;
+                
+                chatContainer.appendChild(messageElement);
+                currentAgentMessages[agent] = '';
+            }
+            
+            // Append content to existing message
+            currentAgentMessages[agent] += content;
+            const contentElement = document.getElementById(`content-${agent}`);
+            
+            if (messageType === 'script') {
+                contentElement.innerHTML = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${currentAgentMessages[agent]}</code></pre>`;
+            } else {
+                contentElement.innerHTML = currentAgentMessages[agent].replace(/\n/g, '<br>');
+            }
+            
+            // Auto-scroll
+            const chatContainer = document.getElementById('chat-container');
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
         async function sendMessage() {
             const userInput = document.getElementById('user-input');
             const message = userInput.value.trim();
 
-            if (message === '') return;
+            if (message === '' || isStreaming) return;
 
             addMessage('You', message);
             userInput.value = '';
             updateStatus('Processing request...');
+            isStreaming = true;
+            currentAgentMessages = {};
 
             try {
-                const response = await fetch('/api/llm-command', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ command: message })
-                });
+                // Use EventSource for streaming
+                const eventSource = new EventSource('/api/llm-stream?' + new URLSearchParams({
+                    command: message
+                }));
 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                eventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        switch(data.type) {
+                            case 'status':
+                                updateStatus(data.message);
+                                break;
+                                
+                            case 'agent_start':
+                                removeTypingIndicator(data.agent);
+                                addTypingIndicator(data.agent);
+                                break;
+                                
+                            case 'agent_content':
+                                removeTypingIndicator(data.agent);
+                                addStreamingMessage(data.agent, data.content, data.message_type);
+                                break;
+                                
+                            case 'agent_complete':
+                                removeTypingIndicator(data.agent);
+                                break;
+                                
+                            case 'simulation_complete':
+                                updateStatus('Simulation completed successfully');
+                                if (data.thermo_data && Array.isArray(data.thermo_data)) {
+                                    drawPlot(data.thermo_data);
+                                }
+                                break;
+                                
+                            case 'simulation_failed':
+                                updateStatus('Simulation failed');
+                                break;
+                                
+                            case 'script_ready':
+                                updateStatus('Script ready - add "run" to execute');
+                                break;
+                                
+                            case 'needs_more_info':
+                                updateStatus('Waiting for additional information');
+                                isStreaming = false;
+                                eventSource.close();
+                                break;
+                                
+                            case 'review_failed':
+                                updateStatus('Script review failed');
+                                break;
+                                
+                            case 'workflow_complete':
+                                updateStatus('Ready to run simulations');
+                                isStreaming = false;
+                                eventSource.close();
+                                break;
+                                
+                            case 'error':
+                                addMessage('Error', data.message);
+                                updateStatus('Error occurred');
+                                isStreaming = false;
+                                eventSource.close();
+                                break;
+                        }
+                    } catch (e) {
+                        console.error('Error parsing SSE data:', e);
+                    }
+                };
 
-                const data = await response.json();
-                
-                // Handle new conversation format
-                if (data.conversation && Array.isArray(data.conversation)) {
-                    // Display each agent's contribution with color coding
-                    data.conversation.forEach(entry => {
-                        addConversationMessage(entry.agent, entry.content, entry.type);
-                    });
-                    
-                    // Update status based on the result
-                    switch(data.status) {
-                        case 'simulation_complete':
-                            updateStatus('Simulation completed successfully');
-                            break;
-                        case 'simulation_failed':
-                            updateStatus('Simulation failed');
-                            break;
-                        case 'script_ready':
-                            updateStatus('Script ready - add "run" to execute');
-                            break;
-                        case 'review_failed':
-                            updateStatus('Script review failed');
-                            break;
-                        default:
-                            updateStatus('Ready to run simulations');
-                    }
-                    
-                    // Check if the response contains thermodynamic data
-                    if (data.thermo_data && Array.isArray(data.thermo_data)) {
-                        drawPlot(data.thermo_data);
-                    }
-                } else if (data.response) {
-                    // Fallback for old response format
-                    addMessage('Assistant', data.response);
-                    updateStatus('Ready to run simulations');
-                } else if (data.error) {
-                    addMessage('Error', data.error);
+                eventSource.onerror = function(event) {
+                    console.error('EventSource failed:', event);
+                    addMessage('Error', 'Connection to server lost. Please try again.');
                     updateStatus('Error occurred');
-                }
+                    isStreaming = false;
+                    eventSource.close();
+                };
 
             } catch (error) {
                 console.error('Error sending message:', error);
                 addMessage('Error', 'Could not connect to the server.');
                 updateStatus('Error occurred');
+                isStreaming = false;
             }
         }
     </script>
