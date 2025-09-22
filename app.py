@@ -108,6 +108,7 @@ from tools import run_lammps_simulation
 @app.route('/api/llm-stream', methods=['GET'])
 def llm_stream():
     user_command = request.args.get('command')
+    conversation_context = request.args.get('context', '')  # For phase 2 conversations
 
     if not user_command:
         return jsonify({"error": "Command not provided"}), 400
@@ -122,29 +123,63 @@ def llm_stream():
             # Send initial status
             yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
 
-            # 1. Orchestrator analyzes the request
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-            
-            orchestrator_prompt = f"Analyze this simulation request: {user_command}"
-            analysis_chunks = []
-            analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
-            for chunk in analysis_generator:
-                analysis_chunks.append(chunk)
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'analysis'})}\n\n"
-            
-            analysis = ''.join(analysis_chunks)
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+            # Determine if this is Phase 1 (initial request) or Phase 2 (user response)
+            if conversation_context:
+                # Phase 2: User is responding to orchestrator's proposal
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
+                
+                orchestrator_prompt = f"""Previous analysis and proposal:
+{conversation_context}
 
-            # Check if orchestrator needs more information
-            if "SIMULATION PARAMETERS:" not in analysis:
-                # Orchestrator is asking for more information
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                info_message = "The orchestrator needs more information to proceed. Please provide the requested details."
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
-                yield f"data: {json.dumps({'type': 'needs_more_info', 'analysis': analysis})}\n\n"
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-                yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-                return
+User response: {user_command}
+
+Process the user's feedback and provide final simulation parameters using the SIMULATION PARAMETERS format."""
+                
+                finalization_chunks = []
+                finalization_generator = orchestrator.execute_stream(orchestrator_prompt)
+                for chunk in finalization_generator:
+                    finalization_chunks.append(chunk)
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'finalization'})}\n\n"
+                
+                finalization = ''.join(finalization_chunks)
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+                
+                # Check if we now have final parameters
+                if "SIMULATION PARAMETERS:" not in finalization:
+                    # Still need more information
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    info_message = "Please provide more specific details to proceed."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'needs_more_info', 'analysis': finalization})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                    return
+                
+                analysis = finalization  # Use finalized parameters for script generation
+            else:
+                # Phase 1: Initial analysis and proposal
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
+                
+                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}"
+                analysis_chunks = []
+                analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
+                for chunk in analysis_generator:
+                    analysis_chunks.append(chunk)
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'analysis'})}\n\n"
+                
+                analysis = ''.join(analysis_chunks)
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+
+                # Check if orchestrator needs more information or is proposing parameters
+                if "SIMULATION PARAMETERS:" not in analysis:
+                    # Phase 1: Orchestrator is asking for confirmation or more info
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    info_message = "Please review the proposed parameters and confirm or request changes."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'awaiting_confirmation', 'analysis': analysis})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                    return
 
             # 2. Generator creates the LAMMPS script using structured parameters
             yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
@@ -175,8 +210,13 @@ def llm_stream():
             # Check if review passed
             if "REVIEW: PASS" in review:
                 # Check if user wants to run the simulation
+                # Check both the current command and original command for execution intent
                 user_command_lower = user_command.lower()
-                should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform'])
+                should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform', 'go ahead', 'proceed', 'start'])
+                
+                # If we're in phase 2 (conversation_context exists), also check for confirmation words
+                if conversation_context and not should_run:
+                    should_run = any(keyword in user_command_lower for keyword in ['yes', 'ok', 'confirm', 'go', 'ahead'])
                 
                 if should_run:
                     # 4. Execute the simulation

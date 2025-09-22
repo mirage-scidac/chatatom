@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM Molecular Dynamics Studio</title>
+    <title>ChatMD</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -294,6 +294,8 @@
 
         let currentAgentMessages = {};
         let isStreaming = false;
+        let conversationContext = '';  // Store context for phase 2 conversations
+        let messageCounter = 0;  // Counter to ensure unique message IDs
 
         function addTypingIndicator(agent) {
             const chatContainer = document.getElementById('chat-container');
@@ -348,11 +350,22 @@
         }
 
         function addStreamingMessage(agent, content, messageType) {
-            const messageId = `message-${agent}`;
-            let messageElement = document.getElementById(messageId);
+            // Ensure content is defined and not null
+            if (content === undefined || content === null) {
+                content = '';
+            }
+            
+            // Use agent name as key for current streaming session
+            const sessionKey = `${agent}-${messageType || 'default'}`;
+            
+            // Check if we already have a message for this agent in this session
+            let messageElement = document.getElementById(`current-${sessionKey}`);
             
             if (!messageElement) {
                 // Create new message element
+                messageCounter++;
+                const messageId = `current-${sessionKey}`;
+                
                 const chatContainer = document.getElementById('chat-container');
                 messageElement = document.createElement('div');
                 messageElement.classList.add('mb-3', 'p-2', 'rounded');
@@ -397,23 +410,33 @@
                         <span class="mr-2 text-lg">${agentIcon}</span>
                         <div class="flex-1">
                             <strong class="text-white">${agent}:</strong>
-                            <div class="mt-1 text-gray-100" id="content-${agent}"></div>
+                            <div class="mt-1 text-gray-100" id="content-${messageId}"></div>
                         </div>
                     </div>
                 `;
                 
                 chatContainer.appendChild(messageElement);
-                currentAgentMessages[agent] = '';
+                
+                // Initialize the content accumulator
+                if (!currentAgentMessages[sessionKey]) {
+                    currentAgentMessages[sessionKey] = '';
+                }
             }
             
             // Append content to existing message
-            currentAgentMessages[agent] += content;
-            const contentElement = document.getElementById(`content-${agent}`);
+            currentAgentMessages[sessionKey] += content;
+            const contentElement = document.getElementById(`content-current-${sessionKey}`);
             
-            if (messageType === 'script') {
-                contentElement.innerHTML = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${currentAgentMessages[agent]}</code></pre>`;
-            } else {
-                contentElement.innerHTML = currentAgentMessages[agent].replace(/\n/g, '<br>');
+            if (contentElement) {
+                // Format content based on type
+                let formattedContent = currentAgentMessages[sessionKey];
+                if (messageType === 'script') {
+                    formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${currentAgentMessages[sessionKey]}</code></pre>`;
+                } else {
+                    formattedContent = currentAgentMessages[sessionKey].replace(/\n/g, '<br>');
+                }
+                
+                contentElement.innerHTML = formattedContent;
             }
             
             // Auto-scroll
@@ -434,10 +457,20 @@
             currentAgentMessages = {};
 
             try {
-                // Use EventSource for streaming
-                const eventSource = new EventSource('/api/llm-stream?' + new URLSearchParams({
+                // Build URL parameters
+                const params = new URLSearchParams({
                     command: message
-                }));
+                });
+                
+                // Add conversation context if we're in phase 2
+                if (conversationContext) {
+                    params.append('context', conversationContext);
+                    // Clear context after use
+                    conversationContext = '';
+                }
+                
+                // Use EventSource for streaming
+                const eventSource = new EventSource('/api/llm-stream?' + params);
 
                 eventSource.onmessage = function(event) {
                     try {
@@ -479,6 +512,14 @@
                                 
                             case 'needs_more_info':
                                 updateStatus('Waiting for additional information');
+                                isStreaming = false;
+                                eventSource.close();
+                                break;
+                                
+                            case 'awaiting_confirmation':
+                                updateStatus('Awaiting parameter confirmation');
+                                // Store the analysis for phase 2
+                                conversationContext = data.analysis;
                                 isStreaming = false;
                                 eventSource.close();
                                 break;
