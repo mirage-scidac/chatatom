@@ -102,6 +102,7 @@ def serve_index():
     return send_from_directory('.', 'index.html')
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
+from tools import run_lammps_simulation
 
 @app.route('/api/llm-command', methods=['POST'])
 def llm_command():
@@ -116,21 +117,52 @@ def llm_command():
     generator = LammpsGeneratorAgent()
     reviewer = LammpsReviewerAgent()
 
-    # 1. Orchestrator decides the plan (for now, it's a fixed sequence)
-    plan = orchestrator.execute(user_command)
+    try:
+        # 1. Orchestrator decides the plan (for now, it's a fixed sequence)
+        plan = orchestrator.execute(user_command)
 
-    # 2. Generator creates the LAMMPS script
-    lammps_script = generator.execute(user_command)
+        # 2. Generator creates the LAMMPS script
+        lammps_script = generator.execute(user_command)
 
-    # 3. Reviewer checks the script
-    review = reviewer.execute(lammps_script)
+        # 3. Reviewer checks the script
+        review = reviewer.execute(lammps_script)
 
-    if "APPROVED" in review:
-        response_text = f"LAMMPS script generated and approved:\n```lammps\n{lammps_script}\n```"
-    else:
-        response_text = f"Script review failed: {review}"
+        if "APPROVED" in review:
+            # Check if user wants to run the simulation
+            user_command_lower = user_command.lower()
+            should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform'])
+            
+            if should_run:
+                # 4. Execute the simulation
+                try:
+                    output_files, thermo_data = run_lammps_simulation(lammps_script)
+                    
+                    response_text = f"LAMMPS simulation completed successfully!\n\n"
+                    response_text += f"Generated script:\n```lammps\n{lammps_script}\n```\n\n"
+                    response_text += f"Output files: {list(output_files.keys())}\n"
+                    response_text += f"Captured {len(thermo_data)} thermodynamic data points."
+                    
+                    return jsonify({
+                        "response": response_text,
+                        "thermo_data": thermo_data,
+                        "output_files": output_files,
+                        "script": lammps_script
+                    })
+                    
+                except Exception as e:
+                    response_text = f"Simulation execution failed: {str(e)}\n\n"
+                    response_text += f"Generated script:\n```lammps\n{lammps_script}\n```"
+                    return jsonify({"response": response_text})
+            else:
+                response_text = f"LAMMPS script generated and approved:\n```lammps\n{lammps_script}\n```\n\n"
+                response_text += "Add 'run' or 'execute' to your command to run the simulation."
+        else:
+            response_text = f"Script review failed: {review}"
 
-    return jsonify({"response": response_text})
+        return jsonify({"response": response_text})
+        
+    except Exception as e:
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 def run_health_checks():
     """Main function to run health checks."""

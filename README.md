@@ -1,6 +1,8 @@
 # LLM Molecular Dynamics Studio
 
-A web-based application that allows users to run molecular dynamics simulations with LAMMPS and visualize the results with OVITO using natural language commands.
+A web-based application that allows users to run molecular dynamics simulations with LAMMPS using KIM (Knowledge Base of Interatomic Models) potentials and visualize the results with OVITO using natural language commands.
+
+**Important**: This application exclusively uses KIM potentials for accurate, reproducible simulations. Traditional LAMMPS pair styles are not supported.
 
 ## Installation
 
@@ -24,15 +26,37 @@ conda activate chatmd
 
 With the `chatmd` environment active, install the required packages.
 
-- **LAMMPS (via Conda):**
+- **LAMMPS with KIM support (via Conda):**
   ```bash
   conda install -c conda-forge lammps -y
+  ```
+
+- **KIM API (Required for KIM potentials):**
+  ```bash
+  conda install -c conda-forge kim-api -y
   ```
 
 - **Python Packages (via uv):**
   ```bash
   uv pip install ovito openai flask pytest
   ```
+
+### 3. Install KIM Models
+
+Install commonly used KIM potential models:
+
+```bash
+# Install verified working models
+kim-api-collections-management install user LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004
+kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
+kim-api-collections-management install user EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
+kim-api-collections-management install user EAM_Dynamo_FoilesBasteseDaw_1986_Cu__MO_831902330215_000
+```
+
+**Note**: You can install additional KIM models as needed using:
+```bash
+kim-api-collections-management install user <MODEL_ID>
+```
 
 ## Running the Application
 
@@ -43,6 +67,34 @@ python app.py
 ```
 
 The application will be available at `http://localhost:5001`.
+
+## KIM Potentials
+
+This application uses the Knowledge Base of Interatomic Models (KIM) for all molecular dynamics simulations. KIM provides:
+
+- **Standardized interface** for interatomic potentials
+- **Reproducible simulations** across different systems
+- **Verified models** with proper documentation
+- **Automatic parameter handling** (no manual pair coefficients)
+
+### Supported Materials
+
+The application comes with pre-configured support for:
+
+- **Argon**: Lennard-Jones potential
+- **Silicon**: Stillinger-Weber potential  
+- **Aluminum**: EAM potential
+- **Copper**: EAM potential
+
+Additional KIM models can be installed as needed. See the [KIM documentation](docs/kim_potential/kim_potential_reference.md) for more details.
+
+### Finding More KIM Models
+
+Browse available models at [OpenKIM.org](https://openkim.org) and install them using:
+
+```bash
+kim-api-collections-management install user <MODEL_ID>
+```
 
 ## Running Tests
 
@@ -55,4 +107,13 @@ python -m pytest
 ## Troubleshooting
 
 - **`ModuleNotFoundError`**: Ensure the `chatmd` Conda environment is active (`conda activate chatmd`).
+- **KIM Model Not Found**: Install the required model using `kim-api-collections-management install user <MODEL_ID>`.
+- **KIM API Issues**: Ensure KIM API is properly installed with `conda install -c conda-forge kim-api`.
+- **LAMMPS KIM Support**: Verify LAMMPS was compiled with KIM support (should be automatic with conda installation).
 - **OVITO License**: The `ovito` package requires a license. Place your `ovito.lic` file in a standard location (e.g., `~/.config/ovito/`) or in the project folder. See the OVITO documentation for more details.
+
+## Documentation
+
+- [KIM Potential Reference](docs/kim_potential/kim_potential_reference.md) - Comprehensive guide to using KIM potentials
+- [OpenKIM Website](https://openkim.org) - Browse available interatomic models
+- [LAMMPS KIM Documentation](https://docs.lammps.org/kim_commands.html) - Official LAMMPS KIM command reference

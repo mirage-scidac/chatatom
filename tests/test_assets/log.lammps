@@ -1,0 +1,141 @@
+LAMMPS (29 Aug 2024)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
+  using 1 OpenMP thread(s) per MPI task
+# Test script for KIM potential with Argon
+# This tests if LAMMPS has KIM package properly installed
+
+units metal
+dimension 3
+boundary p p p
+
+# KIM potential initialization MUST come before create_box
+# Using a well-known Lennard-Jones potential for Argon from OpenKIM
+kim init LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004 metal
+#=== KIM is looking for 'Portable Models' in these directories ===
+#  1: .
+#  2: /path/to/.kim-api/2.4.0-git+Clang.Clang.GNU.2025-03-25-17-46-17/portable-models-dir
+#  3: /path/to/miniconda3/envs/md-studio/lib/openkim-models/portable-models
+#=== KIM is looking for 'Simulator Models' in these directories ===
+#  1: .
+#  2: /path/to/.kim-api/2.4.0-git+Clang.Clang.GNU.2025-03-25-17-46-17/simulator-models-dir
+#  3: /path/to/miniconda3/envs/md-studio/lib/openkim-models/simulator-models
+#=== BEGIN kim init ==========================================
+units metal
+neighbor 2.0 bin   # Angstroms
+timestep 1.0e-3    # picoseconds
+
+This model has 3 mutable parameters. 
+ No.      | Parameter name     | data type  | extent
+-----------------------------------------------------
+ 1        | cutoff             | "Double"   | 1
+ 2        | epsilon            | "Double"   | 1
+ 3        | sigma              | "Double"   | 1
+#=== END kim init ============================================
+
+
+lattice fcc 5.26
+Lattice spacing in x,y,z = 5.26 5.26 5.26
+region box block 0 3 0 3 0 3
+create_box 1 box
+Created orthogonal box = (0 0 0) to (15.78 15.78 15.78)
+  1 by 1 by 1 MPI processor grid
+create_atoms 1 box
+Created 108 atoms
+  using lattice units in orthogonal box = (0 0 0) to (15.78 15.78 15.78)
+  create_atoms CPU = 0.000 seconds
+
+# Set up KIM interactions after create_box
+kim interactions Ar
+#=== BEGIN kim interactions ==================================
+pair_style kim LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004
+pair_coeff * * Ar
+#=== END kim interactions ====================================
+
+
+# Set mass for argon (KIM doesn't automatically set masses)
+mass 1 39.948
+
+neighbor 2.0 bin
+neigh_modify delay 0 every 20 check no
+
+fix 1 all nve
+
+thermo 10
+thermo_style custom step temp press pe ke etotal vol density
+
+dump 1 all atom 50 dump.atom
+
+timestep 0.001
+run 50
+
+CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Your simulation uses code contributions which should be cited:
+
+- OpenKIM Project: doi:10.1007/s11837-011-0102-6
+
+@Article{tadmor:elliott:2011,
+ author = {E. B. Tadmor and R. S. Elliott and J. P. Sethna and R. E. Miller and C. A. Becker},
+ title = {The potential of atomistic simulations and the {K}nowledgebase of {I}nteratomic {M}odels},
+ journal = {{JOM}},
+ year =    2011,
+ volume =  63,
+ number =  17,
+ pages =   {17},
+ doi =     {10.1007/s11837-011-0102-6}
+}
+
+- OpenKIM potential: https://openkim.org/cite/MO_126566794224_004#item-citation
+
+QENvbW1lbnQKewpcZG9jdW1lbnRjbGFzc3thcnRpY2xlfQpcdXNlcGFja2FnZXt1cmx9ClxiZWdpbntkb2N1bWVudH0KVGhpcyBNb2RlbCBvcmlnaW5hbGx5IHB1Ymxpc2hlZCBpbiBcY2l0ZXtPcGVuS0lNLU1POjEyNjU2Njc5NDIyNDowMDRhfSBpcyBhcmNoaXZlZCBpbiB0aGUgT3BlbktJTSByZXBvc2l0b3J5IFxjaXRle3RhZG1vcjplbGxpb3R0OjIwMTEsIGVsbGlvdHQ6dGFkbW9yOjIwMTF9IGF0IFxjaXRle09wZW5LSU0tTU86MTI2NTY2Nzk0MjI0OjAwNCwgT3BlbktJTS1NRDo0OTg2MzQxMDc1NDM6MDA0fS4KXGJpYmxpb2dyYXBoeXN0eWxle3ZhbmNvdXZlcn0KXGJpYmxpb2dyYXBoeXtraW1jaXRlLU1PXzEyNjU2Njc5NDIyNF8wMDQuYmlifQpcZW5ke2RvY3VtZW50fQp9CgpATWlzY3tPcGVuS0lNLU1POjEyNjU2Njc5NDIyNDowMDQsCiAgYXV0aG9yICAgICAgID0ge05ld3RvbiBCZXJuYWRlc30sCiAgdGl0bGUgICAgICAgID0ge3tMfWVubmFyZC17Sn1vbmVzIG1vZGVsIChzaGlmdGVkKSBmb3Ige0F9ciB3aXRoIHBhcmFtZXRlcnMgZnJvbSB7Qn1lcm5hcmRlcyAoMTk1OCkgKG1lZGl1bSBwcmVjaXNpb24gY3V0b2ZmKSB2MDA0fSwKICBkb2kgICAgICAgICAgPSB7MTAuMjU5NTAvOWY5OGI5ODl9LAogIGhvd3B1Ymxpc2hlZCA9IHtPcGVuS0lNLCBcdXJse2h0dHBzOi8vZG9pLm9yZy8xMC4yNTk1MC85Zjk4Yjk4OX19LAogIGtleXdvcmRzICAgICA9IHtPcGVuS0lNLCBNb2RlbCwgTU9fMTI2NTY2Nzk0MjI0XzAwNH0sCiAgcHVibGlzaGVyICAgID0ge09wZW5LSU19LAogIHllYXIgICAgICAgICA9IDIwMjAsCn0KCkBNaXNje09wZW5LSU0tTUQ6NDk4NjM0MTA3NTQzOjAwNCwKICBhdXRob3IgICAgICAgPSB7RWxsYWQgQi4gVGFkbW9yIGFuZCBKb2huIExlbm5hcmQtSm9uZXN9LAogIHRpdGxlICAgICAgICA9IHt7RH1yaXZlciBmb3IgdGhlIHtMfWVubmFyZC17Sn1vbmVzIG1vZGVsIHVuaWZvcm1seSBzaGlmdGVkIHRvIGhhdmUgemVybyBlbmVyZ3kgYXQgdGhlIGN1dG9mZiByYWRpdXMgdjAwNH0sCiAgZG9pICAgICAgICAgID0gezEwLjI1OTUwL2JkZmZkNmE2fSwKICBob3dwdWJsaXNoZWQgPSB7T3BlbktJTSwgXHVybHtodHRwczovL2RvaS5vcmcvMTAuMjU5NTAvYmRmZmQ2YTZ9fSwKICBrZXl3b3JkcyAgICAgPSB7T3BlbktJTSwgTW9kZWwgRHJpdmVyLCBNRF80OTg2MzQxMDc1NDNfMDA0fSwKICBwdWJsaXNoZXIgICAgPSB7T3BlbktJTX0sCiAgeWVhciAgICAgICAgID0gMjAyMCwKfQoKQEFydGljbGV7dGFkbW9yOmVsbGlvdHQ6MjAxMSwKICBhdXRob3IgICAgPSB7RS4gQi4gVGFkbW9yIGFuZCBSLiBTLiBFbGxpb3R0IGFuZCBKLiBQLiBTZXRobmEgYW5kIFIuIEUuIE1pbGxlciBhbmQgQy4gQS4gQmVja2VyfSwKICB0aXRsZSAgICAgPSB7VGhlIHBvdGVudGlhbCBvZiBhdG9taXN0aWMgc2ltdWxhdGlvbnMgYW5kIHRoZSB7S31ub3dsZWRnZWJhc2Ugb2Yge0l9bnRlcmF0b21pYyB7TX1vZGVsc30sCiAgam91cm5hbCAgID0ge3tKT019fSwKICB5ZWFyICAgICAgPSB7MjAxMX0sCiAgdm9sdW1lICAgID0gezYzfSwKICBudW1iZXIgICAgPSB7N30sCiAgcGFnZXMgICAgID0gezE3fSwKICBkb2kgICAgICAgPSB7MTAuMTAwNy9zMTE4MzctMDExLTAxMDItNn0sCn0KCkBNaXNje2VsbGlvdHQ6dGFkbW9yOjIwMTEsCiAgYXV0aG9yICAgICAgID0ge1J5YW4gUy4gRWxsaW90dCBhbmQgRWxsYWQgQi4gVGFkbW9yfSwKICB0aXRsZSAgICAgICAgPSB7e0t9bm93bGVkZ2ViYXNlIG9mIHtJfW50ZXJhdG9taWMge019b2RlbHMgKHtLSU19KSBBcHBsaWNhdGlvbiBQcm9ncmFtbWluZyBJbnRlcmZhY2UgKHtBUEl9KX0sCiAgaG93cHVibGlzaGVkID0ge1x1cmx7aHR0cHM6Ly9vcGVua2ltLm9yZy9raW0tYXBpfX0sCiAgcHVibGlzaGVyICAgID0ge09wZW5LSU19LAogIHllYXIgICAgICAgICA9IDIwMTEsCiAgZG9pICAgICAgICAgID0gezEwLjI1OTUwL2ZmOGY1NjNhfSwKfQoKQEFydGljbGV7T3BlbktJTS1NTzoxMjY1NjY3OTQyMjQ6MDA0YSwKICBhdXRob3IgPSB7TmV3dG9uIEJlcm5hcmRlc30sCiAgZG9pID0gezEwLjExMDMvUGh5c1Jldi4xMTIuMTUzNH0sCiAgaXNzdWUgPSB7NX0sCiAgam91cm5hbCA9IHtQaHlzaWNhbCBSZXZpZXd9LAogIHBhZ2VzID0gezE1MzQtLTE1Mzl9LAogIHB1Ymxpc2hlciA9IHtBbWVyaWNhbiBQaHlzaWNhbCBTb2NpZXR5fSwKICB0aXRsZSA9IHtUaGVvcnkgb2YgU29saWQge059ZSwge0F9LCB7S31yLCBhbmQge1h9ZSBhdCAwe0t9fSwKICB2b2x1bWUgPSB7MTEyfSwKICB5ZWFyID0gezE5NTh9LAp9Cg==CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Generated 0 of 0 mixed pair_coeff terms from geometric mixing rule
+Neighbor list info ...
+  update: every = 20 steps, delay = 0 steps, check = no
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 15.5
+  ghost atom cutoff = 15.5
+  binsize = 7.75, bins = 3 3 3
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair kim, perpetual
+      attributes: full, newton off
+      pair build: full/bin/atomonly
+      stencil: full/bin/3d
+      bin: standard
+Per MPI rank memory allocation (min/avg/max) = 2.805 | 2.805 | 2.805 Mbytes
+   Step          Temp          Press          PotEng         KinEng         TotEng         Volume        Density    
+         0   0             -199.89841     -9.3409761      0             -9.3409761      3929.3526      1.8232527    
+        10   5.8863176e-30 -199.89841     -9.3409761      8.141269e-32  -9.3409761      3929.3526      1.8232527    
+        20   2.354527e-29  -199.89841     -9.3409761      3.2565076e-31 -9.3409761      3929.3526      1.8232527    
+        30   5.2976858e-29 -199.89841     -9.3409761      7.3271421e-31 -9.3409761      3929.3526      1.8232527    
+        40   9.4181081e-29 -199.89841     -9.3409761      1.302603e-30  -9.3409761      3929.3526      1.8232527    
+        50   1.4715794e-28 -199.89841     -9.3409761      2.0353173e-30 -9.3409761      3929.3526      1.8232527    
+Loop time of 0.0388942 on 1 procs for 50 steps with 108 atoms
+
+Performance: 111.071 ns/day, 0.216 hours/ns, 1285.540 timesteps/s, 138.838 katom-step/s
+99.3% CPU use with 1 MPI tasks x 1 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 0.036467   | 0.036467   | 0.036467   |   0.0 | 93.76
+Neigh   | 0.0017571  | 0.0017571  | 0.0017571  |   0.0 |  4.52
+Comm    | 0.00039283 | 0.00039283 | 0.00039283 |   0.0 |  1.01
+Output  | 0.00016254 | 0.00016254 | 0.00016254 |   0.0 |  0.42
+Modify  | 4.4042e-05 | 4.4042e-05 | 4.4042e-05 |   0.0 |  0.11
+Other   |            | 7.038e-05  |            |       |  0.18
+
+Nlocal:            108 ave         108 max         108 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           2348 ave        2348 max        2348 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:              0 ave           0 max           0 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+FullNghs:        46224 ave       46224 max       46224 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 46224
+Ave neighs/atom = 428
+Neighbor list builds = 2
+Dangerous builds not checked
+Total wall time: 0:00:00

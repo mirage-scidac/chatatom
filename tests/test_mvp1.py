@@ -25,5 +25,5 @@ def test_mvp1_end_to_end():
     # Assert that the generated script contains the crucial 'kim' command
     assert "kim" in generated_script.lower(), "The generated script should use the 'kim' command."
 
-    # Assert that the reviewer approved the script
-    assert "APPROVED" in review_result, f"Reviewer failed the script with comments: {review_result}"
+    # Assert that the reviewer passed the script
+    assert "REVIEW: PASS" in review_result, f"Reviewer failed the script with comments: {review_result}"

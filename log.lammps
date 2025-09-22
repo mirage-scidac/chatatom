@@ -1,0 +1,44 @@
+LAMMPS (29 Aug 2024)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
+  using 1 OpenMP thread(s) per MPI task
+kim list
+ERROR: Unknown kim subcommand list (src/KIM/kim_command.cpp:135)
+Last command: kim list
+kim query model list
+ERROR: Illegal 'kim query' command.
+The keyword 'list' must be followed by the name of the query function (src/KIM/kim_query.cpp:119)
+Last command: kim query model list
+
+CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Your simulation uses code contributions which should be cited:
+
+- OpenKIM Project: doi:10.1007/s11837-011-0102-6
+
+@Article{tadmor:elliott:2011,
+ author = {E. B. Tadmor and R. S. Elliott and J. P. Sethna and R. E. Miller and C. A. Becker},
+ title = {The potential of atomistic simulations and the {K}nowledgebase of {I}nteratomic {M}odels},
+ journal = {{JOM}},
+ year =    2011,
+ volume =  63,
+ number =  17,
+ pages =   {17},
+ doi =     {10.1007/s11837-011-0102-6}
+}
+
+- OpenKIM query: doi:10.1063/5.0014267
+
+@Article{karls:bierbaum:2020,
+ author = {D. S. Karls and M. Bierbaum and A. A. Alemi and R. S. Elliott and J. P. Sethna and E. B. Tadmor},
+ title = {The {O}pen{KIM} processing pipeline: {A} cloud-based automatic material property computation engine},
+ journal = {{T}he {J}ournal of {C}hemical {P}hysics},
+ year =    2020,
+ volume =  153,
+ number =  6,
+ pages =   {064104},
+ doi =     {10.1063/5.0014267}
+}
+
+CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Total wall time: 0:00:00
