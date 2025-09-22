@@ -4,8 +4,111 @@ Tools for executing LAMMPS simulations and extracting data.
 import os
 import tempfile
 import shutil
+import subprocess
+import re
 from typing import Dict, List, Any, Tuple
 import lammps
+
+
+def extract_kim_models(script_string: str) -> List[str]:
+    """
+    Extract KIM model IDs from a LAMMPS script.
+    
+    Args:
+        script_string: LAMMPS input script as a string
+        
+    Returns:
+        List of KIM model IDs found in the script
+    """
+    kim_models = []
+    
+    # Pattern to match kim init commands - KIM model IDs can contain letters, numbers, underscores, and dashes
+    kim_init_pattern = r'kim\s+init\s+([A-Za-z0-9_\-]+(?:__[A-Za-z0-9_\-]+)*)'
+    matches = re.findall(kim_init_pattern, script_string, re.IGNORECASE)
+    kim_models.extend(matches)
+    
+    return kim_models
+
+
+def is_kim_model_installed(model_id: str) -> bool:
+    """
+    Check if a KIM model is installed.
+    
+    Args:
+        model_id: KIM model identifier
+        
+    Returns:
+        True if model is installed, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            ['kim-api-collections-management', 'list', '--installed'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        return model_id in result.stdout
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        # If kim-api-collections-management is not available, assume model is not installed
+        return False
+
+
+def install_kim_model(model_id: str) -> bool:
+    """
+    Install a KIM model using kim-api-collections-management.
+    
+    Args:
+        model_id: KIM model identifier to install
+        
+    Returns:
+        True if installation successful, False otherwise
+    """
+    try:
+        print(f"Installing KIM model: {model_id}")
+        result = subprocess.run(
+            ['kim-api-collections-management', 'install', 'user', model_id],
+            capture_output=True,
+            text=True,
+            timeout=60  # Give it 60 seconds to install
+        )
+        
+        if result.returncode == 0:
+            print(f"Successfully installed KIM model: {model_id}")
+            return True
+        else:
+            print(f"Failed to install KIM model {model_id}: {result.stderr}")
+            return False
+            
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Error installing KIM model {model_id}: {str(e)}")
+        return False
+
+
+def ensure_kim_models_installed(script_string: str) -> bool:
+    """
+    Ensure all KIM models referenced in the script are installed.
+    
+    Args:
+        script_string: LAMMPS input script as a string
+        
+    Returns:
+        True if all models are available, False if any installation failed
+    """
+    kim_models = extract_kim_models(script_string)
+    
+    if not kim_models:
+        return True  # No KIM models to install
+    
+    all_installed = True
+    for model_id in kim_models:
+        if not is_kim_model_installed(model_id):
+            print(f"KIM model {model_id} not found, attempting to install...")
+            if not install_kim_model(model_id):
+                all_installed = False
+        else:
+            print(f"KIM model {model_id} is already installed")
+    
+    return all_installed
 
 
 def run_lammps_simulation(script_string: str) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
@@ -20,6 +123,10 @@ def run_lammps_simulation(script_string: str) -> Tuple[Dict[str, str], List[Dict
         - Dictionary of output file paths (e.g., {'dump': 'path/to/dump.atom'})
         - List of thermodynamic data dictionaries
     """
+    # First, ensure all required KIM models are installed
+    if not ensure_kim_models_installed(script_string):
+        raise RuntimeError("Failed to install required KIM models")
+    
     # Create a temporary directory for the simulation
     temp_dir = tempfile.mkdtemp(prefix="lammps_sim_")
     

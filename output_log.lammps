@@ -1,0 +1,242 @@
+LAMMPS (29 Aug 2024)
+OMP_NUM_THREADS environment is not set. Defaulting to 1 thread. (src/comm.cpp:98)
+  using 1 OpenMP thread(s) per MPI task
+units metal
+dimension 3
+boundary p p p
+atom_style atomic
+
+# Initialize KIM model for Silicon
+kim init SW_StillingerWeber_1985_Si__MO_405512056662_005 metal  # Install model if needed: kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
+#=== KIM is looking for 'Portable Models' in these directories ===
+#  1: .
+#  2: /path/to/.kim-api/2.4.0-git+Clang.Clang.GNU.2025-03-25-17-46-17/portable-models-dir
+#  3: /path/to/miniconda3/envs/md-studio/lib/openkim-models/portable-models
+#=== KIM is looking for 'Simulator Models' in these directories ===
+#  1: .
+#  2: /path/to/.kim-api/2.4.0-git+Clang.Clang.GNU.2025-03-25-17-46-17/simulator-models-dir
+#  3: /path/to/miniconda3/envs/md-studio/lib/openkim-models/simulator-models
+#=== BEGIN kim init ==========================================
+units metal
+neighbor 2.0 bin   # Angstroms
+timestep 1.0e-3    # picoseconds
+
+This model has 9 mutable parameters. 
+ No.      | Parameter name     | data type  | extent
+-----------------------------------------------------
+ 1        | A                  | "Double"   | 1
+ 2        | B                  | "Double"   | 1
+ 3        | p                  | "Double"   | 1
+ 4        | q                  | "Double"   | 1
+ 5        | sigma              | "Double"   | 1
+ 6        | gamma              | "Double"   | 1
+ 7        | cutoff             | "Double"   | 1
+ 8        | lambda             | "Double"   | 1
+ 9        | costheta0          | "Double"   | 1
+#=== END kim init ============================================
+
+
+# Define lattice and region
+lattice diamond 5.431
+Lattice spacing in x,y,z = 5.431 5.431 5.431
+region box block 0 10 0 10 0 10
+create_box 1 box
+Created orthogonal box = (0 0 0) to (54.31 54.31 54.31)
+  1 by 1 by 1 MPI processor grid
+create_atoms 1 box
+Created 8000 atoms
+  using lattice units in orthogonal box = (0 0 0) to (54.31 54.31 54.31)
+  create_atoms CPU = 0.000 seconds
+
+# Set KIM interactions
+kim interactions Si
+#=== BEGIN kim interactions ==================================
+pair_style kim SW_StillingerWeber_1985_Si__MO_405512056662_005
+pair_coeff * * Si
+#=== END kim interactions ====================================
+
+
+# Define mass for Silicon
+mass 1 28.0855
+
+# Neighbor settings
+neighbor 2.0 bin
+neigh_modify delay 0 every 1 check yes
+
+# Define simulation settings
+timestep 0.001
+thermo 100
+
+# Set initial velocity and run
+velocity all create 300.0 12345
+fix 1 all nvt temp 300.0 300.0 0.1
+
+# Run the simulation
+run 10000
+
+CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Your simulation uses code contributions which should be cited:
+
+- OpenKIM Project: doi:10.1007/s11837-011-0102-6
+
+@Article{tadmor:elliott:2011,
+ author = {E. B. Tadmor and R. S. Elliott and J. P. Sethna and R. E. Miller and C. A. Becker},
+ title = {The potential of atomistic simulations and the {K}nowledgebase of {I}nteratomic {M}odels},
+ journal = {{JOM}},
+ year =    2011,
+ volume =  63,
+ number =  17,
+ pages =   {17},
+ doi =     {10.1007/s11837-011-0102-6}
+}
+
+- OpenKIM potential: https://openkim.org/cite/MO_405512056662_005#item-citation
+
+QENvbW1lbnQKewpcZG9jdW1lbnRjbGFzc3thcnRpY2xlfQpcdXNlcGFja2FnZXt1cmx9ClxiZWdpbntkb2N1bWVudH0KVGhpcyBNb2RlbCBvcmlnaW5hbGx5IHB1Ymxpc2hlZCBpbiBcY2l0ZXtPcGVuS0lNLU1POjQwNTUxMjA1NjY2MjowMDVhLCBPcGVuS0lNLU1POjQwNTUxMjA1NjY2MjowMDVifSBpcyBhcmNoaXZlZCBpbiB0aGUgT3BlbktJTSByZXBvc2l0b3J5IFxjaXRle3RhZG1vcjplbGxpb3R0OjIwMTEsIGVsbGlvdHQ6dGFkbW9yOjIwMTF9IGF0IFxjaXRle09wZW5LSU0tTU86NDA1NTEyMDU2NjYyOjAwNSwgT3BlbktJTS1NRDozMzU4MTY5MzY5NTE6MDA0fS4KXGJpYmxpb2dyYXBoeXN0eWxle3ZhbmNvdXZlcn0KXGJpYmxpb2dyYXBoeXtraW1jaXRlLU1PXzQwNTUxMjA1NjY2Ml8wMDUuYmlifQpcZW5ke2RvY3VtZW50fQp9CgpATWlzY3tPcGVuS0lNLU1POjQwNTUxMjA1NjY2MjowMDUsCiAgYXV0aG9yICAgICAgID0ge0FtaXQgSyBTaW5naH0sCiAgdGl0bGUgICAgICAgID0ge3tTfXRpbGxpbmdlci17V31lYmVyIHBvdGVudGlhbCBmb3Ige1N9aSBkdWUgdG8ge1N9dGlsbGluZ2VyIGFuZCB7V31lYmVyICgxOTg1KSB2MDA1fSwKICBkb2kgICAgICAgICAgPSB7MTAuMjU5NTAvYzc0YjI5M2Z9LAogIGhvd3B1Ymxpc2hlZCA9IHtPcGVuS0lNLCBcdXJse2h0dHBzOi8vZG9pLm9yZy8xMC4yNTk1MC9jNzRiMjkzZn19LAogIGtleXdvcmRzICAgICA9IHtPcGVuS0lNLCBNb2RlbCwgTU9fNDA1NTEyMDU2NjYyXzAwNX0sCiAgcHVibGlzaGVyICAgID0ge09wZW5LSU19LAogIHllYXIgICAgICAgICA9IDIwMTgsCn0KCkBNaXNje09wZW5LSU0tTUQ6MzM1ODE2OTM2OTUxOjAwNCwKICBhdXRob3IgICAgICAgPSB7TWluZ2ppYW4gV2VufSwKICB0aXRsZSAgICAgICAgPSB7e1N9dGlsbGluZ2VyLXtXfWViZXIgKHtTV30pIHtNfW9kZWwge0R9cml2ZXIgdjAwNH0sCiAgZG9pICAgICAgICAgID0gezEwLjI1OTUwL2YzYWJkMmQ2fSwKICBob3dwdWJsaXNoZWQgPSB7T3BlbktJTSwgXHVybHtodHRwczovL2RvaS5vcmcvMTAuMjU5NTAvZjNhYmQyZDZ9fSwKICBrZXl3b3JkcyAgICAgPSB7T3BlbktJTSwgTW9kZWwgRHJpdmVyLCBNRF8zMzU4MTY5MzY5NTFfMDA0fSwKICBwdWJsaXNoZXIgICAgPSB7T3BlbktJTX0sCiAgeWVhciAgICAgICAgID0gMjAxOCwKfQoKQEFydGljbGV7dGFkbW9yOmVsbGlvdHQ6MjAxMSwKICBhdXRob3IgICAgPSB7RS4gQi4gVGFkbW9yIGFuZCBSLiBTLiBFbGxpb3R0IGFuZCBKLiBQLiBTZXRobmEgYW5kIFIuIEUuIE1pbGxlciBhbmQgQy4gQS4gQmVja2VyfSwKICB0aXRsZSAgICAgPSB7VGhlIHBvdGVudGlhbCBvZiBhdG9taXN0aWMgc2ltdWxhdGlvbnMgYW5kIHRoZSB7S31ub3dsZWRnZWJhc2Ugb2Yge0l9bnRlcmF0b21pYyB7TX1vZGVsc30sCiAgam91cm5hbCAgID0ge3tKT019fSwKICB5ZWFyICAgICAgPSB7MjAxMX0sCiAgdm9sdW1lICAgID0gezYzfSwKICBudW1iZXIgICAgPSB7N30sCiAgcGFnZXMgICAgID0gezE3fSwKICBkb2kgICAgICAgPSB7MTAuMTAwNy9zMTE4MzctMDExLTAxMDItNn0sCn0KCkBNaXNje2VsbGlvdHQ6dGFkbW9yOjIwMTEsCiAgYXV0aG9yICAgICAgID0ge1J5YW4gUy4gRWxsaW90dCBhbmQgRWxsYWQgQi4gVGFkbW9yfSwKICB0aXRsZSAgICAgICAgPSB7e0t9bm93bGVkZ2ViYXNlIG9mIHtJfW50ZXJhdG9taWMge019b2RlbHMgKHtLSU19KSBBcHBsaWNhdGlvbiBQcm9ncmFtbWluZyBJbnRlcmZhY2UgKHtBUEl9KX0sCiAgaG93cHVibGlzaGVkID0ge1x1cmx7aHR0cHM6Ly9vcGVua2ltLm9yZy9raW0tYXBpfX0sCiAgcHVibGlzaGVyICAgID0ge09wZW5LSU19LAogIHllYXIgICAgICAgICA9IDIwMTEsCiAgZG9pICAgICAgICAgID0gezEwLjI1OTUwL2ZmOGY1NjNhfSwKfQoKQEFydGljbGV7T3BlbktJTS1NTzo0MDU1MTIwNTY2NjI6MDA1YSwKICBhdXRob3IgPSB7U3RpbGxpbmdlciwgRnJhbmsgSC4gYW5kIFdlYmVyLCBUaG9tYXMgQS59LAogIGRvaSA9IHsxMC4xMTAzL1BoeXNSZXZCLjMxLjUyNjJ9LAogIGlzc3VlID0gezh9LAogIGpvdXJuYWwgPSB7UGh5c2ljYWwgUmV2aWV3IEJ9LAogIG1vbnRoID0ge0Fwcn0sCiAgcGFnZXMgPSB7NTI2Mi0tNTI3MX0sCiAgcHVibGlzaGVyID0ge0FtZXJpY2FuIFBoeXNpY2FsIFNvY2lldHl9LAogIHRpdGxlID0ge0NvbXB1dGVyIHNpbXVsYXRpb24gb2YgbG9jYWwgb3JkZXIgaW4gY29uZGVuc2VkIHBoYXNlcyBvZiBzaWxpY29ufSwKICB2b2x1bWUgPSB7MzF9LAogIHllYXIgPSB7MTk4NX0sCn0KCkBCb29re09wZW5LSU0tTU86NDA1NTEyMDU2NjYyOjAwNWIsCiAgYXV0aG9yID0ge1RhZG1vciwgRWxsYWQgQi4gYW5kIE1pbGxlciwgUm9uYWxkIEUufSwKICBkb2kgPSB7MTAuMTAxNy9DQk85NzgxMTM5MDAzNTgyfSwKICBwdWJsaXNoZXIgPSB7Q2FtYnJpZGdlIFVuaXZlcnNpdHkgUHJlc3N9LAogIHRpdGxlID0ge01vZGVsaW5nIE1hdGVyaWFsczoge0N9b250aW51dW0sIEF0b21pc3RpYyBhbmQgTXVsdGlzY2FsZSBUZWNobmlxdWVzfSwKICB5ZWFyID0gezIwMTF9LAp9Cg==CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Generated 0 of 0 mixed pair_coeff terms from geometric mixing rule
+Neighbor list info ...
+  update: every = 1 steps, delay = 0 steps, check = yes
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 5.77118
+  ghost atom cutoff = 5.77118
+  binsize = 2.88559, bins = 19 19 19
+  1 neighbor lists, perpetual/occasional/extra = 1 0 0
+  (1) pair kim, perpetual
+      attributes: full, newton off
+      pair build: full/bin/atomonly
+      stencil: full/bin/3d
+      bin: standard
+Per MPI rank memory allocation (min/avg/max) = 4.307 | 4.307 | 4.307 Mbytes
+   Step          Temp          E_pair         E_mol          TotEng         Press     
+         0   300           -34691.2        0             -34381.014      2040.1076    
+       100   155.39888     -34521.35       0             -34360.675      2073.207     
+       200   145.40669     -34478.959      0             -34328.616      2212.647     
+       300   200.34777     -34497.517      0             -34290.367      2270.7639    
+       400   228.19587     -34483.662      0             -34247.718      2532.0533    
+       500   233.96567     -34444.909      0             -34203          2773.0422    
+       600   258.10437     -34424.795      0             -34157.928      3058.8769    
+       700   279.74821     -34404.045      0             -34114.799      3422.2117    
+       800   300.70945     -34389.405      0             -34078.485      3656.608     
+       900   322.20451     -34385.648      0             -34052.504      3801.6078    
+      1000   312.73536     -34368.799      0             -34045.446      3739.0812    
+      1100   298.3159      -34366.593      0             -34058.149      3595.5287    
+      1200   289.25507     -34376.278      0             -34077.203      3455.9585    
+      1300   299.45903     -34394.489      0             -34084.863      3508.0205    
+      1400   296.50745     -34383.734      0             -34077.16       3557.5097    
+      1500   298.11398     -34370.74       0             -34062.504      3603.1736    
+      1600   305.30993     -34370.084      0             -34054.408      3648.0353    
+      1700   320.85323     -34389.913      0             -34058.166      3779.8512    
+      1800   303.75877     -34383.94       0             -34069.868      3634.7233    
+      1900   292.54594     -34381.492      0             -34079.014      3553.8666    
+      2000   292.21666     -34379.51       0             -34077.372      3475.4793    
+      2100   310.32736     -34389.177      0             -34068.313      3477.646     
+      2200   290.05986     -34358.926      0             -34059.018      3632.5578    
+      2300   314.70583     -34382.878      0             -34057.487      3712.5555    
+      2400   303.69336     -34380.97       0             -34066.966      3569.594     
+      2500   308.64848     -34393.742      0             -34074.614      3696.3118    
+      2600   290.86203     -34378.542      0             -34077.805      3528.8912    
+      2700   299.37234     -34380.47       0             -34070.934      3550.0154    
+      2800   295.3098      -34367.739      0             -34062.403      3551.738     
+      2900   307.71139     -34376.343      0             -34058.184      3600.717     
+      3000   305.87558     -34380.182      0             -34063.922      3548.3235    
+      3100   305.69026     -34388.962      0             -34072.893      3539.1226    
+      3200   297.66465     -34384.015      0             -34076.244      3601.5144    
+      3300   299.90454     -34382.828      0             -34072.741      3546.2144    
+      3400   295.09005     -34369.187      0             -34064.078      3583.3621    
+      3500   286.38072     -34357.721      0             -34061.617      3508.4687    
+      3600   303.94905     -34377.861      0             -34063.592      3599.0168    
+      3700   299.3304      -34379.414      0             -34069.921      3467.231     
+      3800   294.06623     -34378.679      0             -34074.629      3512.6509    
+      3900   290.7497      -34373.71       0             -34073.089      3471.712     
+      4000   299.31436     -34377.124      0             -34067.647      3535.7327    
+      4100   309.63238     -34382.79       0             -34062.645      3642.7399    
+      4200   307.52624     -34379.991      0             -34062.024      3702.1537    
+      4300   299.34174     -34376.256      0             -34066.751      3604.6748    
+      4400   316.30194     -34398.192      0             -34071.151      3609.4469    
+      4500   296.14228     -34380.392      0             -34074.195      3511.8594    
+      4600   288.00337     -34369.394      0             -34071.613      3493.2392    
+      4700   295.05924     -34369.963      0             -34064.886      3535.5478    
+      4800   297.18988     -34368.83       0             -34061.55       3650.7545    
+      4900   310.7603      -34385.338      0             -34064.027      3612.595     
+      5000   300.85936     -34381.228      0             -34070.154      3556.3366    
+      5100   289.1431      -34373.549      0             -34074.589      3527.6176    
+      5200   305.83724     -34388.333      0             -34072.112      3565.2988    
+      5300   301.76084     -34379.28       0             -34067.274      3562.2706    
+      5400   296.85179     -34368.573      0             -34061.643      3629.8715    
+      5500   299.27678     -34372.198      0             -34062.76       3601.1508    
+      5600   300.10849     -34379.11       0             -34068.812      3562.6448    
+      5700   292.48861     -34375.703      0             -34073.284      3535.939     
+      5800   293.88955     -34377.699      0             -34073.832      3502.5324    
+      5900   292.44395     -34370.46       0             -34068.087      3593.2001    
+      6000   305.61856     -34379.563      0             -34063.568      3636.913     
+      6100   306.49733     -34379.96       0             -34063.056      3640.4673    
+      6200   306.52971     -34382.596      0             -34065.659      3663.1631    
+      6300   290.19707     -34371.103      0             -34071.053      3516.4302    
+      6400   295.655       -34379.329      0             -34073.636      3500.3179    
+      6500   294.45035     -34376.034      0             -34071.587      3497.6026    
+      6600   293.8592      -34369.465      0             -34065.628      3578.4081    
+      6700   304.55984     -34376.798      0             -34061.897      3668.4799    
+      6800   308.59514     -34383.829      0             -34064.757      3607.3469    
+      6900   298.15088     -34378.569      0             -34070.295      3564.7385    
+      7000   293.35471     -34376.688      0             -34073.374      3569.9223    
+      7100   302.9376      -34384.521      0             -34071.298      3591.3564    
+      7200   301.64042     -34378.933      0             -34067.052      3588.7402    
+      7300   299.72589     -34372.741      0             -34062.839      3608.9719    
+      7400   303.34007     -34377.061      0             -34063.422      3639.6268    
+      7500   293.95112     -34372.911      0             -34068.98       3543.4961    
+      7600   287.54818     -34371.176      0             -34073.865      3435.379     
+      7700   301.48133     -34383.337      0             -34071.619      3534.5236    
+      7800   291.81151     -34368.889      0             -34067.17       3588.2956    
+      7900   308.70646     -34382.865      0             -34063.677      3687.05      
+      8000   299.68423     -34375.203      0             -34065.344      3606.2139    
+      8100   303.15751     -34380.612      0             -34067.162      3685.4705    
+      8200   300.81882     -34381.341      0             -34070.308      3582.1681    
+      8300   303.49101     -34385.254      0             -34071.459      3546.2888    
+      8400   295.83715     -34375.189      0             -34069.308      3610.1559    
+      8500   305.05496     -34381.541      0             -34066.129      3629.0956    
+      8600   307.78583     -34382.063      0             -34063.827      3651.782     
+      8700   304.29927     -34380.304      0             -34065.674      3648.5458    
+      8800   302.23414     -34381.532      0             -34069.036      3619.4238    
+      8900   304.21971     -34385.143      0             -34070.595      3571.8242    
+      9000   298.58881     -34380.069      0             -34071.343      3555.2077    
+      9100   304.63443     -34382.779      0             -34067.802      3634.2158    
+      9200   300.67734     -34375.878      0             -34064.993      3568.4878    
+      9300   300.1604      -34375.023      0             -34064.672      3538.9773    
+      9400   299.5424      -34377.031      0             -34067.318      3618.4979    
+      9500   302.35932     -34383.741      0             -34071.116      3625.3435    
+      9600   305.89512     -34387.135      0             -34070.854      3607.9431    
+      9700   307.43806     -34386.189      0             -34068.313      3606.1494    
+      9800   308.47324     -34383.483      0             -34064.537      3666.6547    
+      9900   304.18407     -34378.898      0             -34064.386      3623.3786    
+     10000   293.30891     -34371.029      0             -34067.761      3543.9411    
+Loop time of 95.5743 on 1 procs for 10000 steps with 8000 atoms
+
+Performance: 9.040 ns/day, 2.655 hours/ns, 104.631 timesteps/s, 837.045 katom-step/s
+98.7% CPU use with 1 MPI tasks x 1 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 94.303     | 94.303     | 94.303     |   0.0 | 98.67
+Neigh   | 0          | 0          | 0          |   0.0 |  0.00
+Comm    | 0.24761    | 0.24761    | 0.24761    |   0.0 |  0.26
+Output  | 0.0033017  | 0.0033017  | 0.0033017  |   0.0 |  0.00
+Modify  | 0.90247    | 0.90247    | 0.90247    |   0.0 |  0.94
+Other   |            | 0.1181     |            |       |  0.12
+
+Nlocal:           8000 ave        8000 max        8000 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           6725 ave        6725 max        6725 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:              0 ave           0 max           0 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+FullNghs:       272000 ave      272000 max      272000 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 272000
+Ave neighs/atom = 34
+Neighbor list builds = 0
+Dangerous builds = 0
+Total wall time: 0:01:35
