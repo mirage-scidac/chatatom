@@ -111,6 +111,74 @@ def ensure_kim_models_installed(script_string: str) -> bool:
     return all_installed
 
 
+def parse_log_file(log_path: str) -> List[Dict[str, Any]]:
+    """
+    Parse LAMMPS log file to extract thermodynamic data.
+    
+    Args:
+        log_path: Path to the LAMMPS log file
+        
+    Returns:
+        List of thermodynamic data dictionaries
+    """
+    thermo_data = []
+    
+    try:
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+        
+        # Find the thermodynamic output section
+        in_thermo_section = False
+        header_line = None
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Look for thermo_style custom header
+            if line.startswith('Step') and any(keyword in line for keyword in ['Temp', 'Press', 'PotEng', 'KinEng', 'TotEng']):
+                header_line = line
+                in_thermo_section = True
+                continue
+            
+            # If we're in the thermo section and find a data line
+            if in_thermo_section and header_line:
+                # Skip empty lines and non-numeric lines
+                if not line or line.startswith('Loop') or line.startswith('Performance') or line.startswith('WARNING'):
+                    in_thermo_section = False
+                    continue
+                
+                # Try to parse the data line
+                try:
+                    values = line.split()
+                    headers = header_line.split()
+                    
+                    # Make sure we have the same number of values and headers
+                    if len(values) == len(headers):
+                        data_point = {}
+                        for i, header in enumerate(headers):
+                            try:
+                                # Convert to appropriate type
+                                if header.lower() == 'step':
+                                    data_point[header.lower()] = int(values[i])
+                                else:
+                                    data_point[header.lower()] = float(values[i])
+                            except ValueError:
+                                # If conversion fails, store as string
+                                data_point[header.lower()] = values[i]
+                        
+                        thermo_data.append(data_point)
+                except (ValueError, IndexError):
+                    # Skip lines that can't be parsed
+                    continue
+    
+    except FileNotFoundError:
+        print(f"Warning: Log file {log_path} not found")
+    except Exception as e:
+        print(f"Warning: Error parsing log file {log_path}: {e}")
+    
+    return thermo_data
+
+
 def run_lammps_simulation(script_string: str) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
     """
     Execute a LAMMPS simulation and extract thermodynamic data.
@@ -143,77 +211,33 @@ def run_lammps_simulation(script_string: str) -> Tuple[Dict[str, str], List[Dict
         # Initialize LAMMPS
         lmp = lammps.lammps()
         
-        # Storage for thermodynamic data
-        thermo_data = []
-        
-        # Define a callback to capture thermodynamic output
-        def thermo_callback():
-            """Callback function to capture thermodynamic data"""
-            try:
-                # Get current step
-                step = lmp.get_thermo("step")
-                
-                # Get common thermodynamic quantities
-                data_point = {"step": step}
-                
-                # Try to get common thermo quantities, skip if not available
-                thermo_quantities = ["temp", "press", "pe", "ke", "etotal", "vol", "density"]
-                for quantity in thermo_quantities:
-                    try:
-                        value = lmp.get_thermo(quantity)
-                        data_point[quantity] = value
-                    except:
-                        # Skip quantities that aren't available
-                        pass
-                
-                thermo_data.append(data_point)
-            except Exception as e:
-                # If we can't get thermo data, just skip this step
-                pass
-        
-        # Set up the callback (this is a simplified approach)
-        # Note: LAMMPS Python interface callback setup can be complex
-        # For now, we'll run the simulation and extract data afterwards
-        
         # Execute the LAMMPS script
         lmp.file(script_path)
-        
-        # Try to extract final thermodynamic state
-        try:
-            final_data = {}
-            final_data["step"] = lmp.get_thermo("step")
-            
-            thermo_quantities = ["temp", "press", "pe", "ke", "etotal", "vol", "density"]
-            for quantity in thermo_quantities:
-                try:
-                    value = lmp.get_thermo(quantity)
-                    final_data[quantity] = value
-                except:
-                    pass
-            
-            if final_data:
-                thermo_data.append(final_data)
-                
-        except Exception as e:
-            # If we can't extract final data, that's okay
-            pass
         
         # Close LAMMPS
         lmp.close()
         
-        # Find output files in the temporary directory
+        # Find and copy output files to permanent location
         output_files = {}
+        log_file_path = None
+        
         for filename in os.listdir(temp_dir):
             if filename.endswith('.atom') or filename.endswith('.dump'):
                 # Copy dump files to a permanent location
                 permanent_path = os.path.join(original_dir, f"output_{filename}")
                 shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
                 output_files['dump'] = permanent_path
-            elif filename.startswith('log.'):
-                # Copy log files
+            elif filename.startswith('log.') or filename == 'log.lammps':
+                # Copy log files and remember the path for parsing
                 permanent_path = os.path.join(original_dir, f"output_{filename}")
                 shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
                 output_files['log'] = permanent_path
+                log_file_path = permanent_path
+        
+        # Parse thermodynamic data from the log file
+        thermo_data = []
+        if log_file_path:
+            thermo_data = parse_log_file(log_file_path)
         
         # If no thermo data was captured, create a minimal dataset
         if not thermo_data:

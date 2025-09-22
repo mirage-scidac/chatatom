@@ -139,6 +139,8 @@
                 return;
             }
 
+            console.log(`Received ${thermoData.length} data points:`, thermoData);
+
             // Show the chart canvas and hide placeholder
             const chartCanvas = document.getElementById('thermo-chart');
             const placeholder = document.getElementById('plot-placeholder');
@@ -150,11 +152,22 @@
                 thermoChart.destroy();
             }
 
-            // Prepare data for plotting
-            const steps = thermoData.map(d => d.step || 0);
-            const temperatures = thermoData.map(d => d.temp || 0);
-            const energies = thermoData.map(d => d.etotal || 0);
-            const pressures = thermoData.map(d => d.press || 0);
+            // Prepare data for plotting - process ALL data points
+            const steps = [];
+            const temperatures = [];
+            const energies = [];
+            const pressures = [];
+
+            // Process each data point in the array
+            thermoData.forEach(dataPoint => {
+                steps.push(dataPoint.step || 0);
+                temperatures.push(dataPoint.temp || 0);
+                energies.push(dataPoint.etotal || dataPoint.toteng || 0);
+                pressures.push(dataPoint.press || 0);
+            });
+
+            console.log(`Plotting ${steps.length} steps:`, steps);
+            console.log(`Temperature range:`, Math.min(...temperatures), 'to', Math.max(...temperatures));
 
             // Create the chart
             const ctx = chartCanvas.getContext('2d');
@@ -164,25 +177,28 @@
                     labels: steps,
                     datasets: [
                         {
-                            label: 'Temperature',
+                            label: 'Temperature (K)',
                             data: temperatures,
                             borderColor: 'rgb(255, 99, 132)',
                             backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                            yAxisID: 'y'
+                            yAxisID: 'y',
+                            tension: 0.1
                         },
                         {
                             label: 'Total Energy',
                             data: energies,
                             borderColor: 'rgb(54, 162, 235)',
                             backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                            yAxisID: 'y1'
+                            yAxisID: 'y1',
+                            tension: 0.1
                         },
                         {
                             label: 'Pressure',
                             data: pressures,
                             borderColor: 'rgb(255, 205, 86)',
                             backgroundColor: 'rgba(255, 205, 86, 0.1)',
-                            yAxisID: 'y2'
+                            yAxisID: 'y2',
+                            tension: 0.1
                         }
                     ]
                 },
@@ -222,7 +238,7 @@
                             position: 'left',
                             title: {
                                 display: true,
-                                text: 'Temperature',
+                                text: 'Temperature (K)',
                                 color: 'rgb(255, 99, 132)'
                             },
                             ticks: {
