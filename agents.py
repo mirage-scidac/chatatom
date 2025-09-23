@@ -138,7 +138,7 @@ Key guidelines:
 1. Generate complete, runnable LAMMPS scripts using ONLY KIM potentials
 2. Always use 'metal' units (required for most KIM models)
 3. Include proper initialization, atom definitions, KIM force fields, and run commands
-4. Include thermodynamic output commands for monitoring
+4. Include thermodynamic output commands for monitoring (as many as makes sense)
 5. Ensure proper boundary conditions and timesteps
 6. Your output should be only the raw LAMMPS script content. Do not include any markdown formatting, code block markers, or any text other than the LAMMPS commands.
 7. Include a comment about model installation if the model might not be available
@@ -214,7 +214,7 @@ Review criteria:
 1. Script syntax and command correctness
 2. Proper KIM initialization sequence
 3. KIM potentials ONLY (REJECT any pair_style/pair_coeff usage)
-4. Correct thermodynamic output setup
+4. Correct AND complete thermodynamic output setup
 5. Reasonable simulation parameters (timestep, neighbor settings)
 6. Proper boundary conditions and system setup
 7. Missing or redundant commands
