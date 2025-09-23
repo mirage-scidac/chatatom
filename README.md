@@ -58,6 +58,47 @@ kim-api-collections-management install user EAM_Dynamo_FoilesBasteseDaw_1986_Cu_
 kim-api-collections-management install user <MODEL_ID>
 ```
 
+## Configuration
+
+The application can be configured by editing the `config.py` file. Key configuration options include:
+
+### LLM Configuration
+- `API_BASE_URL`: URL of your LLM API endpoint
+- `API_KEY`: API key for authentication
+- Model settings for different agents (Orchestrator, Generator, Reviewer)
+
+### LAMMPS Execution Configuration
+- `LAMMPS_CORES`: Default number of cores for LAMMPS simulations (default: 1)
+- `LAMMPS_USE_MPI`: Enable/disable MPI for parallel execution (default: True)
+- `LAMMPS_MPI_COMMAND`: MPI command to use (default: "mpirun")
+- `LAMMPS_EXECUTABLE`: LAMMPS executable name (default: "lmp")
+
+### Parallel Execution
+
+The application supports parallel LAMMPS execution using MPI. To configure parallel execution:
+
+1. **Set the number of cores** in `config.py`:
+   ```python
+   LAMMPS_CORES = 4  # Use 4 cores by default
+   ```
+
+2. **Ensure MPI is available** on your system:
+   ```bash
+   # Check if MPI is installed
+   mpirun --version
+   ```
+
+3. **Install LAMMPS with MPI support** (if not already done):
+   ```bash
+   conda install -c conda-forge lammps=*=mpi_* -y
+   ```
+
+The system will automatically:
+- Use serial execution (Python interface) for single core
+- Use MPI execution (subprocess) for multiple cores
+- Fall back to serial execution if MPI is not available
+- Validate core count (must be at least 1)
+
 ## Running the Application
 
 With the `chatmd` environment active, run the Flask server:

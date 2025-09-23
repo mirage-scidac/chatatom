@@ -6,8 +6,9 @@ import tempfile
 import shutil
 import subprocess
 import re
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 import lammps
+import config
 
 
 def extract_kim_models(script_string: str) -> List[str]:
@@ -111,6 +112,48 @@ def ensure_kim_models_installed(script_string: str) -> bool:
     return all_installed
 
 
+def check_mpi_available() -> bool:
+    """
+    Check if MPI is available on the system.
+    
+    Returns:
+        True if MPI is available, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            [config.LAMMPS_MPI_COMMAND, '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def validate_core_count(num_cores: int) -> int:
+    """
+    Validate and adjust the number of cores for LAMMPS execution.
+    
+    Args:
+        num_cores: Requested number of cores
+        
+    Returns:
+        Validated number of cores (adjusted if necessary)
+        
+    Raises:
+        ValueError: If core count is invalid
+    """
+    if num_cores < 1:
+        raise ValueError("Number of cores must be at least 1")
+    
+    if num_cores > 1 and config.LAMMPS_USE_MPI and not check_mpi_available():
+        print(f"Warning: MPI not available. Falling back to serial execution.")
+        return 1
+    
+    return num_cores
+
+
 def parse_log_file(log_path: str) -> List[Dict[str, Any]]:
     """
     Parse LAMMPS log file to extract thermodynamic data.
@@ -179,18 +222,25 @@ def parse_log_file(log_path: str) -> List[Dict[str, Any]]:
     return thermo_data
 
 
-def run_lammps_simulation(script_string: str) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
+def run_lammps_simulation(script_string: str, num_cores: Optional[int] = None) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
     """
     Execute a LAMMPS simulation and extract thermodynamic data.
     
     Args:
         script_string: Complete LAMMPS input script as a string
+        num_cores: Number of cores to use (defaults to config.LAMMPS_CORES)
         
     Returns:
         Tuple containing:
         - Dictionary of output file paths (e.g., {'dump': 'path/to/dump.atom'})
         - List of thermodynamic data dictionaries
     """
+    # Use provided cores or fall back to config
+    cores = num_cores if num_cores is not None else config.LAMMPS_CORES
+    cores = validate_core_count(cores)
+    
+    print(f"Running LAMMPS simulation with {cores} core(s)")
+    
     # First, ensure all required KIM models are installed
     if not ensure_kim_models_installed(script_string):
         raise RuntimeError("Failed to install required KIM models")
@@ -208,14 +258,44 @@ def run_lammps_simulation(script_string: str) -> Tuple[Dict[str, str], List[Dict
         original_dir = os.getcwd()
         os.chdir(temp_dir)
         
-        # Initialize LAMMPS
-        lmp = lammps.lammps()
-        
-        # Execute the LAMMPS script
-        lmp.file(script_path)
-        
-        # Close LAMMPS
-        lmp.close()
+        # Execute LAMMPS based on core count
+        if cores > 1 and config.LAMMPS_USE_MPI:
+            # Use MPI execution via subprocess
+            cmd = [
+                config.LAMMPS_MPI_COMMAND, 
+                '-np', str(cores), 
+                config.LAMMPS_EXECUTABLE, 
+                '-in', script_path
+            ]
+            
+            print(f"Executing MPI command: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=temp_dir
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"LAMMPS MPI execution failed with return code {result.returncode}"
+                if result.stderr:
+                    error_msg += f"\nStderr: {result.stderr}"
+                if result.stdout:
+                    error_msg += f"\nStdout: {result.stdout}"
+                raise RuntimeError(error_msg)
+            
+            print("MPI execution completed successfully")
+            
+        else:
+            # Use Python interface for serial execution
+            print("Using Python LAMMPS interface for serial execution")
+            lmp = lammps.lammps()
+            
+            # Execute the LAMMPS script
+            lmp.file(script_path)
+            
+            # Close LAMMPS
+            lmp.close()
         
         # Find and copy output files to permanent location
         output_files = {}
