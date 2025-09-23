@@ -86,7 +86,7 @@ Required parameters to extract:
 
 Optional parameters to consider:
 - System size (number of atoms or unit cells, default: 5x5x5 unit cells)
-- Number of cores for parallel execution (default: serial)
+- Choice of interatomic potential (default: suitable KIM model for material)
 - Thermodynamic output frequency (default: every 100 steps)
 - Trajectory output frequency (default: every 100 steps)
 - Initial structure (default: appropriate crystal structure for material)
