@@ -526,11 +526,11 @@
             
             // Check if we already have a message for this agent in this session
             let messageElement = document.getElementById(`current-${sessionKey}`);
+            let messageId = `current-${sessionKey}`;
             
             if (!messageElement) {
                 // Create new message element
                 messageCounter++;
-                const messageId = `current-${sessionKey}`;
                 
                 const chatContainer = document.getElementById('chat-container');
                 messageElement = document.createElement('div');
@@ -591,15 +591,15 @@
             
             // Append content to existing message
             currentAgentMessages[sessionKey] += content;
-            const contentElement = document.getElementById(`content-current-${sessionKey}`);
+            const contentElement = document.getElementById(`content-${messageId}`);
             
             if (contentElement) {
                 // Format content based on type
-                let formattedContent = currentAgentMessages[sessionKey];
+                let formattedContent = currentAgentMessages[sessionKey] || '';
                 if (messageType === 'script') {
-                    formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${currentAgentMessages[sessionKey]}</code></pre>`;
+                    formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${formattedContent}</code></pre>`;
                 } else {
-                    formattedContent = currentAgentMessages[sessionKey].replace(/\n/g, '<br>');
+                    formattedContent = formattedContent.replace(/\n/g, '<br>');
                 }
                 
                 contentElement.innerHTML = formattedContent;

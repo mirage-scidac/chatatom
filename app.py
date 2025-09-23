@@ -183,11 +183,8 @@ Process the user's feedback and provide final simulation parameters using the SI
                 # Check if orchestrator needs more information or is proposing parameters
                 if "SIMULATION PARAMETERS:" not in analysis:
                     # Phase 1: Orchestrator is asking for confirmation or more info
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    info_message = "Please review the proposed parameters and confirm or request changes."
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                    # Let the conversation flow naturally without system message
                     yield f"data: {json.dumps({'type': 'awaiting_confirmation', 'analysis': analysis})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                     yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
                     return
 
@@ -239,18 +236,12 @@ Process the user's feedback and provide final simulation parameters using the SI
                     
                     if is_parameter_change:
                         should_run = True
-                        yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                        auto_run_message = f"Parameter updated: {user_command}. Running simulation automatically based on your original request."
-                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': auto_run_message, 'message_type': 'info'})}\n\n"
-                        yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                        # Auto-execute silently without system message
                 
                 # NEW: If we're in phase 1 and detected original execution intent, auto-execute
                 if not conversation_context and original_execution_intent and not should_run:
                     should_run = True
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    auto_run_message = "Running simulation automatically based on your request."
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': auto_run_message, 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                    # Auto-execute silently without system message
                 
                 if should_run:
                     # 4. Execute the simulation
