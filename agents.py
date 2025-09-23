@@ -90,6 +90,13 @@ Optional parameters to consider:
 - Thermodynamic output frequency (default: every 100 steps)
 - Trajectory output frequency (default: every 100 steps)
 - Initial structure (default: appropriate crystal structure for material)
+- Plotting preferences for thermodynamic data visualization
+
+Plotting preferences to consider:
+- Which thermodynamic properties to monitor (Temperature, Pressure, Energy components, Volume, etc.)
+- Grouping preferences for related properties (e.g., energy components together)
+- Priority properties for primary visualization
+- Whether to include stress tensor components for detailed analysis
 
 PHASE 1 BEHAVIOR:
 - If any required parameters are missing, ask specific questions

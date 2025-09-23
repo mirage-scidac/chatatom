@@ -23,46 +23,76 @@
     </style>
 </head>
 <body class="bg-gray-900 text-white h-screen overflow-hidden">
-    <div class="container mx-auto p-4 h-full grid grid-rows-[auto_1fr_auto] gap-4">
+    <div class="container mx-auto p-4 h-full grid grid-rows-[auto_1fr] gap-4">
         <h1 class="text-3xl font-bold">ChatMD</h1>
         
         <!-- Main content area with chat and visualization panels -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
-            <!-- Chat panel -->
-            <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr_auto] gap-2 min-h-0">
-                <h2 class="text-xl font-semibold">Chat</h2>
-                <div id="chat-container" class="overflow-y-auto bg-gray-700 p-2 rounded min-h-0">
-                    <!-- Chat messages will appear here -->
+            <!-- Left column: Chat and Status -->
+            <div class="flex flex-col gap-4 min-h-0">
+                <!-- Chat panel -->
+                <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr_auto] gap-2 flex-1 min-h-0">
+                    <h2 class="text-xl font-semibold">Chat</h2>
+                    <div id="chat-container" class="overflow-y-auto bg-gray-700 p-2 rounded min-h-0">
+                        <!-- Chat messages will appear here -->
+                    </div>
+                    <div class="flex">
+                        <input type="text" id="user-input" class="flex-grow bg-gray-600 text-white rounded-l-lg p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter your command...">
+                        <button id="send-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-r-lg">Send</button>
+                    </div>
                 </div>
-                <div class="flex">
-                    <input type="text" id="user-input" class="flex-grow bg-gray-600 text-white rounded-l-lg p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter your command...">
-                    <button id="send-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-r-lg">Send</button>
+                
+                <!-- Status panel (only under chat) -->
+                <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-semibold mb-2">Simulation Status</h2>
+                    <div id="status-container" class="text-gray-300">
+                        Ready to run simulations
+                    </div>
                 </div>
             </div>
             
-            <!-- Thermodynamic plot panel -->
+            <!-- Right column: Thermodynamic plots -->
             <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr] gap-2 min-h-0">
                 <h2 class="text-xl font-semibold">Thermodynamic Data</h2>
-                <div id="plot-container" class="bg-gray-700 p-2 rounded flex items-center justify-center min-h-0">
-                    <canvas id="thermo-chart" class="hidden"></canvas>
-                    <div id="plot-placeholder" class="text-gray-400">
+                <div id="plot-container" class="bg-gray-700 p-2 rounded overflow-y-auto min-h-0">
+                    <div id="plot-placeholder" class="text-gray-400 flex items-center justify-center h-full">
                         Run a simulation to see thermodynamic data
                     </div>
                 </div>
             </div>
         </div>
-        
-        <!-- Status and information panel -->
-        <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
-            <h2 class="text-xl font-semibold mb-2">Simulation Status</h2>
-            <div id="status-container" class="text-gray-300">
-                Ready to run simulations
-            </div>
-        </div>
     </div>
 
     <script>
-        let thermoChart = null;
+        let thermoCharts = [];
+        
+        // Define thermodynamic property groups
+        const propertyGroups = {
+            energy: {
+                name: 'Energy Properties',
+                properties: ['TotEng', 'PotEng', 'KinEng', 'E_bond', 'E_angle', 'E_dihed', 'E_impro', 'E_vdwl', 'E_coul', 'E_long'],
+                units: 'Energy Units',
+                colors: ['rgb(54, 162, 235)', 'rgb(75, 192, 192)', 'rgb(153, 102, 255)']
+            },
+            thermal: {
+                name: 'Temperature & Pressure',
+                properties: ['Temp', 'Press'],
+                units: ['K', 'atm'],
+                colors: ['rgb(255, 99, 132)', 'rgb(255, 205, 86)']
+            },
+            volume: {
+                name: 'Volume & Density',
+                properties: ['Volume', 'Density'],
+                units: ['Volume Units', 'Density Units'],
+                colors: ['rgb(255, 159, 64)', 'rgb(199, 199, 199)']
+            },
+            stress: {
+                name: 'Stress Components',
+                properties: ['Pxx', 'Pyy', 'Pzz', 'Pxy', 'Pxz', 'Pyz'],
+                units: 'Pressure Units',
+                colors: ['rgb(83, 102, 255)', 'rgb(255, 83, 102)', 'rgb(102, 255, 83)', 'rgb(255, 102, 255)', 'rgb(102, 255, 255)', 'rgb(255, 255, 102)']
+            }
+        };
 
         document.getElementById('send-button').addEventListener('click', sendMessage);
         document.getElementById('user-input').addEventListener('keypress', function(e) {
@@ -166,74 +196,206 @@
             statusContainer.textContent = message;
         }
 
-        function drawPlot(thermoData) {
-            if (!thermoData || thermoData.length === 0) {
-                console.log('No thermodynamic data to plot');
-                return;
-            }
-
-            console.log(`Received ${thermoData.length} data points:`, thermoData);
-
-            // Show the chart canvas and hide placeholder
-            const chartCanvas = document.getElementById('thermo-chart');
-            const placeholder = document.getElementById('plot-placeholder');
-            chartCanvas.classList.remove('hidden');
-            placeholder.style.display = 'none';
-
-            // Destroy existing chart if it exists
-            if (thermoChart) {
-                thermoChart.destroy();
-            }
-
-            // Prepare data for plotting - process ALL data points
-            const steps = [];
-            const temperatures = [];
-            const energies = [];
-            const pressures = [];
-
-            // Process each data point in the array
-            thermoData.forEach(dataPoint => {
-                steps.push(dataPoint.step || 0);
-                temperatures.push(dataPoint.temp || 0);
-                energies.push(dataPoint.etotal || dataPoint.toteng || 0);
-                pressures.push(dataPoint.press || 0);
+        function clearPlots() {
+            // Destroy existing charts
+            thermoCharts.forEach(chart => {
+                if (chart) {
+                    chart.destroy();
+                }
             });
+            thermoCharts = [];
+            
+            // Clear plot container
+            const plotContainer = document.getElementById('plot-container');
+            plotContainer.innerHTML = '';
+        }
 
-            console.log(`Plotting ${steps.length} steps:`, steps);
-            console.log(`Temperature range:`, Math.min(...temperatures), 'to', Math.max(...temperatures));
+        function identifyAvailableProperties(thermoData) {
+            if (!thermoData || thermoData.length === 0) return [];
+            
+            const sampleData = thermoData[0];
+            const availableProps = [];
+            
+            // Map common property names to standardized names
+            const propertyMap = {
+                'temp': 'Temp',
+                'temperature': 'Temp',
+                'press': 'Press',
+                'pressure': 'Press',
+                'etotal': 'TotEng',
+                'toteng': 'TotEng',
+                'total_energy': 'TotEng',
+                'poteng': 'PotEng',
+                'potential_energy': 'PotEng',
+                'kineng': 'KinEng',
+                'kinetic_energy': 'KinEng',
+                'volume': 'Volume',
+                'density': 'Density',
+                'pxx': 'Pxx',
+                'pyy': 'Pyy',
+                'pzz': 'Pzz',
+                'pxy': 'Pxy',
+                'pxz': 'Pxz',
+                'pyz': 'Pyz'
+            };
+            
+            // Check which properties are available in the data
+            for (const [key, standardName] of Object.entries(propertyMap)) {
+                if (key in sampleData && sampleData[key] !== undefined && sampleData[key] !== null) {
+                    if (!availableProps.includes(standardName)) {
+                        availableProps.push(standardName);
+                    }
+                }
+            }
+            
+            return availableProps;
+        }
 
+        function groupAvailableProperties(availableProps) {
+            const groups = [];
+            
+            // Check each property group and see what's available
+            for (const [groupKey, groupConfig] of Object.entries(propertyGroups)) {
+                const availableInGroup = availableProps.filter(prop => 
+                    groupConfig.properties.includes(prop)
+                );
+                
+                if (availableInGroup.length > 0) {
+                    // Split into chunks of max 2 properties per plot
+                    for (let i = 0; i < availableInGroup.length; i += 2) {
+                        const chunk = availableInGroup.slice(i, i + 2);
+                        groups.push({
+                            name: availableInGroup.length > 2 ? 
+                                `${groupConfig.name} (${Math.floor(i/2) + 1})` : 
+                                groupConfig.name,
+                            properties: chunk,
+                            colors: groupConfig.colors.slice(i, i + 2),
+                            units: Array.isArray(groupConfig.units) ? 
+                                groupConfig.units.slice(i, i + 2) : 
+                                [groupConfig.units, groupConfig.units]
+                        });
+                    }
+                }
+            }
+            
+            return groups;
+        }
+
+        function extractPropertyData(thermoData, propertyName) {
+            const propertyMap = {
+                'Temp': ['temp', 'temperature'],
+                'Press': ['press', 'pressure'],
+                'TotEng': ['etotal', 'toteng', 'total_energy'],
+                'PotEng': ['poteng', 'potential_energy'],
+                'KinEng': ['kineng', 'kinetic_energy'],
+                'Volume': ['volume'],
+                'Density': ['density'],
+                'Pxx': ['pxx'],
+                'Pyy': ['pyy'],
+                'Pzz': ['pzz'],
+                'Pxy': ['pxy'],
+                'Pxz': ['pxz'],
+                'Pyz': ['pyz']
+            };
+            
+            const possibleKeys = propertyMap[propertyName] || [propertyName.toLowerCase()];
+            
+            return thermoData.map(dataPoint => {
+                for (const key of possibleKeys) {
+                    if (key in dataPoint && dataPoint[key] !== undefined && dataPoint[key] !== null) {
+                        return dataPoint[key];
+                    }
+                }
+                return 0;
+            });
+        }
+
+        function createPlotCanvas(group, index) {
+            const plotContainer = document.getElementById('plot-container');
+            
+            // Create plot wrapper
+            const plotWrapper = document.createElement('div');
+            plotWrapper.className = 'mb-4 bg-gray-800 p-3 rounded';
+            plotWrapper.style.height = '300px';
+            
+            // Create canvas
+            const canvas = document.createElement('canvas');
+            canvas.id = `chart-${index}`;
+            canvas.style.height = '100%';
+            canvas.style.width = '100%';
+            
+            plotWrapper.appendChild(canvas);
+            plotContainer.appendChild(plotWrapper);
+            
+            return canvas;
+        }
+
+        function drawGroupedPlot(thermoData, group, index) {
+            const canvas = createPlotCanvas(group, index);
+            const ctx = canvas.getContext('2d');
+            
+            // Extract time steps
+            const steps = thermoData.map(dataPoint => dataPoint.step || 0);
+            
+            // Create datasets for this group
+            const datasets = [];
+            const scales = {
+                x: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: 'Time Step',
+                        color: 'white'
+                    },
+                    ticks: {
+                        color: 'white'
+                    },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    }
+                }
+            };
+            
+            group.properties.forEach((property, propIndex) => {
+                const data = extractPropertyData(thermoData, property);
+                const color = group.colors[propIndex] || 'rgb(255, 255, 255)';
+                const yAxisID = propIndex === 0 ? 'y' : 'y1';
+                
+                datasets.push({
+                    label: property,
+                    data: data,
+                    borderColor: color,
+                    backgroundColor: color.replace('rgb', 'rgba').replace(')', ', 0.1)'),
+                    yAxisID: yAxisID,
+                    tension: 0.1
+                });
+                
+                // Create y-axis configuration
+                scales[yAxisID] = {
+                    type: 'linear',
+                    display: true,
+                    position: propIndex === 0 ? 'left' : 'right',
+                    title: {
+                        display: true,
+                        text: `${property} ${group.units[propIndex] ? `(${group.units[propIndex]})` : ''}`,
+                        color: color
+                    },
+                    ticks: {
+                        color: color
+                    },
+                    grid: {
+                        drawOnChartArea: propIndex === 0,
+                        color: color.replace('rgb', 'rgba').replace(')', ', 0.1)')
+                    }
+                };
+            });
+            
             // Create the chart
-            const ctx = chartCanvas.getContext('2d');
-            thermoChart = new Chart(ctx, {
+            const chart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: steps,
-                    datasets: [
-                        {
-                            label: 'Temperature (K)',
-                            data: temperatures,
-                            borderColor: 'rgb(255, 99, 132)',
-                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                            yAxisID: 'y',
-                            tension: 0.1
-                        },
-                        {
-                            label: 'Total Energy',
-                            data: energies,
-                            borderColor: 'rgb(54, 162, 235)',
-                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                            yAxisID: 'y1',
-                            tension: 0.1
-                        },
-                        {
-                            label: 'Pressure',
-                            data: pressures,
-                            borderColor: 'rgb(255, 205, 86)',
-                            backgroundColor: 'rgba(255, 205, 86, 0.1)',
-                            yAxisID: 'y2',
-                            tension: 0.1
-                        }
-                    ]
+                    datasets: datasets
                 },
                 options: {
                     responsive: true,
@@ -241,7 +403,7 @@
                     plugins: {
                         title: {
                             display: true,
-                            text: 'Thermodynamic Properties vs Time Step',
+                            text: group.name,
                             color: 'white'
                         },
                         legend: {
@@ -250,64 +412,49 @@
                             }
                         }
                     },
-                    scales: {
-                        x: {
-                            display: true,
-                            title: {
-                                display: true,
-                                text: 'Time Step',
-                                color: 'white'
-                            },
-                            ticks: {
-                                color: 'white'
-                            },
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }
-                        },
-                        y: {
-                            type: 'linear',
-                            display: true,
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'Temperature (K)',
-                                color: 'rgb(255, 99, 132)'
-                            },
-                            ticks: {
-                                color: 'rgb(255, 99, 132)'
-                            },
-                            grid: {
-                                color: 'rgba(255, 99, 132, 0.1)'
-                            }
-                        },
-                        y1: {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {
-                                display: true,
-                                text: 'Total Energy',
-                                color: 'rgb(54, 162, 235)'
-                            },
-                            ticks: {
-                                color: 'rgb(54, 162, 235)'
-                            },
-                            grid: {
-                                drawOnChartArea: false,
-                                color: 'rgba(54, 162, 235, 0.1)'
-                            }
-                        },
-                        y2: {
-                            type: 'linear',
-                            display: false,
-                            position: 'right'
-                        }
-                    }
+                    scales: scales
                 }
             });
+            
+            thermoCharts.push(chart);
+        }
 
-            updateStatus(`Plotted ${thermoData.length} data points`);
+        function drawPlot(thermoData) {
+            if (!thermoData || thermoData.length === 0) {
+                console.log('No thermodynamic data to plot');
+                return;
+            }
+
+            console.log(`Received ${thermoData.length} data points:`, thermoData);
+
+            // Hide placeholder
+            const placeholder = document.getElementById('plot-placeholder');
+            placeholder.style.display = 'none';
+
+            // Clear existing plots
+            clearPlots();
+
+            // Identify available properties in the data
+            const availableProps = identifyAvailableProperties(thermoData);
+            console.log('Available properties:', availableProps);
+
+            if (availableProps.length === 0) {
+                console.log('No recognized thermodynamic properties found');
+                const plotContainer = document.getElementById('plot-container');
+                plotContainer.innerHTML = '<div class="text-gray-400 flex items-center justify-center h-full">No recognized thermodynamic properties found in data</div>';
+                return;
+            }
+
+            // Group properties for plotting
+            const groups = groupAvailableProperties(availableProps);
+            console.log('Property groups:', groups);
+
+            // Create plots for each group
+            groups.forEach((group, index) => {
+                drawGroupedPlot(thermoData, group, index);
+            });
+
+            updateStatus(`Created ${groups.length} plots with ${availableProps.length} properties`);
         }
 
         let currentAgentMessages = {};
