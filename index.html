@@ -144,32 +144,8 @@
                 placeholder.style.display = 'none';
             }
             
-            // Create empty plots for common properties
-            streamingGroups = [
-                {
-                    name: 'Temperature & Pressure',
-                    properties: ['temp', 'press'],
-                    colors: ['rgb(255, 99, 132)', 'rgb(255, 205, 86)'],
-                    units: ['K', 'atm']
-                },
-                {
-                    name: 'Energy Properties',
-                    properties: ['toteng', 'poteng', 'kineng'],
-                    colors: ['rgb(54, 162, 235)', 'rgb(75, 192, 192)', 'rgb(153, 102, 255)'],
-                    units: ['Energy Units', 'Energy Units', 'Energy Units']
-                },
-                {
-                    name: 'Volume',
-                    properties: ['volume'],
-                    colors: ['rgb(255, 159, 64)'],
-                    units: ['Volume Units']
-                }
-            ];
-            
-            // Create empty charts for each group
-            streamingGroups.forEach((group, index) => {
-                createStreamingChart(group, index);
-            });
+            // Initialize with empty groups - will be populated when first data arrives
+            streamingGroups = [];
             
             updateStatus('Live plots initialized - waiting for data...');
         }
@@ -265,7 +241,23 @@
         
         // Update streaming plots with new data point
         function updateStreamingPlots(dataPoint) {
-            if (!isStreamingSimulation || thermoCharts.length === 0) return;
+            if (!isStreamingSimulation) return;
+            
+            // If this is the first data point, initialize the groups using the same logic as batch mode
+            if (streamingData.length === 1 && streamingGroups.length === 0) {
+                // Use the same grouping logic as batch mode
+                const availableProps = identifyAvailableProperties([dataPoint]);
+                streamingGroups = groupAvailableProperties(availableProps);
+                
+                // Create charts for each group
+                streamingGroups.forEach((group, index) => {
+                    createStreamingChart(group, index);
+                });
+                
+                console.log('Streaming plots initialized with groups:', streamingGroups);
+            }
+            
+            if (thermoCharts.length === 0) return;
             
             const step = dataPoint.step || streamingData.length;
             
@@ -280,7 +272,9 @@
                 group.properties.forEach((property, propIndex) => {
                     const dataset = chart.data.datasets[propIndex];
                     if (dataset) {
-                        const value = dataPoint[property] || dataPoint[property.toLowerCase()] || 0;
+                        // Use the same property extraction logic as batch mode
+                        const data = extractPropertyData([dataPoint], property);
+                        const value = data[0] || 0;
                         dataset.data.push(value);
                     }
                 });

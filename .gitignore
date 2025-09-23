@@ -158,9 +158,6 @@ cython_debug/
 #  project, it is recommended to ignore the whole .idea directory.
 #.idea/
 
-# Configuration files
-config.py
-
 # Memory bank files (Cline's documentation)
 memory-bank/
 
@@ -180,3 +177,12 @@ __pycache__/
 
 # Test output files
 tests/test_assets/kim.log
+
+#Lammps outputs
+*.lammpstrj
+*.log
+*.lammps
+output*
+
+#Pycache
+__pycache__/
