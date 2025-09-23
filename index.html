@@ -6,6 +6,7 @@
     <title>ChatMD</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         .typing-dots {
             display: inline-block;
@@ -44,7 +45,13 @@
                 
                 <!-- Status panel (only under chat) -->
                 <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
-                    <h2 class="text-xl font-semibold mb-2">Simulation Status</h2>
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-xl font-semibold">Simulation Status</h2>
+                        <div id="connection-indicator" class="flex items-center text-sm">
+                            <div id="connection-dot" class="w-2 h-2 rounded-full bg-gray-500 mr-2"></div>
+                            <span id="connection-text">Connecting...</span>
+                        </div>
+                    </div>
                     <div id="status-container" class="text-gray-300">
                         Ready to run simulations
                     </div>
@@ -65,6 +72,235 @@
 
     <script>
         let thermoCharts = [];
+        let socket = null;
+        let streamingData = [];
+        let streamingGroups = [];
+        let isStreamingSimulation = false;
+        
+        // Initialize Socket.IO connection
+        function initializeSocket() {
+            socket = io();
+            
+            socket.on('connect', function() {
+                console.log('✅ WebSocket: Connected to server via WebSocket');
+                updateStatus('🔗 WebSocket connected');
+                updateConnectionStatus('connected');
+            });
+            
+            socket.on('disconnect', function() {
+                console.log('❌ WebSocket: Disconnected from server');
+                updateStatus('🔌 WebSocket disconnected');
+                updateConnectionStatus('disconnected');
+            });
+            
+            socket.on('simulation_started', function(data) {
+                console.log('🚀 WebSocket: Streaming simulation started:', data);
+                updateStatus('🚀 Streaming simulation started...');
+                isStreamingSimulation = true;
+                streamingData = [];
+                initializeStreamingPlots();
+            });
+            
+            socket.on('thermo_data_point', function(dataPoint) {
+                console.log('📊 WebSocket: New thermo data point received:', dataPoint);
+                console.log(`📈 Data flow: Point ${streamingData.length + 1}, Step: ${dataPoint.step || 'unknown'}`);
+                streamingData.push(dataPoint);
+                updateStreamingPlots(dataPoint);
+            });
+            
+            socket.on('simulation_complete', function(data) {
+                console.log('✅ WebSocket: Streaming simulation completed:', data);
+                console.log(`📊 Final stats: ${data.total_points} total data points received`);
+                updateStatus(`✅ Streaming simulation completed! Total points: ${data.total_points}`);
+                isStreamingSimulation = false;
+                
+                // Add completion message to chat
+                addConversationMessage('System', data.message, 'success');
+            });
+            
+            socket.on('simulation_error', function(data) {
+                console.error('❌ WebSocket: Streaming simulation error:', data);
+                updateStatus('❌ Streaming simulation failed');
+                isStreamingSimulation = false;
+                
+                // Add error message to chat
+                addConversationMessage('System', data.message, 'error');
+            });
+            
+            socket.on('error', function(data) {
+                console.error('Socket error:', data);
+                addConversationMessage('System', data.message, 'error');
+            });
+        }
+        
+        // Initialize streaming plots with empty data
+        function initializeStreamingPlots() {
+            // Clear existing plots
+            clearPlots();
+            
+            // Hide placeholder if it exists
+            const placeholder = document.getElementById('plot-placeholder');
+            if (placeholder) {
+                placeholder.style.display = 'none';
+            }
+            
+            // Create empty plots for common properties
+            streamingGroups = [
+                {
+                    name: 'Temperature & Pressure',
+                    properties: ['temp', 'press'],
+                    colors: ['rgb(255, 99, 132)', 'rgb(255, 205, 86)'],
+                    units: ['K', 'atm']
+                },
+                {
+                    name: 'Energy Properties',
+                    properties: ['toteng', 'poteng', 'kineng'],
+                    colors: ['rgb(54, 162, 235)', 'rgb(75, 192, 192)', 'rgb(153, 102, 255)'],
+                    units: ['Energy Units', 'Energy Units', 'Energy Units']
+                },
+                {
+                    name: 'Volume',
+                    properties: ['volume'],
+                    colors: ['rgb(255, 159, 64)'],
+                    units: ['Volume Units']
+                }
+            ];
+            
+            // Create empty charts for each group
+            streamingGroups.forEach((group, index) => {
+                createStreamingChart(group, index);
+            });
+            
+            updateStatus('Live plots initialized - waiting for data...');
+        }
+        
+        // Create an empty streaming chart
+        function createStreamingChart(group, index) {
+            const canvas = createPlotCanvas(group, index);
+            const ctx = canvas.getContext('2d');
+            
+            // Create datasets for this group
+            const datasets = [];
+            const scales = {
+                x: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: 'Time Step',
+                        color: 'white'
+                    },
+                    ticks: {
+                        color: 'white'
+                    },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    }
+                }
+            };
+            
+            group.properties.forEach((property, propIndex) => {
+                const color = group.colors[propIndex] || 'rgb(255, 255, 255)';
+                const yAxisID = propIndex === 0 ? 'y' : 'y1';
+                
+                datasets.push({
+                    label: property.charAt(0).toUpperCase() + property.slice(1),
+                    data: [],
+                    borderColor: color,
+                    backgroundColor: color.replace('rgb', 'rgba').replace(')', ', 0.1)'),
+                    yAxisID: yAxisID,
+                    tension: 0.1
+                });
+                
+                // Create y-axis configuration
+                scales[yAxisID] = {
+                    type: 'linear',
+                    display: true,
+                    position: propIndex === 0 ? 'left' : 'right',
+                    title: {
+                        display: true,
+                        text: `${property.charAt(0).toUpperCase() + property.slice(1)} ${group.units[propIndex] ? `(${group.units[propIndex]})` : ''}`,
+                        color: color
+                    },
+                    ticks: {
+                        color: color
+                    },
+                    grid: {
+                        drawOnChartArea: propIndex === 0,
+                        color: color.replace('rgb', 'rgba').replace(')', ', 0.1)')
+                    }
+                };
+            });
+            
+            // Create the chart
+            const chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 0 // Disable animations for real-time updates
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: group.name,
+                            color: 'white'
+                        },
+                        legend: {
+                            labels: {
+                                color: 'white'
+                            }
+                        }
+                    },
+                    scales: scales
+                }
+            });
+            
+            thermoCharts.push(chart);
+        }
+        
+        // Update streaming plots with new data point
+        function updateStreamingPlots(dataPoint) {
+            if (!isStreamingSimulation || thermoCharts.length === 0) return;
+            
+            const step = dataPoint.step || streamingData.length;
+            
+            streamingGroups.forEach((group, groupIndex) => {
+                const chart = thermoCharts[groupIndex];
+                if (!chart) return;
+                
+                // Add new step to labels
+                chart.data.labels.push(step);
+                
+                // Update each dataset in this group
+                group.properties.forEach((property, propIndex) => {
+                    const dataset = chart.data.datasets[propIndex];
+                    if (dataset) {
+                        const value = dataPoint[property] || dataPoint[property.toLowerCase()] || 0;
+                        dataset.data.push(value);
+                    }
+                });
+                
+                // Limit data points to prevent memory issues (keep last 1000 points)
+                const maxPoints = 1000;
+                if (chart.data.labels.length > maxPoints) {
+                    chart.data.labels.shift();
+                    chart.data.datasets.forEach(dataset => {
+                        dataset.data.shift();
+                    });
+                }
+                
+                // Update the chart
+                chart.update('none'); // 'none' mode for fastest updates
+            });
+            
+            // Update status with current data point count
+            updateStatus(`Live simulation: ${streamingData.length} data points received`);
+        }
         
         // Define thermodynamic property groups
         const propertyGroups = {
@@ -194,6 +430,27 @@
         function updateStatus(message) {
             const statusContainer = document.getElementById('status-container');
             statusContainer.textContent = message;
+        }
+
+        function updateConnectionStatus(status) {
+            const dot = document.getElementById('connection-dot');
+            const text = document.getElementById('connection-text');
+            
+            switch(status) {
+                case 'connected':
+                    dot.className = 'w-2 h-2 rounded-full bg-green-500 mr-2';
+                    text.textContent = 'Connected';
+                    break;
+                case 'disconnected':
+                    dot.className = 'w-2 h-2 rounded-full bg-red-500 mr-2';
+                    text.textContent = 'Disconnected';
+                    break;
+                case 'connecting':
+                default:
+                    dot.className = 'w-2 h-2 rounded-full bg-yellow-500 mr-2';
+                    text.textContent = 'Connecting...';
+                    break;
+            }
         }
 
         function clearPlots() {
@@ -610,6 +867,12 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        // Initialize the application when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeSocket();
+            updateStatus('Initializing connection...');
+        });
+
         async function sendMessage() {
             const userInput = document.getElementById('user-input');
             const message = userInput.value.trim();
@@ -645,8 +908,8 @@
                     conversationContext = '';
                 }
                 
-                // Use EventSource for streaming
-                const eventSource = new EventSource('/api/llm-stream?' + params);
+                // Use EventSource for streaming with live WebSocket support
+                const eventSource = new EventSource('/api/llm-stream-live?' + params);
 
                 eventSource.onmessage = function(event) {
                     try {
@@ -669,6 +932,22 @@
                                 
                             case 'agent_complete':
                                 removeTypingIndicator(data.agent);
+                                break;
+                                
+                            case 'start_streaming_simulation':
+                                console.log('🎬 SSE: Received start_streaming_simulation event');
+                                console.log('🔌 WebSocket status:', socket ? 'initialized' : 'not initialized');
+                                console.log('🔗 WebSocket connected:', socket && socket.connected);
+                                
+                                // Start streaming simulation via WebSocket
+                                if (socket && socket.connected) {
+                                    console.log('📡 Emitting start_streaming_simulation to WebSocket server...');
+                                    socket.emit('start_streaming_simulation', { script: data.script });
+                                } else {
+                                    console.warn('⚠️ WebSocket not available, falling back to batch simulation');
+                                    // Fallback to regular simulation
+                                    addConversationMessage('System', 'WebSocket not connected, falling back to batch simulation', 'info');
+                                }
                                 break;
                                 
                             case 'simulation_complete':

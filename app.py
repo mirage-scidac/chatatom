@@ -86,13 +86,17 @@ import sys
 import os
 
 from flask import Flask, request, jsonify, send_from_directory, Response
+from flask_socketio import SocketIO, emit
 import json
-
+import threading
+import time
 
 import config
 from openai import OpenAI
 
 app = Flask(__name__, static_folder='.', static_url_path='')
+app.config['SECRET_KEY'] = 'chatmd_secret_key'  # Required for SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Create the global OpenAI client
 client = OpenAI(base_url=config.API_BASE_URL, api_key=config.API_KEY)
@@ -103,7 +107,7 @@ def serve_index():
     return send_from_directory('.', 'index.html')
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
-from tools import run_lammps_simulation
+from tools import run_lammps_simulation, run_lammps_simulation_streaming
 
 @app.route('/api/llm-stream', methods=['GET'])
 def llm_stream():
@@ -411,6 +415,210 @@ def llm_command():
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
+# WebSocket event handlers
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+    emit('status', {'message': 'Connected to ChatMD server'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+@socketio.on('start_streaming_simulation')
+def handle_streaming_simulation(data):
+    """Handle streaming simulation requests via WebSocket"""
+    try:
+        lammps_script = data.get('script')
+        if not lammps_script:
+            emit('error', {'message': 'No LAMMPS script provided'})
+            return
+        
+        emit('simulation_started', {'message': 'Starting streaming simulation...'})
+        
+        def data_callback(thermo_point):
+            """Callback function to emit thermodynamic data points"""
+            socketio.emit('thermo_data_point', thermo_point)
+        
+        def run_simulation():
+            try:
+                output_files, all_thermo_data = run_lammps_simulation_streaming(
+                    lammps_script, 
+                    data_callback
+                )
+                
+                socketio.emit('simulation_complete', {
+                    'output_files': output_files,
+                    'total_points': len(all_thermo_data),
+                    'message': 'Simulation completed successfully!'
+                })
+                
+            except Exception as e:
+                socketio.emit('simulation_error', {
+                    'message': f'Simulation failed: {str(e)}'
+                })
+        
+        # Run simulation in a separate thread to avoid blocking
+        simulation_thread = threading.Thread(target=run_simulation)
+        simulation_thread.daemon = True
+        simulation_thread.start()
+        
+    except Exception as e:
+        emit('error', {'message': f'Error starting simulation: {str(e)}'})
+
+@app.route('/api/llm-stream-live', methods=['GET'])
+def llm_stream_live():
+    """Enhanced streaming endpoint that uses WebSocket for simulation data"""
+    user_command = request.args.get('command')
+    conversation_context = request.args.get('context', '')
+    execution_intent = request.args.get('execution_intent', 'false').lower() == 'true'
+
+    if not user_command:
+        return jsonify({"error": "Command not provided"}), 400
+
+    def generate():
+        try:
+            # Instantiate agents
+            orchestrator = OrchestratorAgent()
+            generator = LammpsGeneratorAgent()
+            reviewer = LammpsReviewerAgent()
+
+            # Send initial status
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
+
+            # Detect execution intent from the original request if this is Phase 1
+            original_execution_intent = False
+            if not conversation_context:
+                user_command_lower = user_command.lower()
+                original_execution_intent = any(keyword in user_command_lower for keyword in [
+                    'simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'
+                ])
+
+            # Phase 1 or 2 logic (same as existing endpoint)
+            if conversation_context:
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
+                
+                orchestrator_prompt = f"""Previous analysis and proposal:
+{conversation_context}
+
+User response: {user_command}
+
+Process the user's feedback and provide final simulation parameters using the SIMULATION PARAMETERS format."""
+                
+                finalization_chunks = []
+                finalization_generator = orchestrator.execute_stream(orchestrator_prompt)
+                for chunk in finalization_generator:
+                    finalization_chunks.append(chunk)
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'finalization'})}\n\n"
+                
+                finalization = ''.join(finalization_chunks)
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+                
+                if "SIMULATION PARAMETERS:" not in finalization:
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    info_message = "Please provide more specific details to proceed."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'needs_more_info', 'analysis': finalization})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                    return
+                
+                analysis = finalization
+            else:
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
+                
+                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}"
+                analysis_chunks = []
+                analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
+                for chunk in analysis_generator:
+                    analysis_chunks.append(chunk)
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'analysis'})}\n\n"
+                
+                analysis = ''.join(analysis_chunks)
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+
+                if "SIMULATION PARAMETERS:" not in analysis:
+                    yield f"data: {json.dumps({'type': 'awaiting_confirmation', 'analysis': analysis})}\n\n"
+                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                    return
+
+            # Generate script
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
+            
+            generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
+            lammps_script_chunks = []
+            script_generator = generator.execute_stream(generator_prompt)
+            for chunk in script_generator:
+                lammps_script_chunks.append(chunk)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': chunk, 'message_type': 'script'})}\n\n"
+            
+            lammps_script = ''.join(lammps_script_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
+
+            # Review script
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
+            
+            reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
+            review_generator = reviewer.execute_stream(reviewer_prompt)
+            review_chunks = []
+            for chunk in review_generator:
+                review_chunks.append(chunk)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': chunk, 'message_type': 'review'})}\n\n"
+            
+            review = ''.join(review_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
+
+            # Check if review passed and determine execution
+            if "REVIEW: PASS" in review:
+                user_command_lower = user_command.lower()
+                should_run = False
+                
+                should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform', 'go ahead', 'proceed', 'start'])
+                
+                if conversation_context and not should_run:
+                    should_run = any(keyword in user_command_lower for keyword in ['yes', 'ok', 'confirm', 'go', 'ahead'])
+                
+                if conversation_context and execution_intent and not should_run:
+                    is_parameter_change = any(phrase in user_command_lower for phrase in [
+                        'make it', 'change', 'set', 'use', 'atoms', 'temperature', 'pressure', 'time', 'duration'
+                    ])
+                    if is_parameter_change:
+                        should_run = True
+                
+                if not conversation_context and original_execution_intent and not should_run:
+                    should_run = True
+                
+                if should_run:
+                    # Signal to use streaming simulation
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': lammps_script})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                    info_message = "LAMMPS script generated and approved. Add 'run' or 'execute' to your command to run the simulation."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                error_message = "Script review failed. Please check the issues identified by the reviewer."
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
+                yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script})}\n\n"
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'An error occurred: {str(e)}'})}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream", headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+    })
+
 def run_health_checks():
     """Main function to run health checks."""
     print("--- Starting Application Health Checks ---")
@@ -420,4 +628,4 @@ def run_health_checks():
 
 if __name__ == "__main__":
     run_health_checks()
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5001, debug=True)
