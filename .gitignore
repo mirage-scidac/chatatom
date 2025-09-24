@@ -161,8 +161,9 @@ cython_debug/
 # Memory bank files (Cline's documentation)
 memory-bank/
 
-# Gemini context file
+# Context files
 GEMINI.md
+CLAUDE.md
 
 # Git internal files (should never be tracked)
 .git/
