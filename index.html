@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         .typing-dots {
             display: inline-block;
@@ -20,6 +21,100 @@
             40% { content: '.'; }
             60% { content: '..'; }
             80%, 100% { content: '...'; }
+        }
+
+        /* Enhanced typography and readability */
+        .agent-message {
+            line-height: 1.6;
+            font-size: 0.95rem;
+        }
+
+        .agent-message p {
+            margin-bottom: 0.75rem;
+        }
+
+        .agent-message p:last-child {
+            margin-bottom: 0;
+        }
+
+        .agent-message ul, .agent-message ol {
+            margin: 0.75rem 0;
+            padding-left: 1.5rem;
+        }
+
+        .agent-message li {
+            margin-bottom: 0.5rem;
+            line-height: 1.5;
+        }
+
+        .agent-message strong {
+            color: #fbbf24;
+            font-weight: 600;
+        }
+
+        .agent-message em {
+            color: #a5b4fc;
+            font-style: italic;
+        }
+
+        .agent-message code {
+            background-color: rgba(0, 0, 0, 0.3);
+            padding: 0.125rem 0.375rem;
+            border-radius: 0.25rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+        }
+
+        .agent-message blockquote {
+            border-left: 3px solid #60a5fa;
+            padding-left: 1rem;
+            margin: 0.75rem 0;
+            color: #e0e7ff;
+        }
+
+        /* Section headers for better organization */
+        .agent-message h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            color: #60a5fa;
+        }
+
+        .agent-message h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 0.75rem;
+            margin-bottom: 0.375rem;
+            color: #93c5fd;
+        }
+
+        /* Highlight important info */
+        .highlight-box {
+            background-color: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin: 0.75rem 0;
+        }
+
+        /* Improve list formatting */
+        .parameter-list {
+            background-color: rgba(0, 0, 0, 0.2);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin: 0.75rem 0;
+        }
+
+        .parameter-list li {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+
+        .parameter-list strong {
+            min-width: 150px;
+            color: #fbbf24;
         }
     </style>
 </head>
@@ -344,7 +439,7 @@
                         <span class="mr-2 text-lg">👤</span>
                         <div class="flex-1">
                             <strong class="text-white">${sender}:</strong>
-                            <div class="mt-1 text-gray-100">${message.replace(/\n/g, '<br>')}</div>
+                            <div class="mt-1 text-gray-100 agent-message">${marked.parse(message)}</div>
                         </div>
                     </div>
                 `;
@@ -404,7 +499,8 @@
             if (type === 'script') {
                 formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${content}</code></pre>`;
             } else {
-                formattedContent = content.replace(/\n/g, '<br>');
+                // Parse Markdown to HTML
+                formattedContent = marked.parse(content);
             }
             
             messageElement.innerHTML = `
@@ -412,7 +508,7 @@
                     <span class="mr-2 text-lg">${agentIcon}</span>
                     <div class="flex-1">
                         <strong class="text-white">${agent}:</strong>
-                        <div class="mt-1 text-gray-100">${formattedContent}</div>
+                        <div class="mt-1 text-gray-100 agent-message">${formattedContent}</div>
                     </div>
                 </div>
             `;
@@ -827,7 +923,7 @@
                         <span class="mr-2 text-lg">${agentIcon}</span>
                         <div class="flex-1">
                             <strong class="text-white">${agent}:</strong>
-                            <div class="mt-1 text-gray-100" id="content-${messageId}"></div>
+                            <div class="mt-1 text-gray-100 agent-message" id="content-${messageId}"></div>
                         </div>
                     </div>
                 `;
@@ -850,9 +946,10 @@
                 if (messageType === 'script') {
                     formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${formattedContent}</code></pre>`;
                 } else {
-                    formattedContent = formattedContent.replace(/\n/g, '<br>');
+                    // Parse Markdown to HTML
+                    formattedContent = marked.parse(formattedContent);
                 }
-                
+
                 contentElement.innerHTML = formattedContent;
             }
             
