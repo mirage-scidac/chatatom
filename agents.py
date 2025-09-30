@@ -88,9 +88,21 @@ Optional parameters to consider:
 - System size (number of atoms or unit cells, default: 5x5x5 unit cells)
 - Choice of interatomic potential (default: suitable KIM model for material)
 - Thermodynamic output frequency (default: every 100 steps)
-- Trajectory output frequency (default: every 100 steps)
+- Trajectory output frequency (default: smart calculation based on total steps)
 - Initial structure (default: appropriate crystal structure for material)
 - Plotting preferences for thermodynamic data visualization
+
+SMART TRAJECTORY FREQUENCY CALCULATION:
+For trajectory dumps, use intelligent frequency calculation:
+- Small simulations (≤10,000 steps): Target ~20 frames
+- Medium simulations (≤100,000 steps): Target ~20-50 frames  
+- Large simulations (>100,000 steps): Target ~50-100 frames
+- This ensures reasonable file sizes while maintaining visualization quality
+- For 10,000 steps: dump every 500 steps (20 frames)
+- For 100,000 steps: dump every 2,000 steps (50 frames) 
+- For 1,000,000 steps: dump every 10,000 steps (100 frames)
+- For 10,000,000 steps: dump every 10,000 steps (1,000 frames)
+- Always propose this smart frequency unless user specifies otherwise
 
 Plotting preferences to consider:
 - Which thermodynamic properties to monitor (Temperature, Pressure, Energy components, Volume, etc.)
