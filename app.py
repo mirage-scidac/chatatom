@@ -107,7 +107,7 @@ def serve_index():
     return send_from_directory('.', 'index.html')
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
-from tools import run_lammps_simulation, run_lammps_simulation_streaming
+from tools import run_lammps_simulation, run_lammps_simulation_streaming, run_lammps_with_async_visualization
 
 @app.route('/api/llm-stream', methods=['GET'])
 def llm_stream():
@@ -427,31 +427,74 @@ def handle_disconnect():
 
 @socketio.on('start_streaming_simulation')
 def handle_streaming_simulation(data):
-    """Handle streaming simulation requests via WebSocket"""
+    """Handle streaming simulation requests via WebSocket with visualization"""
     try:
         lammps_script = data.get('script')
         if not lammps_script:
             emit('error', {'message': 'No LAMMPS script provided'})
             return
         
-        emit('simulation_started', {'message': 'Starting streaming simulation...'})
+        emit('simulation_started', {'message': 'Starting streaming simulation with visualization...'})
         
-        def data_callback(thermo_point):
-            """Callback function to emit thermodynamic data points"""
-            socketio.emit('thermo_data_point', thermo_point)
+        def data_callback(data_point):
+            """Callback function to emit both thermodynamic and visualization data"""
+            if isinstance(data_point, dict):
+                if data_point.get('type') == 'trajectory_frame':
+                    # This is a visualization frame
+                    socketio.emit('trajectory_frame', {
+                        'image_data': data_point['image_data'],
+                        'frame_number': data_point['frame_number'],
+                        'timestep': data_point['timestep']
+                    })
+                elif data_point.get('type') == 'trajectory_complete':
+                    # Visualization is complete
+                    socketio.emit('trajectory_complete', {
+                        'total_frames': data_point['total_frames'],
+                        'message': data_point['message']
+                    })
+                else:
+                    # This is a thermodynamic data point
+                    socketio.emit('thermo_data_point', data_point)
         
         def run_simulation():
             try:
-                output_files, all_thermo_data = run_lammps_simulation_streaming(
-                    lammps_script, 
-                    data_callback
-                )
+                # Check if user wants visualization (detect keywords)
+                user_wants_viz = any(keyword in lammps_script.lower() for keyword in [
+                    'dump', 'trajectory', 'visualize', 'show'
+                ]) or True  # Default to always show visualization for MVP3
                 
-                socketio.emit('simulation_complete', {
-                    'output_files': output_files,
-                    'total_points': len(all_thermo_data),
-                    'message': 'Simulation completed successfully!'
-                })
+                if user_wants_viz:
+                    # Use visualization-enabled simulation
+                    render_config = {
+                        'interval': 50,  # Render every 50 steps for smooth animation
+                        'quality': 'medium',
+                        'camera_angle': 'default'
+                    }
+                    
+                    output_files, all_thermo_data, frame_images = run_lammps_with_async_visualization(
+                        lammps_script, 
+                        render_config,
+                        data_callback
+                    )
+                    
+                    socketio.emit('simulation_complete', {
+                        'output_files': output_files,
+                        'total_points': len(all_thermo_data),
+                        'total_frames': len(frame_images),
+                        'message': f'Simulation completed successfully with {len(frame_images)} visualization frames!'
+                    })
+                else:
+                    # Use regular streaming simulation
+                    output_files, all_thermo_data = run_lammps_simulation_streaming(
+                        lammps_script, 
+                        data_callback
+                    )
+                    
+                    socketio.emit('simulation_complete', {
+                        'output_files': output_files,
+                        'total_points': len(all_thermo_data),
+                        'message': 'Simulation completed successfully!'
+                    })
                 
             except Exception as e:
                 socketio.emit('simulation_error', {
