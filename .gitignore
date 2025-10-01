@@ -164,6 +164,7 @@ memory-bank/
 # Context files
 GEMINI.md
 CLAUDE.md
+.claude/
 
 # Git internal files (should never be tracked)
 .git/

@@ -11,6 +11,7 @@ import lammps
 import config
 import threading
 import time
+import numpy as np
 
 
 def extract_kim_models(script_string: str) -> List[str]:
@@ -721,3 +722,663 @@ def validate_lammps_script(script_string: str) -> bool:
         return False
     
     return True
+
+
+def extract_lammps_frame(lmp):
+    """
+    Extract current frame data from LAMMPS instance.
+    
+    Args:
+        lmp: LAMMPS instance
+        
+    Returns:
+        dict: Contains positions, types, box, velocities, forces
+    """
+    try:
+        # Get number of atoms
+        natoms = lmp.get_natoms()
+        
+        if natoms == 0:
+            return None
+        
+        # Extract atomic positions (3N array)
+        positions = lmp.gather_atoms("x", 1, 3)
+        positions = np.array(positions).reshape((natoms, 3))
+        
+        # Extract atom types
+        types = lmp.gather_atoms("type", 0, 1)
+        types = np.array(types, dtype=int)
+        
+        # Extract simulation box
+        box_data = lmp.extract_box()
+        # box_data format: [boxlo, boxhi] for each dimension
+        box = {
+            'xlo': box_data[0][0], 'xhi': box_data[1][0],
+            'ylo': box_data[0][1], 'yhi': box_data[1][1], 
+            'zlo': box_data[0][2], 'zhi': box_data[1][2]
+        }
+        
+        # Try to extract velocities (optional)
+        velocities = None
+        try:
+            vel_data = lmp.gather_atoms("v", 1, 3)
+            velocities = np.array(vel_data).reshape((natoms, 3))
+        except:
+            pass
+        
+        # Try to extract forces (optional)
+        forces = None
+        try:
+            force_data = lmp.gather_atoms("f", 1, 3)
+            forces = np.array(force_data).reshape((natoms, 3))
+        except:
+            pass
+        
+        frame_data = {
+            'natoms': natoms,
+            'positions': positions,
+            'types': types,
+            'box': box,
+            'velocities': velocities,
+            'forces': forces
+        }
+        
+        return frame_data
+        
+    except Exception as e:
+        print(f"Error extracting LAMMPS frame: {e}")
+        return None
+
+
+def create_ovito_frame(frame_data):
+    """
+    Create OVITO DataCollection from LAMMPS frame data.
+    
+    Args:
+        frame_data: Dict from extract_lammps_frame()
+        
+    Returns:
+        DataCollection: Ready for rendering
+    """
+    try:
+        from ovito.data import DataCollection, Particles, SimulationCell
+        import numpy as np
+        
+        if frame_data is None:
+            return None
+        
+        # Create OVITO data collection
+        data = DataCollection()
+        
+        # Create particles
+        particles = data.create_particles()
+        particles.count = frame_data['natoms']
+        
+        # Set positions
+        particles.positions = frame_data['positions']
+        
+        # Set particle types
+        particles.particle_types = frame_data['types']
+        
+        # Set velocities if available
+        if frame_data['velocities'] is not None:
+            particles.velocities = frame_data['velocities']
+        
+        # Set forces if available
+        if frame_data['forces'] is not None:
+            particles.forces = frame_data['forces']
+        
+        # Create simulation cell with matrix
+        box = frame_data['box']
+        
+        # Create cell matrix (3x4 matrix: 3x3 for vectors + 1 column for origin)
+        cell_matrix = np.array([
+            [box['xhi'] - box['xlo'], 0, 0, box['xlo']],
+            [0, box['yhi'] - box['ylo'], 0, box['ylo']],
+            [0, 0, box['zhi'] - box['zlo'], box['zlo']]
+        ])
+        
+        # Pass matrix directly to create_cell
+        cell = data.create_cell(matrix=cell_matrix)
+        
+        # Set periodic boundary conditions
+        cell.pbc = (True, True, True)
+        
+        return data
+        
+    except Exception as e:
+        print(f"Error creating OVITO frame: {e}")
+        return None
+
+
+def render_frame_to_image(data_collection, settings=None):
+    """
+    Render OVITO DataCollection to base64 image using thread-safe TachyonRenderer.
+    
+    Args:
+        data_collection: OVITO data
+        settings: Rendering parameters (camera, colors, etc.)
+        
+    Returns:
+        str: Base64-encoded PNG image
+    """
+    try:
+        from ovito.vis import Viewport, TachyonRenderer
+        from ovito.modifiers import ColorCodingModifier, AssignColorModifier
+        from ovito.pipeline import StaticSource, Pipeline
+        import tempfile
+        import base64
+        import os
+        import threading
+        import platform
+        
+        if data_collection is None:
+            return None
+        
+        # Create pipeline from data
+        pipeline = Pipeline(source=StaticSource(data=data_collection))
+        
+        # Apply color coding modifier (color by particle type)
+        color_modifier = ColorCodingModifier(
+            property='Particle Type',
+            gradient=ColorCodingModifier.Hot()
+        )
+        pipeline.modifiers.append(color_modifier)
+        
+        # Add pipeline to scene (this is the correct way)
+        pipeline.add_to_scene()
+        
+        # Create viewport for rendering
+        viewport = Viewport()
+        viewport.type = Viewport.Type.Perspective
+        
+        # Set camera position and orientation
+        if settings and 'camera_angle' in settings:
+            if settings['camera_angle'] == 'top':
+                viewport.camera_pos = (0, 0, 50)
+                viewport.camera_dir = (0, 0, -1)
+            elif settings['camera_angle'] == 'side':
+                viewport.camera_pos = (50, 0, 0)
+                viewport.camera_dir = (-1, 0, 0)
+            else:  # default perspective
+                viewport.camera_pos = (30, 30, 30)
+                viewport.camera_dir = (-1, -1, -1)
+        else:
+            # Default camera position
+            viewport.camera_pos = (30, 30, 30)
+            viewport.camera_dir = (-1, -1, -1)
+        
+        # Determine render size based on quality
+        quality = settings.get('quality', 'medium') if settings else 'medium'
+        if quality == 'high':
+            render_size = (800, 600)
+        elif quality == 'low':
+            render_size = (400, 300)
+        else:  # medium
+            render_size = (600, 450)
+        
+        # Zoom to fit all particles with the render size
+        viewport.zoom_all(size=render_size)
+        
+        # Render to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+        
+        try:
+            # Use TachyonRenderer to avoid NSWindow threading issues on macOS
+            # TachyonRenderer is a software ray-tracer that doesn't require OpenGL/GUI
+            renderer = TachyonRenderer()
+            
+            # Configure TachyonRenderer settings
+            renderer.antialiasing = True
+            renderer.direct_light_intensity = 0.9
+            renderer.shadows = True
+            renderer.ambient_occlusion = True
+            renderer.depth_of_field = False  # Disable for cleaner images
+            
+            # Check if we're running in a non-main thread (common in Flask/SocketIO)
+            is_main_thread = threading.current_thread() is threading.main_thread()
+            is_macos = platform.system() == 'Darwin'
+            
+            if not is_main_thread and is_macos:
+                print("Detected non-main thread on macOS - using TachyonRenderer for thread safety")
+            
+            # Render the image with TachyonRenderer
+            viewport.render_image(
+                filename=tmp_path, 
+                size=render_size, 
+                alpha=True,
+                renderer=renderer  # Explicitly use TachyonRenderer
+            )
+            
+            # Read and encode as base64
+            with open(tmp_path, 'rb') as img_file:
+                img_data = img_file.read()
+                base64_image = base64.b64encode(img_data).decode('utf-8')
+            
+            return base64_image
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        
+    except Exception as e:
+        print(f"Error rendering frame to image: {e}")
+        # Print more detailed error information for debugging
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
+        return None
+
+
+import queue
+from concurrent.futures import ThreadPoolExecutor
+
+
+class FrameQueue:
+    """Thread-safe queue for frame data with size limits."""
+    
+    def __init__(self, max_size=10):
+        self.queue = queue.Queue(maxsize=max_size)
+        self.stopped = False
+    
+    def put(self, item, timeout=1.0):
+        """Put item in queue with timeout to prevent blocking."""
+        try:
+            self.queue.put(item, timeout=timeout)
+            return True
+        except queue.Full:
+            print("Warning: Frame queue full, skipping frame")
+            return False
+    
+    def get(self, timeout=1.0):
+        """Get item from queue with timeout."""
+        try:
+            return self.queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+    
+    def stop(self):
+        """Signal that no more items will be added."""
+        self.stopped = True
+    
+    def is_empty(self):
+        """Check if queue is empty."""
+        return self.queue.empty()
+
+
+def extract_thermo_data_realtime(lmp):
+    """
+    Extract real-time thermodynamic data from LAMMPS instance.
+    
+    Args:
+        lmp: LAMMPS instance
+        
+    Returns:
+        dict: Current thermodynamic data
+    """
+    try:
+        # Get current timestep
+        timestep = lmp.extract_global("ntimestep", 0)
+        
+        # Extract thermodynamic quantities
+        thermo_data = {'step': timestep}
+        
+        # Try to extract common thermodynamic properties
+        try:
+            # Temperature
+            temp = lmp.extract_compute("thermo_temp", 0, 0)
+            if temp is not None:
+                thermo_data['temp'] = temp
+        except:
+            pass
+        
+        try:
+            # Pressure
+            press = lmp.extract_compute("thermo_press", 0, 0)
+            if press is not None:
+                thermo_data['press'] = press
+        except:
+            pass
+        
+        try:
+            # Potential energy
+            pe = lmp.extract_compute("thermo_pe", 0, 0)
+            if pe is not None:
+                thermo_data['poteng'] = pe
+        except:
+            pass
+        
+        try:
+            # Kinetic energy
+            ke = lmp.extract_compute("thermo_ke", 0, 0)
+            if ke is not None:
+                thermo_data['kineng'] = ke
+                # Total energy
+                if 'poteng' in thermo_data:
+                    thermo_data['toteng'] = ke + thermo_data['poteng']
+        except:
+            pass
+        
+        return thermo_data
+        
+    except Exception as e:
+        print(f"Warning: Error extracting real-time thermo data: {e}")
+        return {'step': 0, 'note': 'Error extracting data'}
+
+
+def calculate_smart_dump_interval(total_steps, user_interval=None):
+    """
+    Calculate smart dump interval based on total steps.
+    
+    Args:
+        total_steps: Total number of simulation steps
+        user_interval: User-specified interval (overrides calculation)
+        
+    Returns:
+        int: Optimal dump interval
+    """
+    if user_interval is not None:
+        return max(1, user_interval)
+    
+    # Target approximately 20-50 frames for most simulations
+    # Use a scaling approach that works better across different simulation sizes
+    if total_steps <= 10000:
+        # Small simulations: aim for ~20 frames
+        smart_interval = max(500, int(total_steps / 20))
+    elif total_steps <= 100000:
+        # Medium simulations: aim for ~20-50 frames
+        smart_interval = max(1000, int(total_steps / 50))
+    else:
+        # Large simulations: aim for ~50-100 frames, but cap at 10000
+        smart_interval = min(10000, max(1000, int(total_steps / 100)))
+    
+    frames_estimate = total_steps // smart_interval
+    print(f"Smart dump interval: {smart_interval} steps for {total_steps} total steps (~{frames_estimate} frames)")
+    return smart_interval
+
+
+def run_lammps_with_async_visualization(script_string: str, render_config=None, data_callback=None, 
+                                       num_cores: Optional[int] = None):
+    """
+    Execute LAMMPS with asynchronous visualization using producer-consumer pattern.
+    
+    Args:
+        script_string: Complete LAMMPS input script as a string
+        render_config: {
+            'interval': None,  # Auto-calculate if None
+            'quality': 'medium',  # low/medium/high
+            'camera_angle': 'default',
+            'max_queue_size': 10  # Maximum frames in render queue
+        }
+        data_callback: Function to call with thermodynamic and visualization data
+        num_cores: Number of cores to use (defaults to config.LAMMPS_CORES)
+        
+    Returns:
+        Tuple containing:
+        - Dictionary of output file paths
+        - List of all thermodynamic data dictionaries
+        - List of rendered frame images (base64)
+    """
+    import numpy as np
+    
+    # Use provided cores or fall back to config
+    cores = num_cores if num_cores is not None else config.LAMMPS_CORES
+    cores = validate_core_count(cores)
+    
+    print(f"Running LAMMPS with async visualization using {cores} core(s)")
+    
+    # First, ensure all required KIM models are installed
+    if not ensure_kim_models_installed(script_string):
+        raise RuntimeError("Failed to install required KIM models")
+    
+    # Set default render config
+    if render_config is None:
+        render_config = {
+            'interval': None,  # Will be auto-calculated
+            'quality': 'medium',
+            'camera_angle': 'default',
+            'max_queue_size': 10
+        }
+    
+    # Create frame queue for async rendering
+    frame_queue = FrameQueue(max_size=render_config.get('max_queue_size', 10))
+    
+    # Shared data structures
+    thermo_data = []
+    frame_images = []
+    simulation_complete = threading.Event()
+    
+    def rendering_worker():
+        """Worker thread that renders frames asynchronously."""
+        print("Starting rendering worker thread")
+        
+        # Import OVITO in the worker thread to avoid threading issues
+        try:
+            from ovito.data import DataCollection, Particles, SimulationCell
+            from ovito.vis import Viewport, TachyonRenderer
+            from ovito.modifiers import ColorCodingModifier
+            from ovito.pipeline import StaticSource, Pipeline
+        except ImportError as e:
+            print(f"Error importing OVITO in worker thread: {e}")
+            return
+        
+        while not simulation_complete.is_set() or not frame_queue.is_empty():
+            frame_data = frame_queue.get(timeout=0.5)
+            
+            if frame_data is None:
+                continue
+            
+            try:
+                # Create OVITO data and render in the worker thread
+                ovito_data = create_ovito_frame(frame_data['data'])
+                if ovito_data:
+                    image_b64 = render_frame_to_image(ovito_data, render_config)
+                    if image_b64:
+                        frame_info = {
+                            'image': image_b64,
+                            'frame_number': frame_data['frame_number'],
+                            'timestep': frame_data['timestep']
+                        }
+                        frame_images.append(frame_info)
+                        
+                        # Stream frame via callback if provided
+                        if data_callback:
+                            try:
+                                data_callback({
+                                    'type': 'trajectory_frame',
+                                    'image_data': image_b64,
+                                    'frame_number': frame_data['frame_number'],
+                                    'timestep': frame_data['timestep']
+                                })
+                            except Exception as e:
+                                print(f"Warning: Error in visualization callback: {e}")
+                
+            except Exception as e:
+                print(f"Warning: Error rendering frame: {e}")
+                # Continue processing other frames even if one fails
+                continue
+        
+        print("Rendering worker thread completed")
+    
+    # Create a temporary directory for the simulation
+    temp_dir = tempfile.mkdtemp(prefix="lammps_async_viz_")
+    
+    try:
+        # Write the script to a file
+        script_path = os.path.join(temp_dir, "input.lammps")
+        with open(script_path, 'w') as f:
+            f.write(script_string)
+        
+        # Change to the temporary directory
+        original_dir = os.getcwd()
+        os.chdir(temp_dir)
+        
+        # For visualization, we need to use the Python interface
+        print("Using Python LAMMPS interface for async visualization")
+        lmp = lammps.lammps()
+        
+        # Start rendering worker thread
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            render_future = executor.submit(rendering_worker)
+            
+            # Parse script to identify run commands and calculate intervals
+            script_lines = script_string.split('\n')
+            modified_script = []
+            frame_counter = 0
+            
+            for line in script_lines:
+                line = line.strip()
+                if line.startswith('run '):
+                    # Extract number of steps
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            total_steps = int(parts[1])
+                            
+                            # Calculate smart interval
+                            interval = calculate_smart_dump_interval(
+                                total_steps, 
+                                render_config.get('interval')
+                            )
+                            
+                            print(f"Using visualization interval: {interval} steps")
+                            
+                            # Run in chunks for visualization and thermo data
+                            steps_done = 0
+                            while steps_done < total_steps:
+                                chunk_size = min(interval, total_steps - steps_done)
+                                
+                                # Execute this chunk
+                                modified_script.append(f"run {chunk_size}")
+                                
+                                # Execute accumulated commands
+                                for cmd in modified_script:
+                                    if cmd.strip():
+                                        lmp.command(cmd)
+                                modified_script = []  # Clear for next chunk
+                                
+                                steps_done += chunk_size
+                                
+                                # Extract and stream thermodynamic data immediately
+                                thermo_point = extract_thermo_data_realtime(lmp)
+                                thermo_point['step'] = steps_done
+                                thermo_data.append(thermo_point)
+                                
+                                # Stream thermo data via callback
+                                if data_callback:
+                                    try:
+                                        data_callback(thermo_point)
+                                    except Exception as e:
+                                        print(f"Warning: Error in thermo callback: {e}")
+                                
+                                # Extract frame data and queue for async rendering
+                                frame_data = extract_lammps_frame(lmp)
+                                if frame_data:
+                                    frame_info = {
+                                        'data': frame_data,
+                                        'frame_number': frame_counter,
+                                        'timestep': steps_done
+                                    }
+                                    
+                                    # Try to queue frame (non-blocking)
+                                    if frame_queue.put(frame_info, timeout=0.1):
+                                        frame_counter += 1
+                                    else:
+                                        print(f"Skipped frame at step {steps_done} (queue full)")
+                            
+                            continue  # Skip adding the original run command
+                        except ValueError:
+                            pass
+                
+                # Add non-run commands to the script
+                modified_script.append(line)
+            
+            # Execute any remaining commands
+            for cmd in modified_script:
+                if cmd.strip():
+                    lmp.command(cmd)
+            
+            # Signal simulation completion
+            simulation_complete.set()
+            frame_queue.stop()
+            
+            # Wait for rendering to complete
+            render_future.result(timeout=30)  # 30 second timeout
+        
+        # Close LAMMPS
+        lmp.close()
+        
+        # Find and copy output files to permanent location
+        output_files = {}
+        log_file_path = None
+        
+        for filename in os.listdir(temp_dir):
+            if filename.endswith('.atom') or filename.endswith('.dump'):
+                # Copy dump files to a permanent location
+                permanent_path = os.path.join(original_dir, f"output_{filename}")
+                shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
+                output_files['dump'] = permanent_path
+            elif filename.startswith('log.') or filename == 'log.lammps':
+                # Copy log files and remember the path for parsing
+                permanent_path = os.path.join(original_dir, f"output_{filename}")
+                shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
+                output_files['log'] = permanent_path
+                log_file_path = permanent_path
+        
+        # Parse additional thermodynamic data from log file if needed
+        if log_file_path and not thermo_data:
+            thermo_data = parse_log_file(log_file_path)
+        
+        # If no thermo data was captured, create a minimal dataset
+        if not thermo_data:
+            thermo_data = [{"step": 0, "note": "No thermodynamic data captured"}]
+        
+        # Signal completion via callback if provided
+        if data_callback:
+            try:
+                data_callback({
+                    'type': 'trajectory_complete',
+                    'total_frames': len(frame_images),
+                    'message': f'Async visualization complete: {len(frame_images)} frames rendered'
+                })
+            except Exception as e:
+                print(f"Warning: Error in completion callback: {e}")
+        
+        print(f"Async visualization completed: {len(frame_images)} frames, {len(thermo_data)} thermo points")
+        return output_files, thermo_data, frame_images
+        
+    finally:
+        # Clean up: change back to original directory and remove temp directory
+        os.chdir(original_dir)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def run_lammps_with_visualization(script_string: str, render_config=None, data_callback=None, 
+                                 num_cores: Optional[int] = None):
+    """
+    Execute LAMMPS with live visualization using direct API integration.
+    
+    DEPRECATED: Use run_lammps_with_async_visualization for better performance.
+    
+    Args:
+        script_string: Complete LAMMPS input script as a string
+        render_config: {
+            'interval': 100,  # Render every N steps
+            'quality': 'medium',  # low/medium/high
+            'camera_angle': 'default',
+            'color_scheme': 'element'
+        }
+        data_callback: Function to call with each new thermodynamic data point
+        num_cores: Number of cores to use (defaults to config.LAMMPS_CORES)
+        
+    Returns:
+        Tuple containing:
+        - Dictionary of output file paths
+        - List of all thermodynamic data dictionaries
+        - List of rendered frame images (base64)
+    """
+    print("Warning: Using deprecated synchronous visualization. Consider using run_lammps_with_async_visualization for better performance.")
+    
+    # Delegate to async version for better performance
+    return run_lammps_with_async_visualization(script_string, render_config, data_callback, num_cores)
