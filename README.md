@@ -38,7 +38,7 @@ With the `chatmd` environment active, install the required packages.
 
 - **Python Packages (via uv):**
   ```bash
-  uv pip install ovito openai flask pytest
+  uv pip install ovito openai flask flask-socketio pytest
   ```
 
 ### 3. Install KIM Models
@@ -108,6 +108,15 @@ python app.py
 ```
 
 The application will be available at `http://localhost:5001`.
+
+### Real-Time Features
+
+The application provides several real-time capabilities:
+
+- **Streaming Agent Responses**: AI agents stream their responses in real-time using Server-Sent Events (SSE)
+- **Live Simulation Monitoring**: WebSocket integration provides real-time thermodynamic data during LAMMPS execution
+- **Dynamic Visualization**: Charts update automatically as simulation data becomes available
+- **Parallel Execution**: Automatic MPI support for faster simulations with graceful fallback to serial execution
 
 ## KIM Potentials
 
