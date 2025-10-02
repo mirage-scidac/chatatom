@@ -189,7 +189,7 @@ Verified KIM model IDs (use these):
 - LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004 (Argon LJ)
 - SW_StillingerWeber_1985_Si__MO_405512056662_005 (Silicon SW)
 - EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005 (Aluminum EAM)
-- EAM_Dynamo_FoilesBasteseDaw_1986_Cu__MO_831902330215_000 (Copper EAM)
+- EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006 (Copper EAM)
 
 Common atomic masses (metal units):
 - Argon: 39.948

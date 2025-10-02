@@ -12,6 +12,7 @@ import config
 import threading
 import time
 import numpy as np
+import kim_utils
 
 
 def extract_kim_models(script_string: str) -> List[str]:
@@ -28,8 +29,17 @@ def extract_kim_models(script_string: str) -> List[str]:
     
     # Pattern to match kim init commands - KIM model IDs can contain letters, numbers, underscores, and dashes
     kim_init_pattern = r'kim\s+init\s+([A-Za-z0-9_\-]+(?:__[A-Za-z0-9_\-]+)*)'
-    matches = re.findall(kim_init_pattern, script_string, re.IGNORECASE)
-    kim_models.extend(matches)
+    
+    # Process line by line to skip comments
+    for line in script_string.split('\n'):
+        # Skip comment lines
+        stripped_line = line.strip()
+        if stripped_line.startswith('#'):
+            continue
+            
+        # Apply regex to non-comment lines
+        matches = re.findall(kim_init_pattern, line, re.IGNORECASE)
+        kim_models.extend(matches)
     
     return kim_models
 
@@ -108,21 +118,41 @@ def install_kim_model(model_id: str) -> bool:
     """
     try:
         print(f"Installing KIM model: {model_id}")
+        print("This may take a moment to download and install...")
+        
         result = subprocess.run(
             ['kim-api-collections-management', 'install', 'user', model_id],
             capture_output=True,
             text=True,
-            timeout=60  # Give it 60 seconds to install
+            timeout=120  # Give it 120 seconds to install (increased for network delays)
         )
         
         if result.returncode == 0:
-            print(f"Successfully installed KIM model: {model_id}")
-            return True
+            print(f"Installation command completed for KIM model: {model_id}")
+            
+            # Wait and verify the model is actually available
+            max_retries = 10
+            retry_delay = 2  # seconds
+            
+            for attempt in range(max_retries):
+                if is_kim_model_installed(model_id):
+                    print(f"✅ Successfully verified KIM model: {model_id}")
+                    return True
+                
+                if attempt < max_retries - 1:
+                    print(f"Waiting for model to be indexed... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+            
+            print(f"⚠️ Installation completed but model not found after {max_retries} attempts")
+            return False
         else:
             print(f"Failed to install KIM model {model_id}: {result.stderr}")
             return False
             
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
+    except subprocess.TimeoutExpired:
+        print(f"Timeout while installing KIM model {model_id} (exceeded 120 seconds)")
+        return False
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Error installing KIM model {model_id}: {str(e)}")
         return False
 
@@ -130,6 +160,7 @@ def install_kim_model(model_id: str) -> bool:
 def ensure_kim_models_installed(script_string: str) -> bool:
     """
     Ensure all KIM models referenced in the script are installed.
+    Uses the robust kim_utils module for model discovery and installation.
     
     Args:
         script_string: LAMMPS input script as a string
@@ -147,20 +178,17 @@ def ensure_kim_models_installed(script_string: str) -> bool:
     
     all_available = True
     for model_id in kim_models:
-        if is_kim_model_installed(model_id):
-            print(f"✅ KIM model {model_id} is already installed")
+        # Use the robust installation from kim_utils
+        success, final_model_id, message = kim_utils.ensure_kim_model_available(
+            element=None,  # We have the full model ID
+            model_id=model_id
+        )
+        
+        if success:
+            print(f"✅ KIM model {final_model_id} is available: {message}")
         else:
-            print(f"⚠️ KIM model {model_id} not found, attempting to install...")
-            if install_kim_model(model_id):
-                print(f"✅ Successfully installed KIM model {model_id}")
-            else:
-                print(f"❌ Failed to install KIM model {model_id}")
-                # Check one more time if it's available (maybe it was already there)
-                if is_kim_model_installed(model_id):
-                    print(f"✅ KIM model {model_id} is actually available despite installation failure")
-                else:
-                    print(f"❌ KIM model {model_id} is definitely not available")
-                    all_available = False
+            print(f"❌ Failed to ensure KIM model {model_id}: {message}")
+            all_available = False
     
     if all_available:
         print("✅ All required KIM models are available")
@@ -1128,6 +1156,12 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
     
     print(f"Running LAMMPS with async visualization using {cores} core(s)")
     
+    # Check if we should use MPI
+    use_mpi = cores > 1 and config.LAMMPS_USE_MPI and check_mpi_available()
+    if cores > 1 and not use_mpi:
+        print(f"Warning: MPI not available or disabled. Falling back to serial execution.")
+        cores = 1
+    
     # First, ensure all required KIM models are installed
     if not ensure_kim_models_installed(script_string):
         raise RuntimeError("Failed to install required KIM models")
@@ -1214,9 +1248,18 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
         original_dir = os.getcwd()
         os.chdir(temp_dir)
         
-        # For visualization, we need to use the Python interface
-        print("Using Python LAMMPS interface for async visualization")
-        lmp = lammps.lammps()
+        # Choose execution method based on core count
+        if use_mpi:
+            print(f"Using MPI execution with {cores} cores for async visualization")
+            # We'll use subprocess with MPI but need to handle visualization differently
+            # For now, fall back to Python interface for visualization
+            # TODO: Implement MPI-based visualization extraction
+            print("Note: MPI visualization extraction not yet implemented, using serial Python interface")
+            use_mpi = False
+        
+        if not use_mpi:
+            print("Using Python LAMMPS interface for async visualization")
+            lmp = lammps.lammps()
         
         # Start rendering worker thread
         with ThreadPoolExecutor(max_workers=1) as executor:
