@@ -62,7 +62,7 @@ class Agent:
 
 class OrchestratorAgent(Agent):
     def __init__(self):
-        system_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in two phases:
+        system_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
 
 PHASE 1 - ANALYSIS AND PROPOSAL:
 When analyzing an initial user request, your role is to:
@@ -72,14 +72,24 @@ When analyzing an initial user request, your role is to:
 4. Present everything in a conversational, user-friendly format
 5. Ask for user confirmation or modifications
 
+PHASE 1.5 - KIM MODEL SELECTION (NEW):
+When a material is specified but no KIM model is chosen:
+1. The system will query OpenKIM for available models for that element
+2. You will receive a list of available models with details (type, year, name)
+3. Present the models to the user in a clear, numbered list
+4. Ask the user to select a model by number or name
+5. Wait for user selection before proceeding
+
 PHASE 2 - FINALIZATION:
 When processing user feedback on your proposals, your role is to:
 1. Update parameters based on user input
-2. Provide final structured parameters for script generation
-3. Use the "SIMULATION PARAMETERS:" format to signal readiness
+2. If user selected a KIM model, include it in parameters
+3. Provide final structured parameters for script generation
+4. Use the "SIMULATION PARAMETERS:" format to signal readiness
 
 Required parameters to extract:
 - Material/Element (e.g., Si, Ar, Cu, Al)
+- KIM Model ID (user must select from available options)
 - Temperature (in K)
 - Ensemble (NVE, NVT, or NPT)
 - Simulation duration (in ps, ns, or timesteps)
