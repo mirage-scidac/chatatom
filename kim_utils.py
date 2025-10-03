@@ -71,43 +71,119 @@ ELEMENT_PROPERTIES = {
 }
 
 
-def query_openkim_models(element: str, max_results: int = 10) -> List[str]:
+def query_openkim_models(element: str, max_results: int = 50) -> List[Dict[str, str]]:
     """
     Query OpenKIM repository for available models for a specific element.
+    Returns detailed information about each model for user selection.
     
     Args:
         element: Chemical symbol of the element (e.g., 'Cu', 'Al')
-        max_results: Maximum number of models to return
+        max_results: Maximum number of models to return (default: 50)
         
     Returns:
-        List of model IDs available for the element
+        List of dictionaries with model information:
+        [
+            {
+                'id': 'EAM_Dynamo_...',
+                'name': 'Human-readable name',
+                'type': 'EAM/LJ/SW/etc',
+                'year': '2020' (if available)
+            },
+            ...
+        ]
     """
     try:
-        # Use the fetch tool approach - scrape the OpenKIM browse page
-        url = f"https://openkim.org/browse/models?species={element}"
-        response = requests.get(url, timeout=10)
+        # Query OpenKIM browse page for the element
+        url = f"https://openkim.org/browse/models/by-species/{element}"
+        logger.info(f"Querying OpenKIM for {element} models: {url}")
+        
+        response = requests.get(url, timeout=15)
         
         if response.status_code == 200:
-            # Extract model IDs from the HTML
             import re
+            
             # Pattern to match KIM model IDs
             pattern = r'([A-Z][A-Za-z0-9_]+__MO_\d+_\d+)'
-            models = re.findall(pattern, response.text)
+            model_ids = re.findall(pattern, response.text)
             
-            # Filter for models that contain the element symbol
-            element_models = [m for m in models if element in m or element.lower() in m.lower()]
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_models = []
+            for model_id in model_ids:
+                if model_id not in seen:
+                    seen.add(model_id)
+                    unique_models.append(model_id)
             
-            # Remove duplicates and limit results
-            unique_models = list(dict.fromkeys(element_models))[:max_results]
+            # Parse model information
+            models_info = []
+            for model_id in unique_models[:max_results]:
+                # Extract model type from ID (e.g., EAM_Dynamo, LJ_Shifted, SW_)
+                type_match = re.match(r'^([A-Z][A-Za-z_]+?)_', model_id)
+                model_type = type_match.group(1) if type_match else 'Unknown'
+                
+                # Extract year if present in the ID
+                year_match = re.search(r'_(\d{4})', model_id)
+                year = year_match.group(1) if year_match else 'N/A'
+                
+                # Create human-readable name from ID
+                # Remove the MO number suffix for readability
+                name_part = model_id.split('__MO_')[0]
+                name = name_part.replace('_', ' ')
+                
+                models_info.append({
+                    'id': model_id,
+                    'name': name,
+                    'type': model_type,
+                    'year': year
+                })
             
-            logger.info(f"Found {len(unique_models)} models for {element} from OpenKIM")
-            return unique_models
+            logger.info(f"Found {len(models_info)} models for {element} from OpenKIM")
+            return models_info
         else:
             logger.warning(f"Failed to query OpenKIM: HTTP {response.status_code}")
+            
+            # Fallback to verified models if web query fails
+            if element in VERIFIED_KIM_MODELS:
+                logger.info(f"Using verified models as fallback for {element}")
+                fallback_models = []
+                for model_id in VERIFIED_KIM_MODELS[element]:
+                    type_match = re.match(r'^([A-Z][A-Za-z_]+?)_', model_id)
+                    model_type = type_match.group(1) if type_match else 'Unknown'
+                    name_part = model_id.split('__MO_')[0]
+                    name = name_part.replace('_', ' ')
+                    
+                    fallback_models.append({
+                        'id': model_id,
+                        'name': name,
+                        'type': model_type,
+                        'year': 'N/A'
+                    })
+                return fallback_models
+            
             return []
             
     except Exception as e:
         logger.warning(f"Error querying OpenKIM for {element}: {e}")
+        
+        # Fallback to verified models on error
+        if element in VERIFIED_KIM_MODELS:
+            logger.info(f"Using verified models as fallback for {element}")
+            fallback_models = []
+            for model_id in VERIFIED_KIM_MODELS[element]:
+                import re
+                type_match = re.match(r'^([A-Z][A-Za-z_]+?)_', model_id)
+                model_type = type_match.group(1) if type_match else 'Unknown'
+                name_part = model_id.split('__MO_')[0]
+                name = name_part.replace('_', ' ')
+                
+                fallback_models.append({
+                    'id': model_id,
+                    'name': name,
+                    'type': model_type,
+                    'year': 'N/A'
+                })
+            return fallback_models
+        
         return []
 
 
@@ -283,11 +359,43 @@ def get_element_properties(element: str) -> Optional[Dict]:
     return ELEMENT_PROPERTIES.get(element)
 
 
+def install_user_selected_model(model_id: str) -> Tuple[bool, str]:
+    """
+    Install a user-selected KIM model without automatic fallbacks.
+    This is the simplified two-step approach: user selects, we install.
+    
+    Args:
+        model_id: The KIM model ID chosen by the user
+        
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    logger.info(f"Installing user-selected KIM model: {model_id}")
+    
+    # Check if already installed
+    if is_model_installed(model_id):
+        logger.info(f"Model {model_id} is already installed")
+        return True, f"✅ Model {model_id} is already installed and ready to use."
+    
+    # Attempt installation
+    success, message = install_and_verify_kim_model(model_id, timeout=180)
+    
+    if success:
+        return True, f"✅ Successfully installed {model_id}. Ready to use!"
+    else:
+        # Provide clear failure message
+        error_details = f"❌ Failed to install {model_id}.\n\nReason: {message}\n\n"
+        error_details += "Please try selecting a different model from the list."
+        return False, error_details
+
+
 def ensure_kim_model_available(element: str, model_id: Optional[str] = None) -> Tuple[bool, str, str]:
     """
     Ensure a KIM model is available for the given element.
     
-    This is the main entry point for robust KIM model management.
+    DEPRECATED: Use install_user_selected_model() for the new two-step selection process.
+    
+    This is the legacy entry point that includes automatic fallback logic.
     It will:
     1. Use the provided model_id if given
     2. Otherwise, find the best available model for the element

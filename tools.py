@@ -160,7 +160,7 @@ def install_kim_model(model_id: str) -> bool:
 def ensure_kim_models_installed(script_string: str) -> bool:
     """
     Ensure all KIM models referenced in the script are installed.
-    Uses the robust kim_utils module for model discovery and installation.
+    Uses the simplified two-step installation process.
     
     Args:
         script_string: LAMMPS input script as a string
@@ -178,22 +178,19 @@ def ensure_kim_models_installed(script_string: str) -> bool:
     
     all_available = True
     for model_id in kim_models:
-        # Use the robust installation from kim_utils
-        success, final_model_id, message = kim_utils.ensure_kim_model_available(
-            element=None,  # We have the full model ID
-            model_id=model_id
-        )
+        # Use the simplified installation method (no automatic fallbacks)
+        success, message = kim_utils.install_user_selected_model(model_id)
         
         if success:
-            print(f"✅ KIM model {final_model_id} is available: {message}")
+            print(message)
         else:
-            print(f"❌ Failed to ensure KIM model {model_id}: {message}")
+            print(message)
             all_available = False
     
     if all_available:
         print("✅ All required KIM models are available")
     else:
-        print("❌ Some KIM models are missing and could not be installed")
+        print("❌ Some KIM models could not be installed")
     
     return all_available
 
@@ -1095,13 +1092,15 @@ def extract_thermo_data_realtime(lmp):
         return {'step': 0, 'note': 'Error extracting data'}
 
 
-def calculate_smart_dump_interval(total_steps, user_interval=None):
+def calculate_smart_dump_interval(total_steps, user_interval=None, max_frames=100):
     """
-    Calculate smart dump interval based on total steps.
+    Calculate smart dump interval to capture full simulation within frame limit.
+    Ensures first and last frames are always included.
     
     Args:
         total_steps: Total number of simulation steps
         user_interval: User-specified interval (overrides calculation)
+        max_frames: Maximum number of frames to capture (default: 100)
         
     Returns:
         int: Optimal dump interval
@@ -1109,20 +1108,17 @@ def calculate_smart_dump_interval(total_steps, user_interval=None):
     if user_interval is not None:
         return max(1, user_interval)
     
-    # Target approximately 20-50 frames for most simulations
-    # Use a scaling approach that works better across different simulation sizes
-    if total_steps <= 10000:
-        # Small simulations: aim for ~20 frames
-        smart_interval = max(500, int(total_steps / 20))
-    elif total_steps <= 100000:
-        # Medium simulations: aim for ~20-50 frames
-        smart_interval = max(1000, int(total_steps / 50))
+    # If simulation is shorter than max frames, capture every step
+    if total_steps <= max_frames:
+        smart_interval = 1
+        frames_estimate = total_steps
     else:
-        # Large simulations: aim for ~50-100 frames, but cap at 10000
-        smart_interval = min(10000, max(1000, int(total_steps / 100)))
+        # Calculate interval to get exactly max_frames distributed across the simulation
+        # Reserve 2 frames for first and last, distribute remaining frames uniformly
+        smart_interval = max(1, total_steps // (max_frames - 1))
+        frames_estimate = min(max_frames, (total_steps // smart_interval) + 1)
     
-    frames_estimate = total_steps // smart_interval
-    print(f"Smart dump interval: {smart_interval} steps for {total_steps} total steps (~{frames_estimate} frames)")
+    print(f"Smart dump interval: {smart_interval} steps for {total_steps} total steps (~{frames_estimate} frames, max: {max_frames})")
     return smart_interval
 
 
@@ -1269,6 +1265,7 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
             script_lines = script_string.split('\n')
             modified_script = []
             frame_counter = 0
+            MAX_FRAMES = 100  # Hard limit on total frames
             
             for line in script_lines:
                 line = line.strip()
@@ -1279,13 +1276,14 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
                         try:
                             total_steps = int(parts[1])
                             
-                            # Calculate smart interval
+                            # Calculate smart interval with max_frames limit
                             interval = calculate_smart_dump_interval(
                                 total_steps, 
-                                render_config.get('interval')
+                                render_config.get('interval'),
+                                max_frames=MAX_FRAMES
                             )
                             
-                            print(f"Using visualization interval: {interval} steps")
+                            print(f"Using visualization interval: {interval} steps (max {MAX_FRAMES} frames)")
                             
                             # Run in chunks for visualization and thermo data
                             steps_done = 0
@@ -1316,19 +1314,35 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
                                         print(f"Warning: Error in thermo callback: {e}")
                                 
                                 # Extract frame data and queue for async rendering
-                                frame_data = extract_lammps_frame(lmp)
-                                if frame_data:
-                                    frame_info = {
-                                        'data': frame_data,
-                                        'frame_number': frame_counter,
-                                        'timestep': steps_done
-                                    }
-                                    
-                                    # Try to queue frame (non-blocking)
-                                    if frame_queue.put(frame_info, timeout=0.1):
-                                        frame_counter += 1
-                                    else:
-                                        print(f"Skipped frame at step {steps_done} (queue full)")
+                                # IMPORTANT: Enforce hard limit of MAX_FRAMES
+                                if frame_counter < MAX_FRAMES:
+                                    frame_data = extract_lammps_frame(lmp)
+                                    if frame_data:
+                                        frame_info = {
+                                            'data': frame_data,
+                                            'frame_number': frame_counter,
+                                            'timestep': steps_done
+                                        }
+                                        
+                                        # Try to queue frame (non-blocking)
+                                        if frame_queue.put(frame_info, timeout=0.1):
+                                            frame_counter += 1
+                                            if frame_counter == MAX_FRAMES:
+                                                print(f"Reached maximum frame limit ({MAX_FRAMES} frames)")
+                                        else:
+                                            print(f"Skipped frame at step {steps_done} (queue full)")
+                                elif frame_counter == MAX_FRAMES and steps_done == total_steps:
+                                    # Always capture the final frame if we haven't exceeded the limit
+                                    frame_data = extract_lammps_frame(lmp)
+                                    if frame_data:
+                                        frame_info = {
+                                            'data': frame_data,
+                                            'frame_number': frame_counter,
+                                            'timestep': steps_done
+                                        }
+                                        # Replace the last frame with the final frame to ensure we capture the end
+                                        if frame_queue.put(frame_info, timeout=0.1):
+                                            print(f"Captured final frame at step {steps_done}")
                             
                             continue  # Skip adding the original run command
                         except ValueError:
