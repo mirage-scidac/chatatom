@@ -10,50 +10,21 @@ import time
 import logging
 from typing import List, Dict, Optional, Tuple
 import requests
+import os
+from datetime import datetime
+import re
 
 logger = logging.getLogger(__name__)
 
-# Verified working models - these have been tested and confirmed to work
-VERIFIED_KIM_MODELS = {
-    "Ar": [
-        "LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004"
-    ],
-    "Cu": [
-        "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
-        "EAM_Dynamo_AdamsFoilesWolfer_1989Universal6_Cu__MO_145873824897_001",
-        "EAM_Dynamo_AcklandVitek_1990_Cu__MO_642748370624_001"
-    ],
-    "Al": [
-        "EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005",
-        "EAM_CubicNaturalSpline_ErcolessiAdams_1994_Al__MO_800509458712_003"
-    ],
-    "Si": [
-        "SW_StillingerWeber_1985_Si__MO_405512056662_005"
-    ],
-    "Ni": [
-        "EAM_Dynamo_AcklandTichyVitek_1987_Ni__MO_977363131043_006",
-        "EAM_CubicNaturalSpline_AngeloMoodyBaskes_1995_Ni__MO_800536961967_004"
-    ],
-    "Au": [
-        "EAM_Dynamo_Ackland_1987_Au__MO_754413982908_001",
-        "EAM_Dynamo_AdamsFoilesWolfer_1989_Au__MO_087738844640_001"
-    ],
-    "Ag": [
-        "EAM_Dynamo_AcklandTichyVitek_1987_Ag__MO_212700056563_006"
-    ],
-    "Fe": [
-        "EAM_Dynamo_AcklandBaconCalder_1997_Fe__MO_142799717516_006"
-    ],
-    "Ti": [
-        "EAM_Dynamo_Ackland_1992_Ti__MO_748534961139_006"
-    ],
-    "W": [
-        "EAM_Dynamo_Ackland_2003_W__MO_141627196590_006"
-    ],
-    "Mo": [
-        "EAM_Dynamo_AcklandThetford_1987_Mo__MO_789280224186_000"
-    ]
-}
+# Path to the registry file
+REGISTRY_FILE = "kim_potentials_registry.md"
+
+# Recommended potentials for auto-download on first startup
+RECOMMENDED_POTENTIALS = [
+    "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+    "EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005",
+    "EAM_Dynamo_AcklandTichyVitek_1987_Ni__MO_977363131043_006"
+]
 
 # Element properties for LAMMPS simulations
 ELEMENT_PROPERTIES = {
@@ -69,6 +40,46 @@ ELEMENT_PROPERTIES = {
     "W": {"mass": 183.84, "lattice": "bcc", "lattice_constant": 3.16},
     "Mo": {"mass": 95.95, "lattice": "bcc", "lattice_constant": 3.15}
 }
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def _get_models_from_registry(element: str) -> List[Dict[str, str]]:
+    """
+    Get models for a specific element from the registry.
+    
+    Args:
+        element: Chemical symbol of the element
+        
+    Returns:
+        List of model dictionaries in the same format as query_openkim_models
+    """
+    potentials = read_registry()
+    element_potentials = [p for p in potentials if p['element'] == element]
+    
+    models_info = []
+    for potential in element_potentials:
+        model_id = potential['model_id']
+        model_type = potential['type']
+        
+        # Extract year if present in the ID
+        year_match = re.search(r'_(\d{4})', model_id)
+        year = year_match.group(1) if year_match else 'N/A'
+        
+        # Create human-readable name from ID
+        name_part = model_id.split('__MO_')[0]
+        name = name_part.replace('_', ' ')
+        
+        models_info.append({
+            'id': model_id,
+            'name': name,
+            'type': model_type,
+            'year': year
+        })
+    
+    return models_info
 
 
 def query_openkim_models(element: str, max_results: int = 50) -> List[Dict[str, str]]:
@@ -142,49 +153,16 @@ def query_openkim_models(element: str, max_results: int = 50) -> List[Dict[str, 
         else:
             logger.warning(f"Failed to query OpenKIM: HTTP {response.status_code}")
             
-            # Fallback to verified models if web query fails
-            if element in VERIFIED_KIM_MODELS:
-                logger.info(f"Using verified models as fallback for {element}")
-                fallback_models = []
-                for model_id in VERIFIED_KIM_MODELS[element]:
-                    type_match = re.match(r'^([A-Z][A-Za-z_]+?)_', model_id)
-                    model_type = type_match.group(1) if type_match else 'Unknown'
-                    name_part = model_id.split('__MO_')[0]
-                    name = name_part.replace('_', ' ')
-                    
-                    fallback_models.append({
-                        'id': model_id,
-                        'name': name,
-                        'type': model_type,
-                        'year': 'N/A'
-                    })
-                return fallback_models
-            
-            return []
+            # Fallback to registry if web query fails
+            logger.info(f"Using registry as fallback for {element}")
+            return _get_models_from_registry(element)
             
     except Exception as e:
         logger.warning(f"Error querying OpenKIM for {element}: {e}")
         
-        # Fallback to verified models on error
-        if element in VERIFIED_KIM_MODELS:
-            logger.info(f"Using verified models as fallback for {element}")
-            fallback_models = []
-            for model_id in VERIFIED_KIM_MODELS[element]:
-                import re
-                type_match = re.match(r'^([A-Z][A-Za-z_]+?)_', model_id)
-                model_type = type_match.group(1) if type_match else 'Unknown'
-                name_part = model_id.split('__MO_')[0]
-                name = name_part.replace('_', ' ')
-                
-                fallback_models.append({
-                    'id': model_id,
-                    'name': name,
-                    'type': model_type,
-                    'year': 'N/A'
-                })
-            return fallback_models
-        
-        return []
+        # Fallback to registry on error
+        logger.info(f"Using registry as fallback for {element}")
+        return _get_models_from_registry(element)
 
 
 def get_installed_kim_models() -> List[str]:
@@ -236,8 +214,8 @@ def find_best_kim_model(element: str, prefer_eam: bool = True) -> Optional[str]:
     Find the best available KIM model for a given element.
     
     Strategy:
-    1. Check verified models list first
-    2. Check if any verified models are already installed
+    1. Check registry for models for this element
+    2. Check if any are already installed
     3. Query OpenKIM for additional options
     4. Return the first available model
     
@@ -250,35 +228,37 @@ def find_best_kim_model(element: str, prefer_eam: bool = True) -> Optional[str]:
     """
     logger.info(f"Finding best KIM model for {element}")
     
-    # First, check verified models
-    if element in VERIFIED_KIM_MODELS:
-        verified = VERIFIED_KIM_MODELS[element]
-        logger.info(f"Found {len(verified)} verified models for {element}")
+    # First, check registry for models
+    registry_models = _get_models_from_registry(element)
+    
+    if registry_models:
+        logger.info(f"Found {len(registry_models)} models in registry for {element}")
         
         # Check if any are already installed
-        for model_id in verified:
+        for model_info in registry_models:
+            model_id = model_info['id']
             if is_model_installed(model_id):
                 logger.info(f"Using already installed model: {model_id}")
                 return model_id
         
-        # Return first verified model (will be installed later)
-        logger.info(f"Will use verified model: {verified[0]}")
-        return verified[0]
+        # Return first registry model (will be installed later)
+        logger.info(f"Will use registry model: {registry_models[0]['id']}")
+        return registry_models[0]['id']
     
-    # If no verified models, query OpenKIM
-    logger.info(f"No verified models for {element}, querying OpenKIM...")
+    # If no registry models, query OpenKIM
+    logger.info(f"No registry models for {element}, querying OpenKIM...")
     available_models = query_openkim_models(element)
     
     if available_models:
         # Prefer EAM models if requested
         if prefer_eam:
-            eam_models = [m for m in available_models if "EAM" in m]
+            eam_models = [m for m in available_models if "EAM" in m['type']]
             if eam_models:
-                logger.info(f"Found EAM model from OpenKIM: {eam_models[0]}")
-                return eam_models[0]
+                logger.info(f"Found EAM model from OpenKIM: {eam_models[0]['id']}")
+                return eam_models[0]['id']
         
-        logger.info(f"Using model from OpenKIM: {available_models[0]}")
-        return available_models[0]
+        logger.info(f"Using model from OpenKIM: {available_models[0]['id']}")
+        return available_models[0]['id']
     
     logger.error(f"No KIM models found for {element}")
     return None
@@ -428,16 +408,322 @@ def ensure_kim_model_available(element: str, model_id: Optional[str] = None) -> 
     if success:
         return True, model_id, message
     else:
-        # If installation failed, try to find an alternative
+        # If installation failed, try to find an alternative from registry
         logger.warning(f"Failed to install {model_id}, looking for alternatives...")
         
-        if element in VERIFIED_KIM_MODELS:
-            # Try other verified models for this element
-            for alt_model in VERIFIED_KIM_MODELS[element]:
-                if alt_model != model_id:
-                    logger.info(f"Trying alternative model: {alt_model}")
-                    success, message = install_and_verify_kim_model(alt_model)
-                    if success:
-                        return True, alt_model, f"Used alternative model: {message}"
+        registry_models = _get_models_from_registry(element)
+        for model_info in registry_models:
+            alt_model = model_info['id']
+            if alt_model != model_id:
+                logger.info(f"Trying alternative model: {alt_model}")
+                success, message = install_and_verify_kim_model(alt_model)
+                if success:
+                    return True, alt_model, f"Used alternative model: {message}"
         
         return False, model_id, f"All installation attempts failed: {message}"
+
+
+# ============================================================================
+# Registry Management Functions
+# ============================================================================
+
+def read_registry() -> List[Dict[str, str]]:
+    """
+    Read the KIM potentials registry from the markdown file.
+    
+    Returns:
+        List of dictionaries containing potential information
+    """
+    if not os.path.exists(REGISTRY_FILE):
+        logger.warning(f"Registry file {REGISTRY_FILE} not found")
+        return []
+    
+    potentials = []
+    
+    try:
+        with open(REGISTRY_FILE, 'r') as f:
+            content = f.read()
+        
+        # Parse the markdown table
+        # Look for lines that match the table format
+        lines = content.split('\n')
+        in_single_element_section = False
+        in_binary_section = False
+        
+        for line in lines:
+            if '## Single Element Potentials' in line:
+                in_single_element_section = True
+                in_binary_section = False
+                continue
+            elif '## Binary/Ternary Potentials' in line:
+                in_single_element_section = False
+                in_binary_section = True
+                continue
+            elif line.startswith('##') or line.startswith('---'):
+                in_single_element_section = False
+                in_binary_section = False
+                continue
+            
+            # Skip header and separator lines
+            if '|' not in line or 'Element' in line or '---' in line:
+                continue
+            
+            # Parse table row
+            if in_single_element_section or in_binary_section:
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) >= 6:
+                    element = parts[1]
+                    model_id = parts[2]
+                    model_type = parts[3]
+                    downloaded = parts[4]
+                    download_date = parts[5]
+                    description = parts[6] if len(parts) > 6 else ''
+                    
+                    # Skip placeholder rows
+                    if element == '-' or model_id == '-':
+                        continue
+                    
+                    potentials.append({
+                        'element': element,
+                        'model_id': model_id,
+                        'type': model_type,
+                        'downloaded': downloaded == '✅',
+                        'download_date': download_date,
+                        'description': description,
+                        'is_binary': in_binary_section
+                    })
+        
+        logger.info(f"Read {len(potentials)} potentials from registry")
+        return potentials
+        
+    except Exception as e:
+        logger.error(f"Error reading registry: {e}")
+        return []
+
+
+def update_registry(model_id: str, downloaded: bool = True) -> bool:
+    """
+    Update the registry to mark a potential as downloaded.
+    
+    Args:
+        model_id: The KIM model ID to update
+        downloaded: Whether the model is downloaded (default: True)
+        
+    Returns:
+        True if update was successful, False otherwise
+    """
+    if not os.path.exists(REGISTRY_FILE):
+        logger.error(f"Registry file {REGISTRY_FILE} not found")
+        return False
+    
+    try:
+        with open(REGISTRY_FILE, 'r') as f:
+            content = f.read()
+        
+        # Update the status and date for this model
+        status_icon = '✅' if downloaded else '⬇️'
+        date_str = datetime.now().strftime('%Y-%m-%d') if downloaded else '-'
+        
+        # Find and replace the line containing this model_id
+        lines = content.split('\n')
+        updated = False
+        
+        for i, line in enumerate(lines):
+            if model_id in line and '|' in line:
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) >= 6:
+                    # Update status and date
+                    parts[4] = f' {status_icon} '
+                    parts[5] = f' {date_str} '
+                    lines[i] = '|'.join(parts)
+                    updated = True
+                    break
+        
+        if updated:
+            # Update the "Last Updated" timestamp
+            for i, line in enumerate(lines):
+                if '**Last Updated:**' in line:
+                    lines[i] = f"**Last Updated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    break
+            
+            # Write back to file
+            with open(REGISTRY_FILE, 'w') as f:
+                f.write('\n'.join(lines))
+            
+            logger.info(f"Updated registry for {model_id}")
+            return True
+        else:
+            logger.warning(f"Model {model_id} not found in registry")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error updating registry: {e}")
+        return False
+
+
+def initialize_recommended_potentials(progress_callback=None) -> Dict[str, bool]:
+    """
+    Download and install recommended potentials on first startup.
+    
+    Args:
+        progress_callback: Optional callback function(model_id, status, message)
+        
+    Returns:
+        Dictionary mapping model_id to success status
+    """
+    logger.info("Initializing recommended potentials...")
+    results = {}
+    
+    for model_id in RECOMMENDED_POTENTIALS:
+        logger.info(f"Installing recommended potential: {model_id}")
+        
+        if progress_callback:
+            progress_callback(model_id, 'starting', f'Installing {model_id}...')
+        
+        success, message = install_and_verify_kim_model(model_id, timeout=180)
+        results[model_id] = success
+        
+        if success:
+            # Update registry
+            update_registry(model_id, downloaded=True)
+            if progress_callback:
+                progress_callback(model_id, 'success', f'✅ Installed {model_id}')
+        else:
+            if progress_callback:
+                progress_callback(model_id, 'error', f'❌ Failed to install {model_id}: {message}')
+    
+    logger.info(f"Initialization complete. {sum(results.values())}/{len(results)} potentials installed")
+    return results
+
+
+def verify_and_sync_registry() -> Dict[str, any]:
+    """
+    Cross-reference registry with actual installed KIM models and sync if needed.
+    
+    Returns:
+        Dictionary with sync results
+    """
+    logger.info("Verifying registry against installed KIM models...")
+    
+    potentials = read_registry()
+    installed_models = get_installed_kim_models()
+    
+    updates_made = 0
+    mismatches = []
+    
+    for potential in potentials:
+        model_id = potential['model_id']
+        registry_says_downloaded = potential['downloaded']
+        actually_installed = model_id in installed_models
+        
+        if registry_says_downloaded != actually_installed:
+            mismatches.append({
+                'model_id': model_id,
+                'registry_status': 'downloaded' if registry_says_downloaded else 'not_downloaded',
+                'actual_status': 'installed' if actually_installed else 'not_installed'
+            })
+            
+            # Update registry to match reality
+            if update_registry(model_id, downloaded=actually_installed):
+                updates_made += 1
+                logger.info(f"Updated registry for {model_id}: {actually_installed}")
+    
+    result = {
+        'verified': True,
+        'total_checked': len(potentials),
+        'mismatches_found': len(mismatches),
+        'updates_made': updates_made,
+        'mismatches': mismatches
+    }
+    
+    if mismatches:
+        logger.warning(f"Found {len(mismatches)} registry mismatches, corrected {updates_made}")
+    else:
+        logger.info("Registry is in sync with installed models")
+    
+    return result
+
+
+def get_registry_status() -> Dict[str, any]:
+    """
+    Get the current status of the registry.
+    
+    Returns:
+        Dictionary with registry statistics
+    """
+    potentials = read_registry()
+    
+    downloaded_count = sum(1 for p in potentials if p['downloaded'])
+    total_count = len(potentials)
+    
+    # Get installed models from KIM API
+    installed_models = get_installed_kim_models()
+    
+    return {
+        'total_potentials': total_count,
+        'downloaded_potentials': downloaded_count,
+        'not_downloaded': total_count - downloaded_count,
+        'installed_models': len(installed_models),
+        'registry_exists': os.path.exists(REGISTRY_FILE),
+        'potentials': potentials
+    }
+
+
+def add_potential_to_registry(element: str, model_id: str, model_type: str, description: str = '') -> bool:
+    """
+    Add a new potential to the registry.
+    
+    Args:
+        element: Element symbol(s)
+        model_id: KIM model ID
+        model_type: Type of potential (EAM, LJ, SW, etc.)
+        description: Optional description
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not os.path.exists(REGISTRY_FILE):
+        logger.error(f"Registry file {REGISTRY_FILE} not found")
+        return False
+    
+    try:
+        with open(REGISTRY_FILE, 'r') as f:
+            content = f.read()
+        
+        # Check if model already exists
+        if model_id in content:
+            logger.warning(f"Model {model_id} already in registry")
+            return False
+        
+        # Determine if it's a binary/ternary potential
+        is_binary = len(element.split('-')) > 1 or len(element.split('/')) > 1
+        
+        # Create new table row
+        downloaded = '✅' if is_model_installed(model_id) else '⬇️'
+        date_str = datetime.now().strftime('%Y-%m-%d') if is_model_installed(model_id) else '-'
+        new_row = f"| {element} | {model_id} | {model_type} | {downloaded} | {date_str} | {description} |"
+        
+        # Find the appropriate section and add the row
+        lines = content.split('\n')
+        section_marker = '## Binary/Ternary Potentials' if is_binary else '## Single Element Potentials'
+        
+        for i, line in enumerate(lines):
+            if section_marker in line:
+                # Find the end of the table (next ## or ---)
+                j = i + 1
+                while j < len(lines) and not lines[j].startswith('##') and not lines[j].startswith('---'):
+                    j += 1
+                # Insert before the section end
+                lines.insert(j - 1, new_row)
+                break
+        
+        # Write back
+        with open(REGISTRY_FILE, 'w') as f:
+            f.write('\n'.join(lines))
+        
+        logger.info(f"Added {model_id} to registry")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error adding potential to registry: {e}")
+        return False
