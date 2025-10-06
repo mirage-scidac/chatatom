@@ -99,6 +99,23 @@ When a material is specified but no KIM model is chosen:
 6. Ask the user to select a model by number or name
 7. Wait for user selection before proceeding
 
+CRITICAL RULE - NO MODEL ID HALLUCINATION:
+- You MUST ONLY use KIM model IDs that are explicitly provided in the registry context
+- NEVER generate, guess, or invent model IDs
+- If no models are provided for an element, inform the user that no models are available
+- When copying a model ID, use it EXACTLY as provided - character for character
+- If you're unsure about a model ID, ask the user to clarify rather than guessing
+- Model IDs follow the format: Name__MO_XXXXXXXXXXXX_XXX where X are specific digits
+- The MO number is unique and cannot be substituted or approximated
+
+HANDLING REGISTRY CONTEXT:
+- When you receive "AVAILABLE KIM MODELS FOR [ELEMENT]" in the user prompt, this is the COMPLETE list
+- Only suggest models from this provided list - do not add any others
+- If the list shows "ALREADY DOWNLOADED" models, strongly recommend those first
+- If the list shows only "AVAILABLE FOR DOWNLOAD" models, present them and note they need downloading
+- If NO models are provided in the context, tell the user: "I don't have any KIM models registered for [element]. Would you like me to search OpenKIM for available models?"
+- Copy model IDs exactly as they appear in the registry context, including all underscores and numbers
+
 PHASE 2 - FINALIZATION:
 When processing user feedback on your proposals, your role is to:
 1. Update parameters based on user input
@@ -115,7 +132,6 @@ Required parameters to extract:
 
 Optional parameters to consider:
 - System size (number of atoms or unit cells, default: 5x5x5 unit cells)
-- Choice of interatomic potential (default: suitable KIM model for material)
 - Thermodynamic output frequency (default: every 100 steps)
 - Trajectory output frequency (default: smart calculation based on total steps)
 - Initial structure (default: appropriate crystal structure for material)
@@ -153,6 +169,7 @@ PHASE 2 BEHAVIOR:
 PHASE 2 OUTPUT FORMAT:
 SIMULATION PARAMETERS:
 - Material: [element/compound]
+- KIM Model: [exact model ID selected by user]
 - Temperature: [value] K
 - Ensemble: [NVE/NVT/NPT]
 - Duration: [value] [units]
@@ -160,6 +177,8 @@ SIMULATION PARAMETERS:
 - Cores: [number]
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
+
+CRITICAL: You MUST include the "KIM Model:" line with the exact model ID that the user selected. This is a required parameter that the Generator agent needs to create the correct LAMMPS script.
 
 Be helpful, educational, and conversational in your responses."""
         
@@ -214,11 +233,13 @@ CRITICAL TEMPERATURE REQUIREMENTS:
 - Use a random seed (e.g., 12345) for reproducible results
 - Example: "velocity all create 300.0 12345" for 300K simulation
 
-Verified KIM model IDs (use these):
-- LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004 (Argon LJ)
-- SW_StillingerWeber_1985_Si__MO_405512056662_005 (Silicon SW)
-- EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005 (Aluminum EAM)
-- EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006 (Copper EAM)
+CRITICAL KIM MODEL SELECTION:
+- ALWAYS extract the KIM Model from the SIMULATION PARAMETERS provided by the Orchestrator
+- Look for the line "KIM Model: <model_id>" in the parameters
+- Use that EXACT model ID in your kim init command
+- DO NOT substitute or change the model ID - use it exactly as provided
+- The Orchestrator has already verified this model is available and appropriate
+- If no KIM Model is specified in the parameters (this should never happen), flag this as an error
 
 Common atomic masses (metal units):
 - Argon: 39.948
@@ -227,6 +248,7 @@ Common atomic masses (metal units):
 - Copper: 63.546
 - Gold: 196.966
 - Iron: 55.845
+- Nickel: 58.6934
 
 NEVER use these commands (incompatible with KIM):
 - pair_style
@@ -237,8 +259,7 @@ ALWAYS include:
 - Proper thermo output for monitoring
 - Appropriate timestep and neighbor settings
 - Velocity initialization for temperature-controlled simulations
-
-If a user requests a material/element, select the most appropriate KIM model from the verified list above."""
+- The EXACT KIM model ID specified in the SIMULATION PARAMETERS"""
         super().__init__(
             system_prompt,
             model=config.LAMMPS_GENERATOR_MODEL,

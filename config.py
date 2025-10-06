@@ -5,12 +5,12 @@ API_KEY = "not-needed"
 
 # Per-Agent Model Configuration
 # You can use different models for different agents based on their requirements
-ORCHESTRATOR_MODEL = "gemini25pro"  # Orchestrator needs good reasoning
-LAMMPS_GENERATOR_MODEL = "gemini25pro"  # Generator needs technical accuracy
-LAMMPS_REVIEWER_MODEL = "gemini25pro"  # Reviewer needs critical analysis
+ORCHESTRATOR_MODEL = ""  # Orchestrator needs good reasoning
+LAMMPS_GENERATOR_MODEL = ""  # Generator needs technical accuracy
+LAMMPS_REVIEWER_MODEL = ""  # Reviewer needs critical analysis
 
 # Default model (fallback if agent-specific model not defined)
-DEFAULT_MODEL = "gemini25pro"
+DEFAULT_MODEL = "gpt41"
 
 # Temperature settings per agent (optional)
 ORCHESTRATOR_TEMPERATURE = 0.1
