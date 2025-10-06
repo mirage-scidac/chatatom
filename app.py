@@ -138,6 +138,31 @@ def llm_stream():
                     'simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'
                 ])
 
+            # Extract element from user command and build registry context
+            registry_context = ""
+            for element in kim_utils.ELEMENT_PROPERTIES.keys():
+                if element.lower() in user_command.lower():
+                    # Get models for this element from registry
+                    potentials = kim_utils.read_registry()
+                    element_models = [p for p in potentials if p['element'] == element]
+                    
+                    if element_models:
+                        registry_context = f"\n\nAVAILABLE KIM MODELS FOR {element} (from registry):\n"
+                        downloaded_models = [m for m in element_models if m['downloaded']]
+                        pending_models = [m for m in element_models if not m['downloaded']]
+                        
+                        if downloaded_models:
+                            registry_context += "\nALREADY DOWNLOADED (Ready to use immediately):\n"
+                            for i, model in enumerate(downloaded_models, 1):
+                                registry_context += f"✅ {i}. {model['model_id']} ({model['type']})\n"
+                                registry_context += f"   → This model is installed and ready to go!\n"
+                        
+                        if pending_models:
+                            registry_context += "\nAVAILABLE FOR DOWNLOAD:\n"
+                            for i, model in enumerate(pending_models, len(downloaded_models) + 1):
+                                registry_context += f"⬇️ {i}. {model['model_id']} ({model['type']})\n"
+                    break
+
             # Determine if this is Phase 1 (initial request) or Phase 2 (user response)
             if conversation_context:
                 # Phase 2: User is responding to orchestrator's proposal
@@ -175,7 +200,7 @@ Process the user's feedback and provide final simulation parameters using the SI
                 # Phase 1: Initial analysis and proposal
                 yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
                 
-                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}"
+                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}{registry_context}"
                 analysis_chunks = []
                 analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
                 for chunk in analysis_generator:
@@ -563,6 +588,31 @@ def llm_stream_live():
                     'simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'
                 ])
 
+            # Extract element from user command and build registry context
+            registry_context = ""
+            for element in kim_utils.ELEMENT_PROPERTIES.keys():
+                if element.lower() in user_command.lower():
+                    # Get models for this element from registry
+                    potentials = kim_utils.read_registry()
+                    element_models = [p for p in potentials if p['element'] == element]
+                    
+                    if element_models:
+                        registry_context = f"\n\nAVAILABLE KIM MODELS FOR {element} (from registry):\n"
+                        downloaded_models = [m for m in element_models if m['downloaded']]
+                        pending_models = [m for m in element_models if not m['downloaded']]
+                        
+                        if downloaded_models:
+                            registry_context += "\nALREADY DOWNLOADED (Ready to use immediately):\n"
+                            for i, model in enumerate(downloaded_models, 1):
+                                registry_context += f"✅ {i}. {model['model_id']} ({model['type']})\n"
+                                registry_context += f"   → This model is installed and ready to go!\n"
+                        
+                        if pending_models:
+                            registry_context += "\nAVAILABLE FOR DOWNLOAD:\n"
+                            for i, model in enumerate(pending_models, len(downloaded_models) + 1):
+                                registry_context += f"⬇️ {i}. {model['model_id']} ({model['type']})\n"
+                    break
+
             # Phase 1 or 2 logic (same as existing endpoint)
             if conversation_context:
                 yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
@@ -596,7 +646,7 @@ Process the user's feedback and provide final simulation parameters using the SI
             else:
                 yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
                 
-                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}"
+                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}{registry_context}"
                 analysis_chunks = []
                 analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
                 for chunk in analysis_generator:
