@@ -108,6 +108,7 @@ def serve_index():
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
 from tools import run_lammps_simulation, run_lammps_simulation_streaming, run_lammps_with_async_visualization
+import kim_utils
 
 @app.route('/api/llm-stream', methods=['GET'])
 def llm_stream():
@@ -662,6 +663,259 @@ Process the user's feedback and provide final simulation parameters using the SI
         'Access-Control-Allow-Headers': 'Cache-Control'
     })
 
+# ============================================================================
+# KIM Potentials Management API Endpoints
+# ============================================================================
+
+@app.route('/api/kim-potentials/list', methods=['GET'])
+def list_kim_potentials():
+    """Get list of all potentials from the registry"""
+    try:
+        status = kim_utils.get_registry_status()
+        
+        # Format response for frontend
+        response = {
+            "success": True,
+            "potentials": status.get('potentials', []),
+            "stats": {
+                "total": status.get('total_potentials', 0),
+                "downloaded": status.get('downloaded_potentials', 0),
+                "pending": status.get('not_downloaded', 0),
+                "unique_elements": len(set(p['element'] for p in status.get('potentials', [])))
+            }
+        }
+        
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "potentials": [],
+            "stats": {
+                "total": 0,
+                "downloaded": 0,
+                "pending": 0,
+                "unique_elements": 0
+            }
+        }), 500
+
+
+@app.route('/api/kim-potentials/download', methods=['POST'])
+def download_kim_potential():
+    """Download a specific KIM potential"""
+    try:
+        data = request.get_json()
+        model_id = data.get('model_id')
+        
+        if not model_id:
+            return jsonify({"error": "model_id is required"}), 400
+        
+        # Install the model
+        success, message = kim_utils.install_and_verify_kim_model(model_id, timeout=180)
+        
+        if success:
+            # Update registry
+            kim_utils.update_registry(model_id, downloaded=True)
+            return jsonify({
+                "success": True,
+                "message": message,
+                "model_id": model_id
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": message,
+                "model_id": model_id
+            }), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kim-potentials/search', methods=['GET'])
+def search_kim_potentials():
+    """Search OpenKIM for potentials for a specific element"""
+    try:
+        element = request.args.get('element')
+        
+        if not element:
+            return jsonify({"error": "element parameter is required"}), 400
+        
+        models = kim_utils.query_openkim_models(element, max_results=50)
+        
+        return jsonify({
+            "element": element,
+            "models": models,
+            "count": len(models)
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kim-potentials/status', methods=['GET'])
+def kim_potentials_status():
+    """Get installation status of a specific potential"""
+    try:
+        model_id = request.args.get('model_id')
+        
+        if not model_id:
+            return jsonify({"error": "model_id parameter is required"}), 400
+        
+        installed = kim_utils.is_model_installed(model_id)
+        
+        return jsonify({
+            "model_id": model_id,
+            "installed": installed
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kim-potentials/init', methods=['POST'])
+def initialize_kim_potentials():
+    """Initialize recommended potentials (first-time setup)"""
+    try:
+        # Check if already initialized
+        status = kim_utils.get_registry_status()
+        
+        if status['downloaded_potentials'] > 0:
+            return jsonify({
+                "message": "Potentials already initialized",
+                "status": status
+            })
+        
+        # Initialize in background thread and emit progress via WebSocket
+        def init_with_progress():
+            def progress_callback(model_id, status_type, message):
+                socketio.emit('kim_init_progress', {
+                    'model_id': model_id,
+                    'status': status_type,
+                    'message': message
+                })
+            
+            results = kim_utils.initialize_recommended_potentials(progress_callback)
+            
+            socketio.emit('kim_init_complete', {
+                'results': results,
+                'success_count': sum(results.values()),
+                'total_count': len(results)
+            })
+        
+        init_thread = threading.Thread(target=init_with_progress)
+        init_thread.daemon = True
+        init_thread.start()
+        
+        return jsonify({
+            "message": "Initialization started",
+            "potentials": kim_utils.RECOMMENDED_POTENTIALS
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/kim-potentials/add', methods=['POST'])
+def add_kim_potential():
+    """Add a new potential to the registry"""
+    try:
+        data = request.get_json()
+        element = data.get('element')
+        model_id = data.get('model_id')
+        model_type = data.get('type', 'Unknown')
+        description = data.get('description', '')
+        
+        if not element or not model_id:
+            return jsonify({"error": "element and model_id are required"}), 400
+        
+        success = kim_utils.add_potential_to_registry(element, model_id, model_type, description)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": f"Added {model_id} to registry"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "Failed to add potential to registry"
+            }), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# WebSocket event for KIM potential downloads
+@socketio.on('download_kim_potential')
+def handle_kim_download(data):
+    """Handle KIM potential download via WebSocket with progress updates"""
+    try:
+        model_id = data.get('model_id')
+        
+        if not model_id:
+            emit('kim_download_error', {'message': 'model_id is required'})
+            return
+        
+        emit('kim_download_started', {'model_id': model_id})
+        
+        # Install the model
+        success, message = kim_utils.install_and_verify_kim_model(model_id, timeout=180)
+        
+        if success:
+            # Update registry
+            kim_utils.update_registry(model_id, downloaded=True)
+            emit('kim_download_complete', {
+                'model_id': model_id,
+                'success': True,
+                'message': message
+            })
+        else:
+            emit('kim_download_error', {
+                'model_id': model_id,
+                'message': message
+            })
+            
+    except Exception as e:
+        emit('kim_download_error', {
+            'model_id': data.get('model_id', 'unknown'),
+            'message': str(e)
+        })
+
+
+@socketio.on('initialize_recommended_potentials')
+def handle_initialize_recommended():
+    """Handle initialization of recommended potentials via WebSocket"""
+    try:
+        def progress_callback(model_id, status_type, message):
+            """Callback to emit progress updates"""
+            total = len(kim_utils.RECOMMENDED_POTENTIALS)
+            current_index = kim_utils.RECOMMENDED_POTENTIALS.index(model_id) + 1
+            progress = int((current_index / total) * 100)
+            
+            socketio.emit('kim_init_progress', {
+                'status': message,
+                'current_model': model_id,
+                'progress': progress
+            })
+        
+        # Run initialization
+        results = kim_utils.initialize_recommended_potentials(progress_callback)
+        success_count = sum(results.values())
+        
+        # Emit completion
+        socketio.emit('kim_init_complete', {
+            'results': results,
+            'success_count': success_count,
+            'total_count': len(results)
+        })
+        
+    except Exception as e:
+        socketio.emit('kim_download_error', {
+            'message': f'Initialization failed: {str(e)}'
+        })
+
+
 def run_health_checks():
     """Main function to run health checks."""
     print("--- Starting Application Health Checks ---")
@@ -669,6 +923,50 @@ def run_health_checks():
     check_llm_api()
     print("--- All Health Checks Passed ---")
 
+
+def initialize_kim_registry():
+    """Initialize KIM potentials registry on startup"""
+    print("Checking KIM potentials registry...")
+    
+    if not os.path.exists(kim_utils.REGISTRY_FILE):
+        print(f"⚠️  Registry file not found at {kim_utils.REGISTRY_FILE}")
+        print("Please ensure kim_potentials_registry.md exists in the project directory")
+        return
+    
+    # Verify and sync registry with actual installed models
+    print("Verifying registry against installed KIM models...")
+    sync_result = kim_utils.verify_and_sync_registry()
+    
+    if sync_result['mismatches_found'] > 0:
+        print(f"⚠️  Found {sync_result['mismatches_found']} registry mismatches")
+        print(f"   Updated {sync_result['updates_made']} entries to match actual installation status")
+        for mismatch in sync_result['mismatches']:
+            print(f"   - {mismatch['model_id']}: registry={mismatch['registry_status']}, actual={mismatch['actual_status']}")
+    else:
+        print("✅ Registry is in sync with installed models")
+    
+    status = kim_utils.get_registry_status()
+    print(f"✅ Registry loaded: {status['total_potentials']} potentials registered")
+    print(f"   Downloaded: {status['downloaded_potentials']}")
+    print(f"   Not downloaded: {status['not_downloaded']}")
+    
+    # Check if this is first run (no potentials downloaded)
+    if status['downloaded_potentials'] == 0:
+        print("\n🔄 First run detected - initializing recommended potentials...")
+        print(f"   Will download: {', '.join([p.split('__')[0] for p in kim_utils.RECOMMENDED_POTENTIALS])}")
+        print("   This may take a few minutes...")
+        
+        results = kim_utils.initialize_recommended_potentials()
+        success_count = sum(results.values())
+        
+        if success_count > 0:
+            print(f"✅ Initialized {success_count}/{len(results)} recommended potentials")
+        else:
+            print("⚠️  No potentials were successfully downloaded")
+            print("   You can download them later from the KIM Potentials tab")
+
+
 if __name__ == "__main__":
     run_health_checks()
+    initialize_kim_registry()
     socketio.run(app, host='0.0.0.0', port=5001, debug=True)
