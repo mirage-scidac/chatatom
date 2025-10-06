@@ -481,6 +481,8 @@ def handle_streaming_simulation(data):
     """Handle streaming simulation requests via WebSocket with visualization"""
     try:
         lammps_script = data.get('script')
+        user_command = data.get('user_command', '')  # Get original user command for viz parsing
+        
         if not lammps_script:
             emit('error', {'message': 'No LAMMPS script provided'})
             return
@@ -509,43 +511,40 @@ def handle_streaming_simulation(data):
         
         def run_simulation():
             try:
-                # Check if user wants visualization (detect keywords)
-                user_wants_viz = any(keyword in lammps_script.lower() for keyword in [
-                    'dump', 'trajectory', 'visualize', 'show'
-                ]) or True  # Default to always show visualization for MVP3
+                # Parse visualization request from user command
+                from tools import parse_visualization_request
                 
-                if user_wants_viz:
-                    # Use visualization-enabled simulation
-                    render_config = {
-                        'interval': 50,  # Render every 50 steps for smooth animation
-                        'quality': 'medium',
-                        'camera_angle': 'default'
-                    }
-                    
-                    output_files, all_thermo_data, frame_images = run_lammps_with_async_visualization(
-                        lammps_script, 
-                        render_config,
-                        data_callback
-                    )
-                    
-                    socketio.emit('simulation_complete', {
-                        'output_files': output_files,
-                        'total_points': len(all_thermo_data),
-                        'total_frames': len(frame_images),
-                        'message': f'Simulation completed successfully with {len(frame_images)} visualization frames!'
-                    })
-                else:
-                    # Use regular streaming simulation
-                    output_files, all_thermo_data = run_lammps_simulation_streaming(
-                        lammps_script, 
-                        data_callback
-                    )
-                    
-                    socketio.emit('simulation_complete', {
-                        'output_files': output_files,
-                        'total_points': len(all_thermo_data),
-                        'message': 'Simulation completed successfully!'
-                    })
+                # Extract material from script for context
+                simulation_context = {}
+                if 'Al' in lammps_script or 'aluminum' in lammps_script.lower():
+                    simulation_context['material'] = 'Al'
+                elif 'Cu' in lammps_script or 'copper' in lammps_script.lower():
+                    simulation_context['material'] = 'Cu'
+                
+                # Parse visualization preferences from user command
+                viz_config = parse_visualization_request(user_command, simulation_context)
+                
+                # Merge with default rendering settings
+                render_config = {
+                    'interval': 50,  # Render every 50 steps for smooth animation
+                    'quality': viz_config.get('quality', 'medium'),
+                    'camera_angle': viz_config.get('camera_angle', 'default'),
+                    'mode': viz_config.get('mode', 'config'),
+                    'script': viz_config.get('script'),  # OVITO script if generated
+                }
+                
+                output_files, all_thermo_data, frame_images = run_lammps_with_async_visualization(
+                    lammps_script, 
+                    render_config,
+                    data_callback
+                )
+                
+                socketio.emit('simulation_complete', {
+                    'output_files': output_files,
+                    'total_points': len(all_thermo_data),
+                    'total_frames': len(frame_images),
+                    'message': f'Simulation completed successfully with {len(frame_images)} visualization frames!'
+                })
                 
             except Exception as e:
                 socketio.emit('simulation_error', {

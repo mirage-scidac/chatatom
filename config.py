@@ -5,9 +5,10 @@ API_KEY = "not-needed"
 
 # Per-Agent Model Configuration
 # You can use different models for different agents based on their requirements
-ORCHESTRATOR_MODEL = ""  # Orchestrator needs good reasoning
+ORCHESTRATOR_MODEL = ""  # Orchestrator needs good reasoning (handles simulation + visualization)
 LAMMPS_GENERATOR_MODEL = ""  # Generator needs technical accuracy
 LAMMPS_REVIEWER_MODEL = ""  # Reviewer needs critical analysis
+OVITO_SCRIPT_MODEL = ""  # OVITO script generation needs visualization expertise
 
 # Default model (fallback if agent-specific model not defined)
 DEFAULT_MODEL = "gpt41"
@@ -16,6 +17,7 @@ DEFAULT_MODEL = "gpt41"
 ORCHESTRATOR_TEMPERATURE = 0.1
 LAMMPS_GENERATOR_TEMPERATURE = 0.1
 LAMMPS_REVIEWER_TEMPERATURE = 0.1
+OVITO_SCRIPT_TEMPERATURE = 0.1
 
 # LAMMPS Execution Configuration
 LAMMPS_CORES = 4  # Default number of cores for LAMMPS simulations

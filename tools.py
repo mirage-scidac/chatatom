@@ -13,6 +13,84 @@ import threading
 import time
 import numpy as np
 import kim_utils
+from visualization_rendering import render_frame_to_image_custom
+
+
+def parse_visualization_request(user_command: str, simulation_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Parse visualization request from user command and generate OVITO script.
+    
+    This function now uses OrchestratorAgent's integrated visualization parsing
+    instead of the deprecated VisualizationAgent.
+    
+    Args:
+        user_command: User's natural language command (may include visualization preferences)
+        simulation_context: Optional simulation context (material, structure, etc.)
+        
+    Returns:
+        Dictionary with visualization configuration:
+        - mode: 'script' or 'config'
+        - script: OVITO Python code (if mode='script')
+        - config: Basic config (if mode='config')
+        - quality: Rendering quality
+        - camera_angle: Camera position
+    """
+    # Import here to avoid circular dependency
+    from agents import OrchestratorAgent
+    
+    # Check if user command contains visualization keywords
+    viz_keywords = [
+        'visualize', 'visualization', 'show', 'display', 'render',
+        'crystalline', 'crystal', 'structure', 'defect', 'surface',
+        'color by', 'highlight', 'filter', 'only'
+    ]
+    
+    command_lower = user_command.lower()
+    has_viz_request = any(keyword in command_lower for keyword in viz_keywords)
+    
+    if not has_viz_request:
+        # No specific visualization request, use default config
+        return {
+            'mode': 'config',
+            'quality': 'medium',
+            'camera_angle': 'default'
+        }
+    
+    # Extract visualization-specific part of the command
+    # Look for common patterns like "visualize X" or "show only Y"
+    viz_request = user_command
+    
+    # Try to isolate the visualization request
+    for pattern in ['visualize', 'visualization', 'show', 'display']:
+        if pattern in command_lower:
+            # Extract everything after the pattern
+            parts = user_command.lower().split(pattern, 1)
+            if len(parts) > 1:
+                viz_request = parts[1].strip()
+                # Remove common prefixes
+                for prefix in ['only', 'just', 'the']:
+                    if viz_request.startswith(prefix + ' '):
+                        viz_request = viz_request[len(prefix)+1:].strip()
+                break
+    
+    # Use OrchestratorAgent's integrated visualization parsing
+    try:
+        orchestrator = OrchestratorAgent()
+        result = orchestrator.parse_visualization_request(
+            viz_request,
+            simulation_context
+        )
+        
+        return result
+        
+    except Exception as e:
+        print(f"Warning: Failed to parse visualization request: {e}")
+        # Fall back to basic config
+        return {
+            'mode': 'config',
+            'quality': 'medium',
+            'camera_angle': 'default'
+        }
 
 
 def extract_kim_models(script_string: str) -> List[str]:
@@ -1180,7 +1258,7 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
     simulation_complete = threading.Event()
     
     def rendering_worker():
-        """Worker thread that renders frames asynchronously."""
+        """Worker thread that renders frames asynchronously with enhanced visualization."""
         print("Starting rendering worker thread")
         
         # Import OVITO in the worker thread to avoid threading issues
@@ -1203,7 +1281,8 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
                 # Create OVITO data and render in the worker thread
                 ovito_data = create_ovito_frame(frame_data['data'])
                 if ovito_data:
-                    image_b64 = render_frame_to_image(ovito_data, render_config)
+                    # Use the enhanced rendering function that supports dynamic scripts
+                    image_b64 = render_frame_to_image_custom(ovito_data, render_config)
                     if image_b64:
                         frame_info = {
                             'image': image_b64,

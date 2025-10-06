@@ -2,6 +2,7 @@
 from openai import OpenAI
 import config
 import kim_utils
+from typing import Dict, Any, Optional
 
 class Agent:
     def __init__(self, system_prompt, model=None, default_temperature=0.1):
@@ -63,6 +64,13 @@ class Agent:
 
 class OrchestratorAgent(Agent):
     def __init__(self):
+        # Import here to avoid circular dependency
+        from ovito_script_generator import OVITOScriptGenerator
+        from ovito_executor import DynamicOVITOExecutor
+        
+        self.ovito_generator = OVITOScriptGenerator()
+        self.ovito_executor = DynamicOVITOExecutor()
+        
         system_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
 
 PHASE 1 - ANALYSIS AND PROPOSAL:
@@ -180,6 +188,18 @@ SIMULATION PARAMETERS:
 
 CRITICAL: You MUST include the "KIM Model:" line with the exact model ID that the user selected. This is a required parameter that the Generator agent needs to create the correct LAMMPS script.
 
+VISUALIZATION PREFERENCES (OPTIONAL):
+If the user specifies visualization preferences (e.g., "show only crystalline atoms", "color by structure", "highlight defects"), extract and note them separately. Common visualization requests include:
+- Filtering atoms (e.g., "only crystalline", "only surface atoms")
+- Coloring schemes (e.g., "color by structure type", "color by temperature")
+- Structural analysis (e.g., "identify defects", "show dislocations")
+- Display preferences (e.g., "high quality", "top view")
+
+If visualization preferences are detected, add a section:
+VISUALIZATION PREFERENCES:
+- Request: [user's visualization request in their own words]
+- Type: [filtering/coloring/analysis/display]
+
 Be helpful, educational, and conversational in your responses."""
         
         super().__init__(
@@ -187,6 +207,93 @@ Be helpful, educational, and conversational in your responses."""
             model=config.ORCHESTRATOR_MODEL,
             default_temperature=config.ORCHESTRATOR_TEMPERATURE
         )
+    
+    def parse_visualization_request(
+        self, 
+        user_request: str, 
+        simulation_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Parse visualization request and generate OVITO script.
+        
+        This method integrates the functionality previously in VisualizationAgent,
+        allowing the orchestrator to handle both simulation and visualization parsing.
+        
+        Args:
+            user_request: Natural language visualization request
+            simulation_context: Optional simulation context (material, structure, etc.)
+            
+        Returns:
+            Dictionary with visualization instructions:
+            - mode: 'script' or 'config'
+            - script: OVITO Python code (if mode='script')
+            - config: Structured configuration (if mode='config')
+            - rationale: Explanation of the approach
+            - warnings: List of potential issues
+        """
+        # Check if this is actually a visualization request
+        viz_keywords = [
+            'visualize', 'visualization', 'show', 'display', 'render',
+            'crystalline', 'crystal', 'structure', 'defect', 'surface',
+            'color by', 'highlight', 'filter', 'only'
+        ]
+        
+        request_lower = user_request.lower()
+        has_viz_request = any(keyword in request_lower for keyword in viz_keywords)
+        
+        if not has_viz_request:
+            # No visualization request, return basic config
+            return {
+                'mode': 'config',
+                'quality': 'medium',
+                'camera_angle': 'default',
+                'rationale': 'No specific visualization request detected',
+                'warnings': []
+            }
+        
+        try:
+            # Generate rationale using the orchestrator's understanding
+            rationale_prompt = f"""Briefly explain (in 1-2 sentences) how to visualize this request using OVITO modifiers:
+
+USER REQUEST: {user_request}
+
+Focus on which OVITO modifiers would be used (e.g., CommonNeighborAnalysisModifier, ColorCodingModifier, etc.)."""
+            
+            rationale = self.execute(rationale_prompt, temperature=0.3)
+            
+            # Generate OVITO script using the specialized generator
+            script = self.ovito_generator.generate_ovito_script(
+                user_request, 
+                simulation_context
+            )
+            
+            # Validate script
+            try:
+                self.ovito_executor.validate_and_sanitize(script)
+                warnings = []
+            except Exception as e:
+                warnings = [f"Script validation warning: {str(e)}"]
+            
+            return {
+                'mode': 'script',
+                'script': script,
+                'rationale': rationale,
+                'warnings': warnings,
+                'quality': 'medium',
+                'camera_angle': 'default'
+            }
+            
+        except Exception as e:
+            # If script generation fails, return error
+            return {
+                'mode': 'config',
+                'script': None,
+                'rationale': f"Failed to generate visualization script: {str(e)}",
+                'warnings': ['Script generation failed - falling back to basic visualization'],
+                'error': str(e),
+                'quality': 'medium',
+                'camera_angle': 'default'
+            }
 
 class LammpsGeneratorAgent(Agent):
     def __init__(self):
