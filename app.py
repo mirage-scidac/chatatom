@@ -309,8 +309,33 @@ def llm_command():
         # Track the full conversation
         conversation = []
         
-        # 1. Orchestrator analyzes the request
-        orchestrator_prompt = f"Analyze this simulation request: {user_command}"
+        # 1. Orchestrator analyzes the request with registry context
+        # Extract element from user command if present
+        registry_context = ""
+        for element in kim_utils.ELEMENT_PROPERTIES.keys():
+            if element.lower() in user_command.lower():
+                # Get models for this element from registry
+                potentials = kim_utils.read_registry()
+                element_models = [p for p in potentials if p['element'] == element]
+                
+                if element_models:
+                    registry_context = f"\n\nAVAILABLE KIM MODELS FOR {element} (from registry):\n"
+                    downloaded_models = [m for m in element_models if m['downloaded']]
+                    pending_models = [m for m in element_models if not m['downloaded']]
+                    
+                    if downloaded_models:
+                        registry_context += "\nALREADY DOWNLOADED (Ready to use immediately):\n"
+                        for i, model in enumerate(downloaded_models, 1):
+                            registry_context += f"✅ {i}. {model['model_id']} ({model['type']})\n"
+                            registry_context += f"   → This model is installed and ready to go!\n"
+                    
+                    if pending_models:
+                        registry_context += "\nAVAILABLE FOR DOWNLOAD:\n"
+                        for i, model in enumerate(pending_models, len(downloaded_models) + 1):
+                            registry_context += f"⬇️ {i}. {model['model_id']} ({model['type']})\n"
+                break
+        
+        orchestrator_prompt = f"Analyze this simulation request: {user_command}{registry_context}"
         analysis = orchestrator.execute(orchestrator_prompt)
         conversation.append({
             "agent": "Orchestrator",

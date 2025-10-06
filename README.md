@@ -38,7 +38,7 @@ With the `chatmd` environment active, install the required packages.
 
 - **Python Packages (via uv):**
   ```bash
-  uv pip install ovito openai flask flask-socketio pytest
+  uv pip install ovito openai flask flask-socketio pytest requests
   ```
 
 ### 3. Install KIM Models

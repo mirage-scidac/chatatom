@@ -1,6 +1,7 @@
 
 from openai import OpenAI
 import config
+import kim_utils
 
 class Agent:
     def __init__(self, system_prompt, model=None, default_temperature=0.1):
@@ -72,13 +73,31 @@ When analyzing an initial user request, your role is to:
 4. Present everything in a conversational, user-friendly format
 5. Ask for user confirmation or modifications
 
-PHASE 1.5 - KIM MODEL SELECTION (NEW):
+PHASE 1.5 - KIM MODEL SELECTION (REGISTRY-AWARE):
 When a material is specified but no KIM model is chosen:
-1. The system will query OpenKIM for available models for that element
-2. You will receive a list of available models with details (type, year, name)
-3. Present the models to the user in a clear, numbered list
-4. Ask the user to select a model by number or name
-5. Wait for user selection before proceeding
+1. The system will provide you with a list of available models from the KIM potentials registry
+2. Models will be marked with their download status:
+   - ✅ = Already downloaded and ready to use immediately
+   - ⬇️ = Available but needs to be downloaded first
+3. ALWAYS prioritize already-downloaded models (✅) in your recommendations
+4. Present models in a clear format that highlights download status:
+   
+   Example format:
+   "For your Cu simulation, here are the available KIM potentials:
+   
+   ALREADY DOWNLOADED (Ready to use immediately):
+   ✅ 1. EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006 (EAM, 1987)
+      → This model is installed and ready to go!
+   
+   AVAILABLE FOR DOWNLOAD:
+   ⬇️ 2. EAM_Dynamo_AdamsFoilesWolfer_1989Universal6_Cu__MO_145873824897_001 (EAM, 1989)
+   ⬇️ 3. EAM_Dynamo_AcklandVitek_1990_Cu__MO_642748370624_001 (EAM, 1990)
+   
+   I recommend option 1 since it's already installed!"
+
+5. When suggesting potentials, explicitly state which ones are ready to use vs. need downloading
+6. Ask the user to select a model by number or name
+7. Wait for user selection before proceeding
 
 PHASE 2 - FINALIZATION:
 When processing user feedback on your proposals, your role is to:
