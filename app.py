@@ -244,6 +244,42 @@ Process the user's feedback and provide final simulation parameters using the SI
             review = ''.join(review_chunks)
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
 
+            # 4. Visualization agent - ALWAYS runs to show visualization is happening
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+            
+            # Parse visualization request from user command
+            from tools import parse_visualization_request
+            
+            # Extract material from analysis for context
+            simulation_context = {}
+            if 'Material:' in analysis:
+                # Simple extraction - look for material line
+                for line in analysis.split('\n'):
+                    if 'Material:' in line:
+                        material = line.split('Material:')[1].strip().split()[0]
+                        simulation_context['material'] = material
+                        break
+            
+            viz_config = parse_visualization_request(user_command, simulation_context)
+            
+            # Generate appropriate message based on whether custom visualization was requested
+            if viz_config.get('has_custom_request', False):
+                # Custom visualization requested - show detailed explanation
+                viz_message = f"**Custom Visualization Requested**\n\n{viz_config.get('rationale', 'Generating custom OVITO visualization script...')}"
+                
+                if viz_config.get('mode') == 'script' and viz_config.get('script'):
+                    viz_message += f"\n\n**Generated OVITO Script:**\n```python\n{viz_config['script']}\n```"
+                
+                if viz_config.get('warnings'):
+                    viz_message += f"\n\n**Warnings:**\n" + "\n".join(f"- {w}" for w in viz_config['warnings'])
+            else:
+                # No custom visualization - show minimal message
+                viz_message = "Applying default visualization settings for trajectory rendering."
+            
+            # Stream the visualization message
+            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
+
             # Check if review passed
             if "REVIEW: PASS" in review:
                 # Enhanced execution logic with intent tracking
@@ -685,6 +721,42 @@ Process the user's feedback and provide final simulation parameters using the SI
             
             review = ''.join(review_chunks)
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
+
+            # 4. Visualization agent - ALWAYS runs to show visualization is happening
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+            
+            # Parse visualization request from user command
+            from tools import parse_visualization_request
+            
+            # Extract material from analysis for context
+            simulation_context = {}
+            if 'Material:' in analysis:
+                # Simple extraction - look for material line
+                for line in analysis.split('\n'):
+                    if 'Material:' in line:
+                        material = line.split('Material:')[1].strip().split()[0]
+                        simulation_context['material'] = material
+                        break
+            
+            viz_config = parse_visualization_request(user_command, simulation_context)
+            
+            # Generate appropriate message based on whether custom visualization was requested
+            if viz_config.get('has_custom_request', False):
+                # Custom visualization requested - show detailed explanation
+                viz_message = f"**Custom Visualization Requested**\n\n{viz_config.get('rationale', 'Generating custom OVITO visualization script...')}"
+                
+                if viz_config.get('mode') == 'script' and viz_config.get('script'):
+                    viz_message += f"\n\n**Generated OVITO Script:**\n```python\n{viz_config['script']}\n```"
+                
+                if viz_config.get('warnings'):
+                    viz_message += f"\n\n**Warnings:**\n" + "\n".join(f"- {w}" for w in viz_config['warnings'])
+            else:
+                # No custom visualization - show minimal message
+                viz_message = "Applying default visualization settings for trajectory rendering."
+            
+            # Stream the visualization message
+            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
 
             # Check if review passed and determine execution
             if "REVIEW: PASS" in review:

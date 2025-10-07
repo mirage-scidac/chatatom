@@ -182,7 +182,6 @@ SIMULATION PARAMETERS:
 - Ensemble: [NVE/NVT/NPT]
 - Duration: [value] [units]
 - System size: [value] unit cells (approximately [N] atoms)
-- Cores: [number]
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
 
@@ -216,8 +215,9 @@ Be helpful, educational, and conversational in your responses."""
         """
         Parse visualization request and generate OVITO script.
         
-        This method integrates the functionality previously in VisualizationAgent,
-        allowing the orchestrator to handle both simulation and visualization parsing.
+        This method is the single source of truth for understanding visualization intent.
+        No redundant keyword detection - the LLM determines whether custom visualization
+        is needed based on the user's request.
         
         Args:
             user_request: Natural language visualization request
@@ -230,25 +230,36 @@ Be helpful, educational, and conversational in your responses."""
             - config: Structured configuration (if mode='config')
             - rationale: Explanation of the approach
             - warnings: List of potential issues
+            - has_custom_request: Boolean indicating if user requested custom visualization
         """
-        # Check if this is actually a visualization request
-        viz_keywords = [
-            'visualize', 'visualization', 'show', 'display', 'render',
-            'crystalline', 'crystal', 'structure', 'defect', 'surface',
-            'color by', 'highlight', 'filter', 'only'
-        ]
+        # Use LLM to determine if this is a custom visualization request
+        detection_prompt = f"""Analyze this user request and determine if it contains a CUSTOM visualization request.
+
+USER REQUEST: {user_request}
+
+A CUSTOM visualization request is one that asks for specific visual analysis like:
+- "show only crystalline atoms"
+- "color by structure type"
+- "highlight defects"
+- "visualize surface atoms"
+- "filter out amorphous regions"
+
+A request is NOT custom if it's just a general simulation request without specific visualization instructions.
+
+Respond with ONLY "YES" if this is a custom visualization request, or "NO" if it's not."""
         
-        request_lower = user_request.lower()
-        has_viz_request = any(keyword in request_lower for keyword in viz_keywords)
+        detection_response = self.execute(detection_prompt, temperature=0.1).strip().upper()
+        has_custom_request = "YES" in detection_response
         
-        if not has_viz_request:
-            # No visualization request, return basic config
+        if not has_custom_request:
+            # No custom visualization request, return basic config
             return {
                 'mode': 'config',
                 'quality': 'medium',
                 'camera_angle': 'default',
-                'rationale': 'No specific visualization request detected',
-                'warnings': []
+                'rationale': 'Using default visualization settings',
+                'warnings': [],
+                'has_custom_request': False
             }
         
         try:
@@ -280,7 +291,8 @@ Focus on which OVITO modifiers would be used (e.g., CommonNeighborAnalysisModifi
                 'rationale': rationale,
                 'warnings': warnings,
                 'quality': 'medium',
-                'camera_angle': 'default'
+                'camera_angle': 'default',
+                'has_custom_request': True
             }
             
         except Exception as e:
@@ -292,7 +304,8 @@ Focus on which OVITO modifiers would be used (e.g., CommonNeighborAnalysisModifi
                 'warnings': ['Script generation failed - falling back to basic visualization'],
                 'error': str(e),
                 'quality': 'medium',
-                'camera_angle': 'default'
+                'camera_angle': 'default',
+                'has_custom_request': True  # Still true, just failed to generate
             }
 
 class LammpsGeneratorAgent(Agent):

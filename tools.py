@@ -20,8 +20,9 @@ def parse_visualization_request(user_command: str, simulation_context: Optional[
     """
     Parse visualization request from user command and generate OVITO script.
     
-    This function now uses OrchestratorAgent's integrated visualization parsing
-    instead of the deprecated VisualizationAgent.
+    Uses OrchestratorAgent as the single source of truth for understanding
+    visualization intent. No redundant keyword detection - the LLM determines
+    whether custom visualization is needed.
     
     Args:
         user_command: User's natural language command (may include visualization preferences)
@@ -34,50 +35,16 @@ def parse_visualization_request(user_command: str, simulation_context: Optional[
         - config: Basic config (if mode='config')
         - quality: Rendering quality
         - camera_angle: Camera position
+        - has_custom_request: Boolean indicating if user requested custom visualization
     """
     # Import here to avoid circular dependency
     from agents import OrchestratorAgent
     
-    # Check if user command contains visualization keywords
-    viz_keywords = [
-        'visualize', 'visualization', 'show', 'display', 'render',
-        'crystalline', 'crystal', 'structure', 'defect', 'surface',
-        'color by', 'highlight', 'filter', 'only'
-    ]
-    
-    command_lower = user_command.lower()
-    has_viz_request = any(keyword in command_lower for keyword in viz_keywords)
-    
-    if not has_viz_request:
-        # No specific visualization request, use default config
-        return {
-            'mode': 'config',
-            'quality': 'medium',
-            'camera_angle': 'default'
-        }
-    
-    # Extract visualization-specific part of the command
-    # Look for common patterns like "visualize X" or "show only Y"
-    viz_request = user_command
-    
-    # Try to isolate the visualization request
-    for pattern in ['visualize', 'visualization', 'show', 'display']:
-        if pattern in command_lower:
-            # Extract everything after the pattern
-            parts = user_command.lower().split(pattern, 1)
-            if len(parts) > 1:
-                viz_request = parts[1].strip()
-                # Remove common prefixes
-                for prefix in ['only', 'just', 'the']:
-                    if viz_request.startswith(prefix + ' '):
-                        viz_request = viz_request[len(prefix)+1:].strip()
-                break
-    
-    # Use OrchestratorAgent's integrated visualization parsing
+    # Always use Orchestrator to parse - it's the single source of truth
     try:
         orchestrator = OrchestratorAgent()
         result = orchestrator.parse_visualization_request(
-            viz_request,
+            user_command,
             simulation_context
         )
         
@@ -89,7 +56,8 @@ def parse_visualization_request(user_command: str, simulation_context: Optional[
         return {
             'mode': 'config',
             'quality': 'medium',
-            'camera_angle': 'default'
+            'camera_angle': 'default',
+            'has_custom_request': False
         }
 
 
