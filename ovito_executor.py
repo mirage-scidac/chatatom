@@ -94,9 +94,12 @@ class DynamicOVITOExecutor:
             return namespace['pipeline']
             
         except Exception as e:
-            error_msg = f"Failed to execute visualization script: {str(e)}"
-            print(f"Error executing OVITO script: {e}")
+            error_msg = f"Failed to execute visualization script: {type(e).__name__}: {str(e)}"
+            print(f"Error executing OVITO script: {type(e).__name__}: {e}")
             print(f"Script was:\n{script}")
+            # Print detailed traceback for debugging
+            import traceback
+            print(f"Traceback:\n{traceback.format_exc()}")
             raise VisualizationScriptError(error_msg) from e
     
     def _validate_script(self, script: str) -> None:

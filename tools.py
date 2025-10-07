@@ -1298,6 +1298,7 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
     def rendering_worker():
         """Worker thread that renders frames concurrently with simulation."""
         frames_rendered = 0
+        frames_failed = 0
         
         print("  [Rendering Thread] Started")
         
@@ -1307,42 +1308,65 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
                 if frame_info is None:
                     continue
                 
-                # Render the frame
-                ovito_data = create_ovito_frame(frame_info['data'])
-                if ovito_data:
-                    image_b64 = render_frame_to_image_custom(ovito_data, render_config)
-                    if image_b64:
-                        # Store rendered frame
-                        rendered_frame = {
-                            'image': image_b64,
-                            'frame_number': frame_info['frame_number'],
-                            'timestep': frame_info['timestep']
-                        }
-                        frame_images.append(rendered_frame)
-                        frames_rendered += 1
+                try:
+                    # Render the frame - wrapped in inner try-catch for detailed error handling
+                    ovito_data = create_ovito_frame(frame_info['data'])
+                    if ovito_data:
+                        image_b64 = render_frame_to_image_custom(ovito_data, render_config)
+                        if image_b64:
+                            # Store rendered frame
+                            rendered_frame = {
+                                'image': image_b64,
+                                'frame_number': frame_info['frame_number'],
+                                'timestep': frame_info['timestep']
+                            }
+                            frame_images.append(rendered_frame)
+                            frames_rendered += 1
+                            
+                            # Report rendering progress periodically
+                            if frames_rendered % 10 == 0:
+                                queue_size = frame_queue.qsize()
+                                print(f"  [Rendering Thread] {frames_rendered} frames completed, {queue_size} in queue")
+                            
+                            # Stream rendered frame via callback
+                            if data_callback:
+                                try:
+                                    data_callback({
+                                        'type': 'trajectory_frame',
+                                        'image_data': image_b64,
+                                        'frame_number': frame_info['frame_number'],
+                                        'timestep': frame_info['timestep']
+                                    })
+                                except Exception as e:
+                                    print(f"  [Rendering Thread] Warning: Error in viz callback: {e}")
+                        else:
+                            frames_failed += 1
+                            if frames_failed <= 3:  # Only log first few failures
+                                print(f"  [Rendering Thread] Warning: render_frame_to_image_custom returned None for frame {frame_info['frame_number']}")
+                    else:
+                        frames_failed += 1
+                        if frames_failed <= 3:
+                            print(f"  [Rendering Thread] Warning: create_ovito_frame returned None for frame {frame_info['frame_number']}")
                         
-                        # Report rendering progress periodically
-                        if frames_rendered % 10 == 0:
-                            queue_size = frame_queue.qsize()
-                            print(f"  [Rendering Thread] {frames_rendered} frames completed, {queue_size} in queue")
-                        
-                        # Stream rendered frame via callback
-                        if data_callback:
-                            try:
-                                data_callback({
-                                    'type': 'trajectory_frame',
-                                    'image_data': image_b64,
-                                    'frame_number': frame_info['frame_number'],
-                                    'timestep': frame_info['timestep']
-                                })
-                            except Exception as e:
-                                print(f"  [Rendering Thread] Warning: Error in viz callback: {e}")
+                except Exception as e:
+                    frames_failed += 1
+                    # Log detailed error for first few failures, then summarize
+                    if frames_failed <= 3:
+                        print(f"  [Rendering Thread] Error rendering frame {frame_info['frame_number']}: {type(e).__name__}: {str(e)}")
+                        import traceback
+                        print(f"  [Rendering Thread] Traceback: {traceback.format_exc()}")
+                    elif frames_failed == 4:
+                        print(f"  [Rendering Thread] Suppressing further detailed error messages (will show summary at end)")
+                    continue
                         
             except Exception as e:
-                print(f"  [Rendering Thread] Warning: Error rendering frame: {e}")
+                # Outer exception handler for queue operations
+                print(f"  [Rendering Thread] Warning: Error in rendering loop: {e}")
                 continue
         
-        print(f"  [Rendering Thread] Completed: {frames_rendered} frames rendered")
+        print(f"  [Rendering Thread] Completed: {frames_rendered} frames rendered, {frames_failed} frames failed")
+        if frames_failed > 0:
+            print(f"  [Rendering Thread] Note: Simulation completed successfully despite visualization failures")
     
     # Create temporary directory (all ranks need this)
     temp_dir = tempfile.mkdtemp(prefix="lammps_mpi_")

@@ -24,6 +24,10 @@ def render_frame_to_image_custom(
     1. Dynamic script mode: Execute LLM-generated OVITO Python scripts
     2. Static config mode: Use predefined visualization configurations
     
+    IMPORTANT: This function is designed to NEVER raise exceptions that could
+    stop the simulation. All errors are caught and logged, with graceful fallback
+    to basic visualization or returning None.
+    
     Args:
         data_collection: OVITO DataCollection with simulation data
         viz_config: Either:
@@ -33,7 +37,7 @@ def render_frame_to_image_custom(
         client_info: Optional client information for logging
         
     Returns:
-        str: Base64-encoded PNG image, or None on error
+        str: Base64-encoded PNG image, or None on error (simulation continues)
     """
     try:
         from ovito.pipeline import Pipeline, StaticSource
@@ -54,39 +58,51 @@ def render_frame_to_image_custom(
         
         if mode == 'script' and 'script' in viz_config and viz_config['script']:
             # Dynamic script mode - execute LLM-generated OVITO script
-            print("Using dynamic OVITO script mode")
-            executor = DynamicOVITOExecutor()
-            
+            # Wrap in try-catch to ensure errors don't propagate
             try:
+                executor = DynamicOVITOExecutor()
                 pipeline = executor.execute_script(
                     viz_config['script'],
                     pipeline,
                     data_collection
                 )
-                print("Successfully executed dynamic OVITO script")
                 
             except VisualizationScriptError as e:
-                print(f"Script execution failed: {e}")
+                print(f"Visualization script execution failed: {e}")
                 print("Falling back to basic visualization")
-                # Fall back to basic visualization
-                apply_basic_visualization(pipeline)
+                try:
+                    apply_basic_visualization(pipeline)
+                except Exception as fallback_error:
+                    print(f"Fallback visualization also failed: {fallback_error}")
+                    return None
                 
             except Exception as e:
-                print(f"Unexpected error executing script: {e}")
+                print(f"Unexpected error executing visualization script: {type(e).__name__}: {e}")
                 print("Falling back to basic visualization")
-                apply_basic_visualization(pipeline)
+                try:
+                    apply_basic_visualization(pipeline)
+                except Exception as fallback_error:
+                    print(f"Fallback visualization also failed: {fallback_error}")
+                    return None
         
         else:
             # Static configuration mode (backward compatible)
-            print("Using static configuration mode")
-            
-            # Extract config if nested
-            if 'config' in viz_config:
-                config = viz_config['config']
-            else:
-                config = viz_config
-            
-            apply_static_visualization(pipeline, config)
+            try:
+                # Extract config if nested
+                if 'config' in viz_config:
+                    config = viz_config['config']
+                else:
+                    config = viz_config
+                
+                apply_static_visualization(pipeline, config)
+            except Exception as e:
+                print(f"Error applying static visualization: {type(e).__name__}: {e}")
+                print("Falling back to basic visualization")
+                try:
+                    apply_basic_visualization(pipeline)
+                except Exception as fallback_error:
+                    print(f"Fallback visualization also failed: {fallback_error}")
+                    return None
         
         # Add pipeline to scene
         pipeline.add_to_scene()
