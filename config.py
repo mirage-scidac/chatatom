@@ -11,7 +11,7 @@ LAMMPS_REVIEWER_MODEL = ""  # Reviewer needs critical analysis
 OVITO_SCRIPT_MODEL = ""  # OVITO script generation needs visualization expertise
 
 # Default model (fallback if agent-specific model not defined)
-DEFAULT_MODEL = "gpt41"
+DEFAULT_MODEL = "gemini25flash"
 
 # Temperature settings per agent (optional)
 ORCHESTRATOR_TEMPERATURE = 0.1
