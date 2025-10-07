@@ -239,7 +239,8 @@ def find_dump_file(run_folder: str) -> Optional[str]:
 
 
 def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threading.Event, 
-                      data_callback: Optional[Callable] = None, max_frames: int = 100):
+                      data_callback: Optional[Callable] = None, max_frames: int = 100,
+                      target_timesteps: Optional[List[int]] = None):
     """
     Monitor dump file and extract frames as they're written (async).
     
@@ -248,7 +249,8 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
         frame_queue: Queue to put parsed frames
         simulation_done: Event signaling simulation completion
         data_callback: Optional callback for frame notifications
-        max_frames: Maximum frames to extract
+        max_frames: Maximum frames to extract (ignored if target_timesteps provided)
+        target_timesteps: Optional list of specific timesteps to extract for smart sampling
     """
     print(f"[DUMP MONITOR] Starting with path: {dump_path}")
     
@@ -268,6 +270,12 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
     frame_counter = 0
     current_frame_lines = []
     in_frame = False
+    extracted_timesteps = set()  # Track which target timesteps we've extracted
+    
+    # If target timesteps provided, use smart sampling
+    use_smart_sampling = target_timesteps is not None and len(target_timesteps) > 0
+    if use_smart_sampling:
+        print(f"[DUMP MONITOR] Smart sampling enabled - targeting {len(target_timesteps)} specific timesteps: {target_timesteps}")
     
     # Wait for dump file to be created
     max_wait = 30  # seconds
@@ -304,21 +312,42 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
             
             if line.strip() == "ITEM: TIMESTEP":
                 # Start of new frame
-                if current_frame_lines and frame_counter < max_frames:
+                if current_frame_lines:
                     # Parse previous frame
                     frame_data = parse_dump_frame(current_frame_lines)
                     if frame_data:
-                        frame_queue.put({
-                            'data': frame_data,
-                            'frame_number': frame_counter,
-                            'timestep': frame_data.get('timestep', frame_counter)
-                        })
-                        print(f"[DUMP MONITOR] Extracted frame {frame_counter} (timestep {frame_data.get('timestep', frame_counter)})")
-                        frame_counter += 1
+                        timestep = frame_data.get('timestep', 0)
                         
-                        if frame_counter >= max_frames:
-                            print(f"[DUMP MONITOR] Reached maximum frame limit ({max_frames})")
-                            break
+                        # Decide whether to extract this frame
+                        should_extract = False
+                        if use_smart_sampling:
+                            # Smart sampling: only extract if timestep matches a target
+                            if timestep in target_timesteps and timestep not in extracted_timesteps:
+                                should_extract = True
+                                extracted_timesteps.add(timestep)
+                        else:
+                            # Sequential sampling: extract up to max_frames
+                            if frame_counter < max_frames:
+                                should_extract = True
+                        
+                        if should_extract:
+                            frame_queue.put({
+                                'data': frame_data,
+                                'frame_number': frame_counter,
+                                'timestep': timestep
+                            })
+                            print(f"[DUMP MONITOR] Extracted frame {frame_counter} (timestep {timestep})")
+                            frame_counter += 1
+                            
+                            # Check completion conditions
+                            if use_smart_sampling:
+                                if len(extracted_timesteps) >= len(target_timesteps):
+                                    print(f"[DUMP MONITOR] All {len(target_timesteps)} target frames extracted")
+                                    break
+                            else:
+                                if frame_counter >= max_frames:
+                                    print(f"[DUMP MONITOR] Reached maximum frame limit ({max_frames})")
+                                    break
                 
                 current_frame_lines = [line]
                 in_frame = True
@@ -326,16 +355,32 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
                 current_frame_lines.append(line)
         
         # Parse final frame
-        if current_frame_lines and frame_counter < max_frames:
+        if current_frame_lines:
             frame_data = parse_dump_frame(current_frame_lines)
             if frame_data:
-                frame_queue.put({
-                    'data': frame_data,
-                    'frame_number': frame_counter,
-                    'timestep': frame_data.get('timestep', frame_counter)
-                })
+                timestep = frame_data.get('timestep', 0)
+                
+                should_extract = False
+                if use_smart_sampling:
+                    if timestep in target_timesteps and timestep not in extracted_timesteps:
+                        should_extract = True
+                        extracted_timesteps.add(timestep)
+                else:
+                    if frame_counter < max_frames:
+                        should_extract = True
+                
+                if should_extract:
+                    frame_queue.put({
+                        'data': frame_data,
+                        'frame_number': frame_counter,
+                        'timestep': timestep
+                    })
+                    frame_counter += 1
     
-    print(f"[DUMP MONITOR] Completed. Total frames extracted: {frame_counter}")
+    if use_smart_sampling:
+        print(f"[DUMP MONITOR] Completed. Extracted {frame_counter} frames from {len(extracted_timesteps)} target timesteps")
+    else:
+        print(f"[DUMP MONITOR] Completed. Total frames extracted: {frame_counter}")
 
 
 def convert_dump_frame_to_ovito(frame_data: Dict[str, Any]):
@@ -520,9 +565,13 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         )
         
         # Start dump file monitor (async) - pass run_folder to find dump file dynamically
+        # Extract target timesteps from render_config if provided
+        target_timesteps = render_config.get('target_timesteps', None)
+        
         monitor_thread = threading.Thread(
             target=monitor_dump_file,
-            args=(run_folder, frame_queue, simulation_done, data_callback, config.MAX_TRAJECTORY_FRAMES)
+            args=(run_folder, frame_queue, simulation_done, data_callback, 
+                  config.MAX_TRAJECTORY_FRAMES, target_timesteps)
         )
         monitor_thread.daemon = True
         monitor_thread.start()

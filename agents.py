@@ -181,11 +181,29 @@ SIMULATION PARAMETERS:
 - Temperature: [value] K
 - Ensemble: [NVE/NVT/NPT]
 - Duration: [value] [units]
+- Total steps: [calculated total timesteps]
 - System size: [value] unit cells (approximately [N] atoms)
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
 
+FRAME SAMPLING STRATEGY:
+- Max frames: [value from config.MAX_TRAJECTORY_FRAMES]
+- Target timesteps: [list of evenly distributed timesteps]
+- Rationale: [brief explanation of distribution strategy]
+
 CRITICAL: You MUST include the "KIM Model:" line with the exact model ID that the user selected. This is a required parameter that the Generator agent needs to create the correct LAMMPS script.
+
+FRAME SAMPLING CALCULATION:
+When calculating the frame sampling strategy:
+1. Determine total simulation steps from the duration and timestep
+2. Use config.MAX_TRAJECTORY_FRAMES (typically 10) as the target number of frames
+3. Calculate evenly distributed timesteps across the simulation
+4. Round to nearest dump frequency to ensure frames exist in dump file
+5. Ensure coverage of all simulation phases (equilibration, heating, cooling, etc.)
+
+Example for 120,000 step simulation with dump every 1000 steps and MAX_TRAJECTORY_FRAMES=10:
+- Target timesteps: [0, 13000, 26000, 39000, 52000, 65000, 78000, 91000, 104000, 117000]
+- This ensures frames from all phases of the simulation
 
 VISUALIZATION PREFERENCES (OPTIONAL):
 If the user specifies visualization preferences (e.g., "show only crystalline atoms", "color by structure", "highlight defects"), extract and note them separately. Common visualization requests include:
@@ -198,6 +216,8 @@ If visualization preferences are detected, add a section:
 VISUALIZATION PREFERENCES:
 - Request: [user's visualization request in their own words]
 - Type: [filtering/coloring/analysis/display]
+
+IMPORTANT: Always include the FRAME SAMPLING STRATEGY section in your Phase 2 output. This is critical for the visualization pipeline to know which frames to render during the simulation.
 
 Be helpful, educational, and conversational in your responses."""
         
@@ -304,6 +324,7 @@ Key guidelines:
 6. Your output should be only the raw LAMMPS script content. Do not include any markdown formatting, code block markers, or any text other than the LAMMPS commands.
 7. Include a comment about model installation if the model might not be available
 8. CRITICAL: Always initialize velocities for temperature-controlled simulations
+9. CRITICAL: If the Orchestrator provided a FRAME SAMPLING STRATEGY with target timesteps, include this as a comment near the top of the script in the exact format: "# Target timesteps: [list]"
 
 Required LAMMPS script structure with KIM:
 - units metal (required)
@@ -360,7 +381,8 @@ ALWAYS include:
 - Proper thermo output for monitoring
 - Appropriate timestep and neighbor settings
 - Velocity initialization for temperature-controlled simulations
-- The EXACT KIM model ID specified in the SIMULATION PARAMETERS"""
+- The EXACT KIM model ID specified in the SIMULATION PARAMETERS
+- Frame sampling strategy comment if provided by Orchestrator (format: # Target timesteps: [0, 13000, 26000, ...])"""
         super().__init__(
             system_prompt,
             model=config.LAMMPS_GENERATOR_MODEL,

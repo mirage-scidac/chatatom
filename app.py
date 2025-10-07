@@ -107,7 +107,7 @@ def serve_index():
     return send_from_directory('.', 'index.html')
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
-from tools import run_lammps_simulation, run_lammps_simulation_streaming, run_lammps_with_async_visualization
+from tools import run_lammps_simulation
 import kim_utils
 
 @app.route('/api/llm-stream', methods=['GET'])
@@ -315,12 +315,12 @@ Process the user's feedback and provide final simulation parameters using the SI
                     yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Running LAMMPS simulation...', 'message_type': 'info'})}\n\n"
                     
                     try:
-                        output_files, thermo_data = run_lammps_simulation(lammps_script)
+                        output_files, thermo_data, frame_images = run_lammps_simulation(lammps_script)
                         
-                        success_message = f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points."
+                        success_message = f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points and {len(frame_images)} visualization frames."
                         yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': success_message, 'message_type': 'success'})}\n\n"
                         yield f"data: {json.dumps({'type': 'simulation_complete', 'thermo_data': thermo_data, 'output_files': output_files, 'script': lammps_script})}\n\n"
-                        
+                            
                     except Exception as e:
                         error_message = f"Simulation execution failed: {str(e)}"
                         yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
@@ -446,11 +446,11 @@ def llm_command():
             if should_run:
                 # 4. Execute the simulation
                 try:
-                    output_files, thermo_data = run_lammps_simulation(lammps_script)
+                    output_files, thermo_data, frame_images = run_lammps_simulation(lammps_script)
                     
                     conversation.append({
                         "agent": "System",
-                        "content": f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points.",
+                        "content": f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points and {len(frame_images)} visualization frames.",
                         "type": "success"
                     })
                     
@@ -549,6 +549,7 @@ def handle_streaming_simulation(data):
             try:
                 # Parse visualization request from user command
                 from tools import parse_visualization_request
+                import re
                 
                 # Extract material from script for context
                 simulation_context = {}
@@ -560,6 +561,20 @@ def handle_streaming_simulation(data):
                 # Parse visualization preferences from user command
                 viz_config = parse_visualization_request(user_command, simulation_context)
                 
+                # Extract frame sampling strategy from LAMMPS script comments
+                # The Orchestrator should have included this in the script as a comment
+                target_timesteps = None
+                for line in lammps_script.split('\n'):
+                    if 'Target timesteps:' in line or 'target timesteps:' in line.lower():
+                        # Extract the list of timesteps from the comment
+                        # Format: # Target timesteps: [0, 13000, 26000, ...]
+                        match = re.search(r'\[([\d,\s]+)\]', line)
+                        if match:
+                            timesteps_str = match.group(1)
+                            target_timesteps = [int(x.strip()) for x in timesteps_str.split(',')]
+                            print(f"[APP] Extracted target timesteps from script: {target_timesteps}")
+                            break
+                
                 # Merge with default rendering settings
                 render_config = {
                     'interval': None,  # Let smart calculation determine interval
@@ -567,12 +582,15 @@ def handle_streaming_simulation(data):
                     'camera_angle': viz_config.get('camera_angle', 'default'),
                     'mode': viz_config.get('mode', 'config'),
                     'script': viz_config.get('script'),  # OVITO script if generated
+                    'target_timesteps': target_timesteps,  # Frame sampling from Orchestrator
                 }
                 
-                output_files, all_thermo_data, frame_images = run_lammps_with_async_visualization(
+                # Use configured number of cores from config.py
+                output_files, all_thermo_data, frame_images = run_lammps_simulation(
                     lammps_script, 
                     render_config,
-                    data_callback
+                    data_callback,
+                    num_cores=config.LAMMPS_CORES
                 )
                 
                 socketio.emit('simulation_complete', {
