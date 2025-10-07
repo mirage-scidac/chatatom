@@ -1200,6 +1200,373 @@ def calculate_smart_dump_interval(total_steps, user_interval=None, max_frames=10
     return smart_interval
 
 
+def extract_lammps_frame_mpi(lmp, comm):
+    """
+    Extract frame data using MPI gather operations.
+    All ranks participate in gather, but only rank 0 returns complete data.
+    
+    Args:
+        lmp: LAMMPS instance with MPI communicator
+        comm: MPI communicator
+        
+    Returns:
+        dict: Frame data (only on rank 0), None on other ranks
+    """
+    try:
+        me = comm.Get_rank()
+        
+        # All ranks participate in gather
+        natoms = lmp.get_natoms()
+        
+        # Gather positions from all ranks
+        positions = lmp.gather_atoms("x", 1, 3)
+        
+        # Gather atom types
+        types = lmp.gather_atoms("type", 0, 1)
+        
+        # Only rank 0 processes and returns data
+        if me == 0:
+            # Extract simulation box
+            box_data = lmp.extract_box()
+            box = {
+                'xlo': box_data[0][0], 'xhi': box_data[1][0],
+                'ylo': box_data[0][1], 'yhi': box_data[1][1], 
+                'zlo': box_data[0][2], 'zhi': box_data[1][2]
+            }
+            
+            # Try to gather velocities (optional)
+            velocities = None
+            try:
+                vel_data = lmp.gather_atoms("v", 1, 3)
+                velocities = np.array(vel_data).reshape((natoms, 3))
+            except:
+                pass
+            
+            # Try to gather forces (optional)
+            forces = None
+            try:
+                force_data = lmp.gather_atoms("f", 1, 3)
+                forces = np.array(force_data).reshape((natoms, 3))
+            except:
+                pass
+            
+            frame_data = {
+                'natoms': natoms,
+                'positions': np.array(positions).reshape((natoms, 3)),
+                'types': np.array(types, dtype=int),
+                'box': box,
+                'velocities': velocities,
+                'forces': forces
+            }
+            
+            return frame_data
+        else:
+            # Non-root ranks return None
+            return None
+            
+    except Exception as e:
+        print(f"Error extracting MPI frame: {e}")
+        return None
+
+
+def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=None, num_cores=4):
+    """
+    Execute LAMMPS using Python MPI interface with concurrent rendering during simulation.
+    
+    This function uses mpi4py to pass MPI communicator directly to LAMMPS,
+    enabling gather_atoms() for parallel data collection. Rendering happens
+    concurrently with simulation in a separate thread, allowing visualization
+    to lag behind without blocking the simulation.
+    
+    Args:
+        script_string: Complete LAMMPS input script as a string
+        render_config: Visualization configuration
+        data_callback: Function to call with thermodynamic and visualization data
+        num_cores: Number of MPI ranks to use
+        
+    Returns:
+        Tuple containing:
+        - Dictionary of output file paths
+        - List of all thermodynamic data dictionaries
+        - List of rendered frame images (base64)
+    """
+    try:
+        from mpi4py import MPI
+    except ImportError:
+        print("Error: mpi4py not available. Falling back to serial execution.")
+        return run_lammps_with_async_visualization(script_string, render_config, data_callback, 1)
+    
+    import numpy as np
+    from queue import Queue
+    
+    print(f"Running LAMMPS with Python MPI interface ({num_cores} cores)")
+    print("Using concurrent rendering: visualization happens in parallel with simulation")
+    
+    # First, ensure all required KIM models are installed
+    if not ensure_kim_models_installed(script_string):
+        raise RuntimeError("Failed to install required KIM models")
+    
+    # Set default render config
+    if render_config is None:
+        render_config = {
+            'interval': None,
+            'quality': 'medium',
+            'camera_angle': 'default',
+            'max_queue_size': 10
+        }
+    
+    # Initialize MPI
+    comm = MPI.COMM_WORLD
+    me = comm.Get_rank()
+    nprocs = comm.Get_size()
+    
+    # Shared data structures (only used on rank 0)
+    thermo_data = []
+    frame_queue = Queue(maxsize=200)  # Thread-safe queue for concurrent rendering
+    frame_images = []
+    output_files = {}
+    rendering_complete = threading.Event()
+    
+    def rendering_worker():
+        """Worker thread that renders frames concurrently with simulation."""
+        frames_rendered = 0
+        
+        print("  [Rendering Thread] Started")
+        
+        while not rendering_complete.is_set() or not frame_queue.empty():
+            try:
+                frame_info = frame_queue.get(timeout=0.5)
+                if frame_info is None:
+                    continue
+                
+                # Render the frame
+                ovito_data = create_ovito_frame(frame_info['data'])
+                if ovito_data:
+                    image_b64 = render_frame_to_image_custom(ovito_data, render_config)
+                    if image_b64:
+                        # Store rendered frame
+                        rendered_frame = {
+                            'image': image_b64,
+                            'frame_number': frame_info['frame_number'],
+                            'timestep': frame_info['timestep']
+                        }
+                        frame_images.append(rendered_frame)
+                        frames_rendered += 1
+                        
+                        # Report rendering progress periodically
+                        if frames_rendered % 10 == 0:
+                            queue_size = frame_queue.qsize()
+                            print(f"  [Rendering Thread] {frames_rendered} frames completed, {queue_size} in queue")
+                        
+                        # Stream rendered frame via callback
+                        if data_callback:
+                            try:
+                                data_callback({
+                                    'type': 'trajectory_frame',
+                                    'image_data': image_b64,
+                                    'frame_number': frame_info['frame_number'],
+                                    'timestep': frame_info['timestep']
+                                })
+                            except Exception as e:
+                                print(f"  [Rendering Thread] Warning: Error in viz callback: {e}")
+                        
+            except Exception as e:
+                print(f"  [Rendering Thread] Warning: Error rendering frame: {e}")
+                continue
+        
+        print(f"  [Rendering Thread] Completed: {frames_rendered} frames rendered")
+    
+    # Create temporary directory (all ranks need this)
+    temp_dir = tempfile.mkdtemp(prefix="lammps_mpi_")
+    
+    try:
+        # Write script to file (all ranks)
+        script_path = os.path.join(temp_dir, "input.lammps")
+        if me == 0:
+            with open(script_path, 'w') as f:
+                f.write(script_string)
+        
+        # Synchronize to ensure file is written
+        comm.Barrier()
+        
+        # Change to temporary directory
+        original_dir = os.getcwd()
+        os.chdir(temp_dir)
+        
+        # Initialize LAMMPS with MPI communicator
+        lmp = lammps.lammps(cmdargs=['-log', 'none', '-screen', 'none'], comm=comm)
+        
+        # Parse script to identify run commands
+        script_lines = script_string.split('\n')
+        frame_counter = 0
+        MAX_FRAMES = 100
+        
+        # Start rendering thread on rank 0 BEFORE simulation begins
+        rendering_thread = None
+        if me == 0:
+            rendering_thread = threading.Thread(target=rendering_worker, daemon=False)
+            rendering_thread.start()
+            print("=" * 60)
+            print("CONCURRENT EXECUTION: Simulation + Rendering")
+            print("=" * 60)
+            print("Started rendering thread - visualization will happen in parallel")
+        
+        # PHASE 1: Run simulation and buffer frame data (NO RENDERING)
+        for line in script_lines:
+            line = line.strip()
+            
+            if line.startswith('run '):
+                # Extract number of steps
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        total_steps = int(parts[1])
+                        
+                        # Calculate smart interval
+                        interval = calculate_smart_dump_interval(
+                            total_steps,
+                            render_config.get('interval'),
+                            max_frames=MAX_FRAMES
+                        )
+                        
+                        if me == 0:
+                            print(f"Capturing frames every {interval} steps (max {MAX_FRAMES} frames)")
+                        
+                        # Run in chunks for frame capture
+                        steps_done = 0
+                        while steps_done < total_steps:
+                            chunk_size = min(interval, total_steps - steps_done)
+                            
+                            # All ranks execute simulation
+                            lmp.command(f"run {chunk_size}")
+                            steps_done += chunk_size
+                            
+                            # Extract frame data using MPI gather (FAST - no rendering)
+                            if frame_counter < MAX_FRAMES:
+                                frame_data = extract_lammps_frame_mpi(lmp, comm)
+                                
+                                # Only rank 0 queues data for rendering
+                                if me == 0 and frame_data:
+                                    # Extract and stream thermo data
+                                    thermo_point = extract_thermo_data_realtime(lmp)
+                                    thermo_point['step'] = steps_done
+                                    thermo_data.append(thermo_point)
+                                    
+                                    if data_callback:
+                                        try:
+                                            data_callback(thermo_point)
+                                        except Exception as e:
+                                            print(f"Warning: Error in thermo callback: {e}")
+                                    
+                                    # Queue frame data for concurrent rendering
+                                    try:
+                                        frame_queue.put({
+                                            'data': frame_data,
+                                            'frame_number': frame_counter,
+                                            'timestep': steps_done
+                                        }, timeout=0.1)
+                                        
+                                        frame_counter += 1
+                                        
+                                        # Report status every 20 frames
+                                        if frame_counter % 20 == 0:
+                                            queue_size = frame_queue.qsize()
+                                            rendered_count = len(frame_images)
+                                            lag = frame_counter - rendered_count
+                                            print(f"  Progress: Sim={frame_counter} frames, Rendered={rendered_count} frames, Lag={lag}")
+                                            
+                                    except:
+                                        print(f"  Warning: Rendering queue full at step {steps_done}, skipping frame")
+                            
+                            # Only sync for simulation, not rendering
+                            comm.Barrier()
+                        
+                        continue
+                    except ValueError:
+                        pass
+            
+            # Execute non-run commands (all ranks)
+            if line and not line.startswith('#'):
+                lmp.command(line)
+        
+        # Close LAMMPS (all ranks)
+        lmp.close()
+        
+        # Synchronize after simulation
+        comm.Barrier()
+        
+        if me == 0:
+            print("=" * 60)
+            print(f"SIMULATION COMPLETE")
+            print(f"  - Frames captured: {frame_counter}")
+            print(f"  - Frames rendered so far: {len(frame_images)}")
+            print(f"  - Thermodynamic data points: {len(thermo_data)}")
+            print("=" * 60)
+            
+            # Signal rendering thread to finish and wait for it
+            if frame_counter > len(frame_images):
+                remaining = frame_counter - len(frame_images)
+                print(f"Waiting for rendering thread to finish {remaining} remaining frames...")
+            
+            rendering_complete.set()
+            
+            if rendering_thread:
+                rendering_thread.join(timeout=120)  # Wait up to 2 minutes
+                
+                if rendering_thread.is_alive():
+                    print("Warning: Rendering thread did not complete in time")
+                else:
+                    print(f"Rendering thread completed successfully")
+            
+            print("=" * 60)
+            print(f"FINAL STATUS:")
+            print(f"  - Total frames captured: {frame_counter}")
+            print(f"  - Total frames rendered: {len(frame_images)}")
+            print(f"  - Thermodynamic data points: {len(thermo_data)}")
+            print("=" * 60)
+        
+        # Synchronize before file operations
+        comm.Barrier()
+        
+        # Only rank 0 handles file copying
+        if me == 0:
+            for filename in os.listdir(temp_dir):
+                if filename.endswith('.atom') or filename.endswith('.dump'):
+                    permanent_path = os.path.join(original_dir, f"output_{filename}")
+                    shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
+                    output_files['dump'] = permanent_path
+                elif filename.startswith('log.') or filename == 'log.lammps':
+                    permanent_path = os.path.join(original_dir, f"output_{filename}")
+                    shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
+                    output_files['log'] = permanent_path
+            
+            # Signal completion
+            if data_callback:
+                try:
+                    data_callback({
+                        'type': 'trajectory_complete',
+                        'total_frames': len(frame_images),
+                        'message': f'MPI visualization complete: {len(frame_images)} frames'
+                    })
+                except Exception as e:
+                    print(f"Warning: Error in completion callback: {e}")
+            
+            print(f"✅ MPI execution completed successfully")
+            print(f"   - Frames rendered: {len(frame_images)}")
+            print(f"   - Thermo points: {len(thermo_data)}")
+        
+        # Synchronize before cleanup
+        comm.Barrier()
+        
+        return output_files, thermo_data, frame_images
+        
+    finally:
+        # Clean up (all ranks)
+        os.chdir(original_dir)
+        if me == 0:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def run_lammps_with_async_visualization(script_string: str, render_config=None, data_callback=None, 
                                        num_cores: Optional[int] = None):
     """
@@ -1235,6 +1602,11 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
     if cores > 1 and not use_mpi:
         print(f"Warning: MPI not available or disabled. Falling back to serial execution.")
         cores = 1
+    
+    # If MPI is requested, use the Python MPI interface for visualization support
+    if use_mpi:
+        print("Using Python MPI interface for parallel execution with visualization")
+        return run_lammps_mpi_python(script_string, render_config, data_callback, cores)
     
     # First, ensure all required KIM models are installed
     if not ensure_kim_models_installed(script_string):
@@ -1324,14 +1696,6 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
         os.chdir(temp_dir)
         
         # Choose execution method based on core count
-        if use_mpi:
-            print(f"Using MPI execution with {cores} cores for async visualization")
-            # We'll use subprocess with MPI but need to handle visualization differently
-            # For now, fall back to Python interface for visualization
-            # TODO: Implement MPI-based visualization extraction
-            print("Note: MPI visualization extraction not yet implemented, using serial Python interface")
-            use_mpi = False
-        
         if not use_mpi:
             print("Using Python LAMMPS interface for async visualization")
             lmp = lammps.lammps()
