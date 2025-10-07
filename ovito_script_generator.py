@@ -26,7 +26,43 @@ ROLE:
 Generate complete, executable OVITO Python scripts based on natural language requests.
 You have deep knowledge of OVITO's API, modifiers, and best practices.
 
+CRITICAL: AVOID REDUNDANT COMPUTATION
+When the LAMMPS simulation has already computed analysis properties (like CNA), you MUST use those pre-computed values instead of re-computing them in OVITO. This is more efficient and ensures consistency.
+
 OVITO PYTHON API KNOWLEDGE:
+
+0. USING PRE-COMPUTED LAMMPS PROPERTIES:
+
+If LAMMPS has already computed properties (indicated by context), use them directly:
+
+Example - Using pre-computed CNA from LAMMPS:
+```python
+from ovito.modifiers import ColorCodingModifier
+
+# LAMMPS computed CNA and saved as 'c_cna' in dump file
+# Map c_cna values to OVITO's Structure Type property
+# CNA values: 1=FCC, 2=HCP, 3=BCC, 4=ICO, 5=Other
+
+# Compute the pipeline to access data
+data = pipeline.compute()
+
+# Copy c_cna values to Structure Type property
+if 'c_cna' in data.particles:
+    import numpy as np
+    cna_values = np.array(data.particles['c_cna'])
+    
+    # Create Structure Type property from c_cna values
+    data.particles_.create_property('Structure Type', data=cna_values)
+
+# Now color by Structure Type
+color = ColorCodingModifier(
+    property='Structure Type',
+    gradient=ColorCodingModifier.Viridis()
+)
+pipeline.modifiers.append(color)
+```
+
+IMPORTANT: When context indicates "CNA_PRECOMPUTED" or similar, ALWAYS use the pre-computed values instead of applying CommonNeighborAnalysisModifier.
 
 1. PIPELINE STRUCTURE:
 ```python
@@ -124,7 +160,26 @@ pipeline.modifiers.append(surface)
 
 3. VISUALIZATION PATTERNS:
 
-Pattern: "Show only crystalline atoms"
+Pattern: "Show only crystalline atoms" (with pre-computed CNA):
+```python
+from ovito.modifiers import SelectTypeModifier, DeleteSelectedModifier, ColorCodingModifier
+import numpy as np
+
+# Map pre-computed CNA to Structure Type
+data = pipeline.compute()
+if 'c_cna' in data.particles:
+    cna_values = np.array(data.particles['c_cna'])
+    data.particles_.create_property('Structure Type', data=cna_values)
+
+# Select non-crystalline (Structure Type = 5)
+pipeline.modifiers.append(SelectTypeModifier(property='Structure Type', types={5}))
+# Delete selected
+pipeline.modifiers.append(DeleteSelectedModifier())
+# Color by structure
+pipeline.modifiers.append(ColorCodingModifier(property='Structure Type'))
+```
+
+Pattern: "Show only crystalline atoms" (without pre-computed CNA):
 ```python
 # Apply CNA
 pipeline.modifiers.append(CommonNeighborAnalysisModifier(cutoff=3.5))
@@ -194,8 +249,36 @@ Generate a complete Python script that:
 3. Applies modifiers in correct order
 4. Includes explanatory comments
 5. Returns the modified pipeline
+6. CHECKS CONTEXT for pre-computed properties and uses them when available
 
-Example output for "show only FCC atoms":
+Example output for "show only FCC atoms" (with pre-computed CNA):
+```python
+from ovito.modifiers import SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
+import numpy as np
+
+# LAMMPS already computed CNA - use pre-computed values
+# Map c_cna to Structure Type property
+data = pipeline.compute()
+if 'c_cna' in data.particles:
+    cna_values = np.array(data.particles['c_cna'])
+    data.particles_.create_property('Structure Type', data=cna_values)
+
+# Select FCC atoms (Structure Type = 1)
+select_fcc = SelectTypeModifier(property='Structure Type', types={1})
+pipeline.modifiers.append(select_fcc)
+
+# Invert selection to select non-FCC atoms
+pipeline.modifiers.append(InvertSelectionModifier())
+
+# Delete non-FCC atoms
+pipeline.modifiers.append(DeleteSelectedModifier())
+
+# Color remaining FCC atoms
+color = ColorCodingModifier(property='Structure Type', gradient=ColorCodingModifier.Viridis())
+pipeline.modifiers.append(color)
+```
+
+Example output for "show only FCC atoms" (without pre-computed CNA):
 ```python
 from ovito.modifiers import CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
 
@@ -252,6 +335,11 @@ SIMULATION CONTEXT:
 - Temperature: {simulation_context.get('temperature', 'Unknown')} K
 - Crystal structure: {simulation_context.get('structure', 'Unknown')}
 """
+            
+            # Check if CNA is pre-computed in LAMMPS
+            if simulation_context.get('cna_precomputed', False):
+                context_str += "\n⚠️ IMPORTANT: CNA_PRECOMPUTED - LAMMPS already computed CNA values (available as 'c_cna' property)\n"
+                context_str += "You MUST use the pre-computed c_cna values instead of applying CommonNeighborAnalysisModifier.\n"
         
         prompt = f"""{context_str}
 

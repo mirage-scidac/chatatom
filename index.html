@@ -1591,11 +1591,15 @@
                                 console.log('🎬 SSE: Received start_streaming_simulation event');
                                 console.log('🔌 WebSocket status:', socket ? 'initialized' : 'not initialized');
                                 console.log('🔗 WebSocket connected:', socket && socket.connected);
+                                console.log('🎨 OVITO script:', data.ovito_script ? `Present (${data.ovito_script.length} chars)` : 'None');
                                 
                                 // Start streaming simulation via WebSocket
                                 if (socket && socket.connected) {
                                     console.log('📡 Emitting start_streaming_simulation to WebSocket server...');
-                                    socket.emit('start_streaming_simulation', { script: data.script });
+                                    socket.emit('start_streaming_simulation', { 
+                                        script: data.script,
+                                        ovito_script: data.ovito_script  // Pass OVITO script to WebSocket handler
+                                    });
                                 } else {
                                     console.warn('⚠️ WebSocket not available, falling back to batch simulation');
                                     // Fallback to regular simulation

@@ -196,14 +196,17 @@ CRITICAL: You MUST include the "KIM Model:" line with the exact model ID that th
 FRAME SAMPLING CALCULATION:
 When calculating the frame sampling strategy:
 1. Determine total simulation steps from the duration and timestep
-2. Use config.MAX_TRAJECTORY_FRAMES (typically 10) as the target number of frames
+2. Import config and use config.MAX_TRAJECTORY_FRAMES as the target number of frames
 3. Calculate evenly distributed timesteps across the simulation
 4. Round to nearest dump frequency to ensure frames exist in dump file
 5. Ensure coverage of all simulation phases (equilibration, heating, cooling, etc.)
 
-Example for 120,000 step simulation with dump every 1000 steps and MAX_TRAJECTORY_FRAMES=10:
-- Target timesteps: [0, 13000, 26000, 39000, 52000, 65000, 78000, 91000, 104000, 117000]
-- This ensures frames from all phases of the simulation
+IMPORTANT: You MUST import config at the start of your calculation to get the actual MAX_TRAJECTORY_FRAMES value.
+Do NOT assume or hardcode the number of frames - always use the configured value.
+
+Example for 120,000 step simulation with dump every 1000 steps and config.MAX_TRAJECTORY_FRAMES=20:
+- Target timesteps: [0, 6000, 12000, 18000, 24000, 30000, 36000, 42000, 48000, 54000, 60000, 66000, 72000, 78000, 84000, 90000, 96000, 102000, 108000, 114000]
+- This ensures frames from all phases of the simulation with 20 evenly distributed samples
 
 VISUALIZATION PREFERENCES (OPTIONAL):
 If the user specifies visualization preferences (e.g., "show only crystalline atoms", "color by structure", "highlight defects"), extract and note them separately. Common visualization requests include:
@@ -231,26 +234,19 @@ Be helpful, educational, and conversational in your responses."""
         self, 
         user_request: str, 
         simulation_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    ) -> Optional[str]:
         """
-        Parse visualization request and generate OVITO script.
+        Generate OVITO script if custom visualization is requested.
         
         This method is the single source of truth for understanding visualization intent.
-        No redundant keyword detection - the LLM determines whether custom visualization
-        is needed based on the user's request.
+        The LLM determines whether custom visualization is needed and generates the script.
         
         Args:
             user_request: Natural language visualization request
             simulation_context: Optional simulation context (material, structure, etc.)
             
         Returns:
-            Dictionary with visualization instructions:
-            - mode: 'script' or 'config'
-            - script: OVITO Python code (if mode='script')
-            - config: Structured configuration (if mode='config')
-            - rationale: Explanation of the approach
-            - warnings: List of potential issues
-            - has_custom_request: Boolean indicating if user requested custom visualization
+            OVITO Python script as a string, or None for default visualization
         """
         # Use LLM to determine if this is a custom visualization request
         detection_prompt = f"""Analyze this user request and determine if it contains a CUSTOM visualization request.
@@ -272,24 +268,19 @@ Respond with ONLY "YES" if this is a custom visualization request, or "NO" if it
         has_custom_request = "YES" in detection_response
         
         if not has_custom_request:
-            # No custom visualization request, return basic config
-            return {
-                'mode': 'config',
-                'quality': 'medium',
-                'camera_angle': 'default',
-                'rationale': 'Using default visualization settings',
-                'warnings': [],
-                'has_custom_request': False
-            }
+            # No custom visualization - use default
+            print("[VIZ AGENT] No custom visualization requested, using default")
+            return None
         
-        # Generate rationale using the orchestrator's understanding
-        rationale_prompt = f"""Briefly explain (in 1-2 sentences) how to visualize this request using OVITO modifiers:
-
-USER REQUEST: {user_request}
-
-Focus on which OVITO modifiers would be used (e.g., CommonNeighborAnalysisModifier, ColorCodingModifier, etc.)."""
+        # Prepare simulation context
+        if simulation_context is None:
+            simulation_context = {}
         
-        rationale = self.execute(rationale_prompt, temperature=0.3)
+        # Check if CNA is needed and mark for pre-computation in LAMMPS
+        cna_keywords = ['structure', 'fcc', 'bcc', 'hcp', 'crystalline', 'crystal', 'amorphous']
+        if any(keyword in user_request.lower() for keyword in cna_keywords):
+            simulation_context['cna_precomputed'] = True
+            print("[VIZ AGENT] CNA-based visualization detected, will use pre-computed values")
         
         # Generate OVITO script using the specialized generator
         script = self.ovito_generator.generate_ovito_script(
@@ -297,17 +288,9 @@ Focus on which OVITO modifiers would be used (e.g., CommonNeighborAnalysisModifi
             simulation_context
         )
         
-        # Return the generated script without validation
-        # Validation will be handled by reviewer agent in the future
-        return {
-            'mode': 'script',
-            'script': script,
-            'rationale': rationale,
-            'warnings': [],
-            'quality': 'medium',
-            'camera_angle': 'default',
-            'has_custom_request': True
-        }
+        print(f"[VIZ AGENT] Generated custom OVITO script ({len(script)} chars)")
+        
+        return script
 
 class LammpsGeneratorAgent(Agent):
     def __init__(self):
@@ -325,6 +308,7 @@ Key guidelines:
 7. Include a comment about model installation if the model might not be available
 8. CRITICAL: Always initialize velocities for temperature-controlled simulations
 9. CRITICAL: If the Orchestrator provided a FRAME SAMPLING STRATEGY with target timesteps, include this as a comment near the top of the script in the exact format: "# Target timesteps: [list]"
+10. CRITICAL: If the Orchestrator indicates VISUALIZATION PREFERENCES requesting structure-based coloring (FCC, BCC, etc.), you MUST include CNA computation in the LAMMPS script to avoid redundant computation in OVITO
 
 Required LAMMPS script structure with KIM:
 - units metal (required)
@@ -376,13 +360,29 @@ NEVER use these commands (incompatible with KIM):
 - pair_style
 - pair_coeff
 
+STRUCTURE VISUALIZATION SUPPORT:
+When the Orchestrator's parameters include VISUALIZATION PREFERENCES requesting structure-based analysis (e.g., "color by structure type", "show FCC/BCC", "crystalline atoms"), you MUST:
+1. Add CNA computation: `compute cna all cna/atom 3.5`
+2. Include c_cna in the dump command: `dump 1 all custom ... c_cna`
+3. Add a marker comment: `# CNA_PRECOMPUTED - for OVITO visualization`
+
+Example dump command with CNA:
+```
+compute peratom all pe/atom
+compute cna all cna/atom 3.5
+dump 1 all custom 1000 output.dump id type x y z c_peratom c_cna
+```
+
+This allows OVITO to use the pre-computed CNA values instead of recomputing them, improving efficiency.
+
 ALWAYS include:
 - Model installation comment: # Install model if needed: kim-api-collections-management install user <MODEL_ID>
 - Proper thermo output for monitoring
 - Appropriate timestep and neighbor settings
 - Velocity initialization for temperature-controlled simulations
 - The EXACT KIM model ID specified in the SIMULATION PARAMETERS
-- Frame sampling strategy comment if provided by Orchestrator (format: # Target timesteps: [0, 13000, 26000, ...])"""
+- Frame sampling strategy comment if provided by Orchestrator (format: # Target timesteps: [0, 13000, 26000, ...])
+- CNA computation if visualization preferences request structure-based coloring"""
         super().__init__(
             system_prompt,
             model=config.LAMMPS_GENERATOR_MODEL,

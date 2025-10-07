@@ -260,18 +260,15 @@ Process the user's feedback and provide final simulation parameters using the SI
                         simulation_context['material'] = material
                         break
             
-            viz_config = parse_visualization_request(user_command, simulation_context)
+            # Get OVITO script if custom visualization requested
+            ovito_script = parse_visualization_request(user_command, simulation_context, lammps_script)
+            
+            print(f"[APP] Visualization script: {'Custom (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default'}")
             
             # Generate appropriate message based on whether custom visualization was requested
-            if viz_config.get('has_custom_request', False):
-                # Custom visualization requested - show detailed explanation
-                viz_message = f"**Custom Visualization Requested**\n\n{viz_config.get('rationale', 'Generating custom OVITO visualization script...')}"
-                
-                if viz_config.get('mode') == 'script' and viz_config.get('script'):
-                    viz_message += f"\n\n**Generated OVITO Script:**\n```python\n{viz_config['script']}\n```"
-                
-                if viz_config.get('warnings'):
-                    viz_message += f"\n\n**Warnings:**\n" + "\n".join(f"- {w}" for w in viz_config['warnings'])
+            if ovito_script:
+                # Custom visualization requested - show the script
+                viz_message = f"**Custom Visualization Requested**\n\n**Generated OVITO Script:**\n```python\n{ovito_script}\n```"
             else:
                 # No custom visualization - show minimal message
                 viz_message = "Applying default visualization settings for trajectory rendering."
@@ -517,7 +514,7 @@ def handle_streaming_simulation(data):
     """Handle streaming simulation requests via WebSocket with visualization"""
     try:
         lammps_script = data.get('script')
-        user_command = data.get('user_command', '')  # Get original user command for viz parsing
+        ovito_script = data.get('ovito_script')  # Get pre-generated OVITO script
         
         if not lammps_script:
             emit('error', {'message': 'No LAMMPS script provided'})
@@ -547,22 +544,9 @@ def handle_streaming_simulation(data):
         
         def run_simulation():
             try:
-                # Parse visualization request from user command
-                from tools import parse_visualization_request
                 import re
                 
-                # Extract material from script for context
-                simulation_context = {}
-                if 'Al' in lammps_script or 'aluminum' in lammps_script.lower():
-                    simulation_context['material'] = 'Al'
-                elif 'Cu' in lammps_script or 'copper' in lammps_script.lower():
-                    simulation_context['material'] = 'Cu'
-                
-                # Parse visualization preferences from user command
-                viz_config = parse_visualization_request(user_command, simulation_context)
-                
                 # Extract frame sampling strategy from LAMMPS script comments
-                # The Orchestrator should have included this in the script as a comment
                 target_timesteps = None
                 for line in lammps_script.split('\n'):
                     if 'Target timesteps:' in line or 'target timesteps:' in line.lower():
@@ -575,15 +559,13 @@ def handle_streaming_simulation(data):
                             print(f"[APP] Extracted target timesteps from script: {target_timesteps}")
                             break
                 
-                # Merge with default rendering settings
+                # Simple render config with pre-generated OVITO script
                 render_config = {
-                    'interval': None,  # Let smart calculation determine interval
-                    'quality': viz_config.get('quality', 'medium'),
-                    'camera_angle': viz_config.get('camera_angle', 'default'),
-                    'mode': viz_config.get('mode', 'config'),
-                    'script': viz_config.get('script'),  # OVITO script if generated
-                    'target_timesteps': target_timesteps,  # Frame sampling from Orchestrator
+                    'ovito_script': ovito_script,  # OVITO script string or None (already generated)
+                    'target_timesteps': target_timesteps,
                 }
+                
+                print(f"[APP] Render config: {'Custom script (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default visualization'}")
                 
                 # Use configured number of cores from config.py
                 output_files, all_thermo_data, frame_images = run_lammps_simulation(
@@ -756,18 +738,13 @@ Process the user's feedback and provide final simulation parameters using the SI
                         simulation_context['material'] = material
                         break
             
-            viz_config = parse_visualization_request(user_command, simulation_context)
+            # Get OVITO script if custom visualization requested
+            ovito_script = parse_visualization_request(user_command, simulation_context, lammps_script)
             
             # Generate appropriate message based on whether custom visualization was requested
-            if viz_config.get('has_custom_request', False):
-                # Custom visualization requested - show detailed explanation
-                viz_message = f"**Custom Visualization Requested**\n\n{viz_config.get('rationale', 'Generating custom OVITO visualization script...')}"
-                
-                if viz_config.get('mode') == 'script' and viz_config.get('script'):
-                    viz_message += f"\n\n**Generated OVITO Script:**\n```python\n{viz_config['script']}\n```"
-                
-                if viz_config.get('warnings'):
-                    viz_message += f"\n\n**Warnings:**\n" + "\n".join(f"- {w}" for w in viz_config['warnings'])
+            if ovito_script:
+                # Custom visualization requested - show the script
+                viz_message = f"**Custom Visualization Requested**\n\n**Generated OVITO Script:**\n```python\n{ovito_script}\n```"
             else:
                 # No custom visualization - show minimal message
                 viz_message = "Applying default visualization settings for trajectory rendering."
@@ -797,10 +774,10 @@ Process the user's feedback and provide final simulation parameters using the SI
                     should_run = True
                 
                 if should_run:
-                    # Signal to use streaming simulation
+                    # Signal to use streaming simulation with OVITO script
                     yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
                     yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': lammps_script})}\n\n"
+                    yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': lammps_script, 'ovito_script': ovito_script, 'user_command': user_command})}\n\n"
                     yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"

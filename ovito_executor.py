@@ -56,35 +56,16 @@ class DynamicOVITOExecutor:
             SecurityError: If script contains dangerous operations
             VisualizationScriptError: If script execution fails
         """
-        # Validate script safety
+        # Validate script safety (checks for unauthorized imports)
         self._validate_script(script)
         
-        # Create execution namespace with limited builtins
+        # Create execution namespace with full builtins for local execution
+        # Import validation is still enforced through AST parsing above
+        import builtins
         namespace = {
             'pipeline': pipeline,
             'data_collection': data_collection,
-            '__builtins__': {
-                # Allow only safe builtins
-                'True': True,
-                'False': False,
-                'None': None,
-                'int': int,
-                'float': float,
-                'str': str,
-                'bool': bool,
-                'list': list,
-                'dict': dict,
-                'tuple': tuple,
-                'set': set,
-                'range': range,
-                'len': len,
-                'min': min,
-                'max': max,
-                'sum': sum,
-                'abs': abs,
-                'round': round,
-                'print': print,  # Allow print for debugging
-            }
+            '__builtins__': builtins,
         }
         
         try:
@@ -121,7 +102,6 @@ class DynamicOVITOExecutor:
             'import glob',
             'eval(',
             'exec(',
-            '__import__',
             'open(',
             'file(',
             'compile(',

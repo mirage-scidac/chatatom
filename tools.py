@@ -7,7 +7,6 @@ This module provides MPI-only execution with:
 - Organized run folder management
 """
 import os
-import shutil
 import subprocess
 import re
 import glob
@@ -15,17 +14,16 @@ from typing import Dict, List, Any, Tuple, Optional, Callable
 import config
 import threading
 import time
-import numpy as np
 import kim_utils
 import run_manager
 from visualization_rendering import render_frame_to_image_custom
 from queue import Queue
-from concurrent.futures import ThreadPoolExecutor
 
 
-def parse_visualization_request(user_command: str, simulation_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def parse_visualization_request(user_command: str, simulation_context: Optional[Dict[str, Any]] = None, 
+                               lammps_script: Optional[str] = None) -> Optional[str]:
     """
-    Parse visualization request from user command and generate OVITO script.
+    Generate OVITO script if custom visualization is requested.
     
     Uses OrchestratorAgent as the single source of truth for understanding
     visualization intent.
@@ -33,28 +31,31 @@ def parse_visualization_request(user_command: str, simulation_context: Optional[
     Args:
         user_command: User's natural language command (may include visualization preferences)
         simulation_context: Optional simulation context (material, structure, etc.)
+        lammps_script: Optional LAMMPS script to check for pre-computed properties
         
     Returns:
-        Dictionary with visualization configuration
+        OVITO Python script as a string, or None for default visualization
     """
     from agents import OrchestratorAgent
     
     try:
+        # Check if LAMMPS script has CNA pre-computed
+        if lammps_script and simulation_context:
+            if 'compute cna' in lammps_script.lower() or 'compute.*cna' in lammps_script.lower():
+                simulation_context['cna_precomputed'] = True
+                print("[VIZ] Detected pre-computed CNA in LAMMPS script")
+        
         orchestrator = OrchestratorAgent()
-        result = orchestrator.parse_visualization_request(
+        # Returns OVITO script string or None
+        ovito_script = orchestrator.parse_visualization_request(
             user_command,
             simulation_context
         )
-        return result
+        return ovito_script
         
     except Exception as e:
-        print(f"Warning: Failed to parse visualization request: {e}")
-        return {
-            'mode': 'config',
-            'quality': 'medium',
-            'camera_angle': 'default',
-            'has_custom_request': False
-        }
+        print(f"[VIZ] Warning: Failed to generate visualization script: {e}")
+        return None  # Fall back to default visualization
 
 
 def extract_kim_models(script_string: str) -> List[str]:
@@ -148,76 +149,6 @@ def parse_thermo_line(line: str, headers: List[str]) -> Optional[Dict[str, Any]]
     return None
 
 
-def parse_dump_frame(lines: List[str]) -> Optional[Dict[str, Any]]:
-    """
-    Parse a single frame from LAMMPS dump file.
-    
-    Args:
-        lines: Lines comprising one complete frame
-        
-    Returns:
-        Dictionary with frame data or None if parsing fails
-    """
-    try:
-        frame_data = {}
-        i = 0
-        
-        while i < len(lines):
-            line = lines[i].strip()
-            
-            if line == "ITEM: TIMESTEP":
-                frame_data['timestep'] = int(lines[i + 1].strip())
-                i += 2
-            elif line == "ITEM: NUMBER OF ATOMS":
-                frame_data['natoms'] = int(lines[i + 1].strip())
-                i += 2
-            elif line.startswith("ITEM: BOX BOUNDS"):
-                box_lines = lines[i + 1:i + 4]
-                xlo, xhi = map(float, box_lines[0].split()[:2])
-                ylo, yhi = map(float, box_lines[1].split()[:2])
-                zlo, zhi = map(float, box_lines[2].split()[:2])
-                frame_data['box'] = {
-                    'xlo': xlo, 'xhi': xhi,
-                    'ylo': ylo, 'yhi': yhi,
-                    'zlo': zlo, 'zhi': zhi
-                }
-                i += 4
-            elif line.startswith("ITEM: ATOMS"):
-                # Parse atom data
-                headers = line.split()[2:]  # Skip "ITEM: ATOMS"
-                natoms = frame_data.get('natoms', 0)
-                atom_lines = lines[i + 1:i + 1 + natoms]
-                
-                # Initialize arrays
-                positions = []
-                types = []
-                
-                for atom_line in atom_lines:
-                    values = atom_line.split()
-                    atom_dict = dict(zip(headers, values))
-                    
-                    # Extract position (x, y, z)
-                    x = float(atom_dict.get('x', atom_dict.get('xu', 0)))
-                    y = float(atom_dict.get('y', atom_dict.get('yu', 0)))
-                    z = float(atom_dict.get('z', atom_dict.get('zu', 0)))
-                    positions.append([x, y, z])
-                    
-                    # Extract type
-                    types.append(int(atom_dict.get('type', 1)))
-                
-                frame_data['positions'] = np.array(positions)
-                frame_data['types'] = np.array(types, dtype=int)
-                i += natoms + 1
-            else:
-                i += 1
-        
-        return frame_data if 'positions' in frame_data else None
-        
-    except Exception as e:
-        print(f"Error parsing dump frame: {e}")
-        return None
-
-
 def find_dump_file(run_folder: str) -> Optional[str]:
     """
     Find dump file using flexible pattern matching.
@@ -242,11 +173,14 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
                       data_callback: Optional[Callable] = None, max_frames: int = 100,
                       target_timesteps: Optional[List[int]] = None):
     """
-    Monitor dump file and extract frames as they're written (async).
+    Monitor dump file and identify frames to render (async).
+    
+    Instead of parsing frames, this now just identifies timesteps and queues
+    the file path for OVITO's native reader to handle.
     
     Args:
         dump_path: Path to dump file (or directory to search)
-        frame_queue: Queue to put parsed frames
+        frame_queue: Queue to put frame info (file path + timestep)
         simulation_done: Event signaling simulation completion
         data_callback: Optional callback for frame notifications
         max_frames: Maximum frames to extract (ignored if target_timesteps provided)
@@ -268,8 +202,6 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
         print(f"[DUMP MONITOR] Monitoring specific file: {dump_path}")
     
     frame_counter = 0
-    current_frame_lines = []
-    in_frame = False
     extracted_timesteps = set()  # Track which target timesteps we've extracted
     
     # If target timesteps provided, use smart sampling
@@ -300,7 +232,10 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
         print(f"[DUMP MONITOR] ERROR: Dump file was never created")
         return
     
-    print(f"[DUMP MONITOR] Dump file exists, starting frame extraction")
+    print(f"[DUMP MONITOR] Dump file exists, starting timestep identification")
+    
+    # Read file to identify timesteps (lightweight - no parsing)
+    current_timestep = None
     
     with open(actual_dump_file, 'r') as f:
         while not simulation_done.is_set() or f.tell() < os.path.getsize(actual_dump_file):
@@ -310,125 +245,68 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
                 time.sleep(0.05)  # Wait for more data
                 continue
             
-            if line.strip() == "ITEM: TIMESTEP":
-                # Start of new frame
-                if current_frame_lines:
-                    # Parse previous frame
-                    frame_data = parse_dump_frame(current_frame_lines)
-                    if frame_data:
-                        timestep = frame_data.get('timestep', 0)
+            line = line.strip()
+            
+            # Look for timestep markers
+            if line == "ITEM: TIMESTEP":
+                # Next line contains the timestep
+                timestep_line = f.readline()
+                if timestep_line:
+                    try:
+                        current_timestep = int(timestep_line.strip())
                         
-                        # Decide whether to extract this frame
+                        # Decide whether to queue this frame
                         should_extract = False
                         if use_smart_sampling:
                             # Smart sampling: only extract if timestep matches a target
-                            if timestep in target_timesteps and timestep not in extracted_timesteps:
+                            if current_timestep in target_timesteps and current_timestep not in extracted_timesteps:
                                 should_extract = True
-                                extracted_timesteps.add(timestep)
+                                extracted_timesteps.add(current_timestep)
                         else:
                             # Sequential sampling: extract up to max_frames
                             if frame_counter < max_frames:
                                 should_extract = True
                         
                         if should_extract:
+                            # Queue file path + timestep for rendering
                             frame_queue.put({
-                                'data': frame_data,
+                                'dump_file': actual_dump_file,
                                 'frame_number': frame_counter,
-                                'timestep': timestep
+                                'timestep': current_timestep
                             })
-                            print(f"[DUMP MONITOR] Extracted frame {frame_counter} (timestep {timestep})")
+                            print(f"[DUMP MONITOR] Queued frame {frame_counter} (timestep {current_timestep})")
                             frame_counter += 1
                             
                             # Check completion conditions
                             if use_smart_sampling:
                                 if len(extracted_timesteps) >= len(target_timesteps):
-                                    print(f"[DUMP MONITOR] All {len(target_timesteps)} target frames extracted")
+                                    print(f"[DUMP MONITOR] All {len(target_timesteps)} target frames queued")
                                     break
                             else:
                                 if frame_counter >= max_frames:
                                     print(f"[DUMP MONITOR] Reached maximum frame limit ({max_frames})")
                                     break
-                
-                current_frame_lines = [line]
-                in_frame = True
-            elif in_frame:
-                current_frame_lines.append(line)
-        
-        # Parse final frame
-        if current_frame_lines:
-            frame_data = parse_dump_frame(current_frame_lines)
-            if frame_data:
-                timestep = frame_data.get('timestep', 0)
-                
-                should_extract = False
-                if use_smart_sampling:
-                    if timestep in target_timesteps and timestep not in extracted_timesteps:
-                        should_extract = True
-                        extracted_timesteps.add(timestep)
-                else:
-                    if frame_counter < max_frames:
-                        should_extract = True
-                
-                if should_extract:
-                    frame_queue.put({
-                        'data': frame_data,
-                        'frame_number': frame_counter,
-                        'timestep': timestep
-                    })
-                    frame_counter += 1
+                    except ValueError:
+                        pass
     
     if use_smart_sampling:
-        print(f"[DUMP MONITOR] Completed. Extracted {frame_counter} frames from {len(extracted_timesteps)} target timesteps")
+        print(f"[DUMP MONITOR] Completed. Queued {frame_counter} frames from {len(extracted_timesteps)} target timesteps")
     else:
-        print(f"[DUMP MONITOR] Completed. Total frames extracted: {frame_counter}")
+        print(f"[DUMP MONITOR] Completed. Total frames queued: {frame_counter}")
 
 
-def convert_dump_frame_to_ovito(frame_data: Dict[str, Any]):
-    """
-    Convert parsed dump frame to OVITO DataCollection.
-    
-    Args:
-        frame_data: Parsed frame data from parse_dump_frame
-        
-    Returns:
-        OVITO DataCollection or None
-    """
-    try:
-        from ovito.data import DataCollection
-        
-        data = DataCollection()
-        particles = data.create_particles()
-        particles.count = frame_data['natoms']
-        particles.positions = frame_data['positions']
-        particles.particle_types = frame_data['types']
-        
-        # Create simulation cell
-        box = frame_data['box']
-        cell_matrix = np.array([
-            [box['xhi'] - box['xlo'], 0, 0, box['xlo']],
-            [0, box['yhi'] - box['ylo'], 0, box['ylo']],
-            [0, 0, box['zhi'] - box['zlo'], box['zlo']]
-        ])
-        
-        cell = data.create_cell(matrix=cell_matrix)
-        cell.pbc = (True, True, True)
-        
-        return data
-        
-    except Exception as e:
-        print(f"Error converting dump frame to OVITO: {e}")
-        return None
-
-
-def rendering_worker(frame_queue: Queue, render_config: Dict[str, Any], 
+def rendering_worker(frame_queue: Queue, ovito_script: Optional[str],
+                    quality: str, camera_angle: str,
                     frame_images: List[Dict], simulation_done: threading.Event,
                     data_callback: Optional[Callable] = None):
     """
-    Worker thread that renders frames asynchronously.
+    Worker thread that renders frames asynchronously using OVITO's native file reader.
     
     Args:
-        frame_queue: Queue containing frames to render
-        render_config: Rendering configuration
+        frame_queue: Queue containing frame info (dump_file path + timestep)
+        ovito_script: Optional OVITO Python script for custom visualization
+        quality: Render quality setting
+        camera_angle: Camera angle setting
         frame_images: List to append rendered frames
         simulation_done: Event signaling simulation completion
         data_callback: Optional callback for streaming frames
@@ -445,37 +323,46 @@ def rendering_worker(frame_queue: Queue, render_config: Dict[str, Any],
             continue
         
         try:
-            # Convert to OVITO and render
-            ovito_data = convert_dump_frame_to_ovito(frame_info['data'])
-            if ovito_data:
-                image_b64 = render_frame_to_image_custom(ovito_data, render_config)
-                if image_b64:
-                    frame_result = {
-                        'image': image_b64,
-                        'frame_number': frame_info['frame_number'],
-                        'timestep': frame_info['timestep']
-                    }
-                    frame_images.append(frame_result)
-                    print(f"[RENDERER] Rendered frame {frame_info['frame_number']}")
-                    
-                    # Stream via callback
-                    if data_callback:
-                        try:
-                            data_callback({
-                                'type': 'trajectory_frame',
-                                'image_data': image_b64,
-                                'frame_number': frame_info['frame_number'],
-                                'timestep': frame_info['timestep']
-                            })
-                        except Exception as e:
-                            print(f"[RENDERER] Warning: Error in visualization callback: {e}")
-                else:
-                    print(f"[RENDERER] Warning: Failed to render frame {frame_info['frame_number']}")
+            # Use OVITO's native file reader to load dump file with all properties
+            dump_file = frame_info['dump_file']
+            timestep = frame_info['timestep']
+            
+            # Render directly from file path
+            image_b64 = render_frame_to_image_custom(
+                dump_file,
+                ovito_script=ovito_script,
+                quality=quality,
+                camera_angle=camera_angle,
+                frame_timestep=timestep
+            )
+            
+            if image_b64:
+                frame_result = {
+                    'image': image_b64,
+                    'frame_number': frame_info['frame_number'],
+                    'timestep': timestep
+                }
+                frame_images.append(frame_result)
+                print(f"[RENDERER] Rendered frame {frame_info['frame_number']} (timestep {timestep})")
+                
+                # Stream via callback
+                if data_callback:
+                    try:
+                        data_callback({
+                            'type': 'trajectory_frame',
+                            'image_data': image_b64,
+                            'frame_number': frame_info['frame_number'],
+                            'timestep': timestep
+                        })
+                    except Exception as e:
+                        print(f"[RENDERER] Warning: Error in visualization callback: {e}")
             else:
-                print(f"[RENDERER] Warning: Failed to convert frame {frame_info['frame_number']} to OVITO")
+                print(f"[RENDERER] Warning: Failed to render frame {frame_info['frame_number']}")
         
         except Exception as e:
             print(f"Warning: Error rendering frame: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             continue
     
     print(f"[RENDERER] Completed. Total frames rendered: {len(frame_images)}")
@@ -517,28 +404,39 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         'status': 'starting'
     })
     
-    # Set default render config
+    # Extract visualization parameters from render_config
     if render_config is None:
-        render_config = {
-            'quality': 'medium',
-            'camera_angle': 'default',
-            'max_queue_size': 10
-        }
+        render_config = {}
+    
+    print(f"[TOOLS DEBUG] render_config type: {type(render_config)}")
+    print(f"[TOOLS DEBUG] render_config keys: {render_config.keys() if isinstance(render_config, dict) else 'N/A'}")
+    ovito_script = render_config.get('ovito_script', None)
+    print(f"[TOOLS DEBUG] Extracted ovito_script from render_config: {ovito_script is not None} ({len(ovito_script) if ovito_script else 0} chars)")
+    if ovito_script:
+        print(f"[TOOLS DEBUG] Script preview: {ovito_script[:200]}...")
+    else:
+        print(f"[TOOLS DEBUG] ovito_script is None or empty")
+    quality = render_config.get('quality', 'medium')
+    camera_angle = render_config.get('camera_angle', 'default')
+    max_queue_size = render_config.get('max_queue_size', 10)
+    target_timesteps = render_config.get('target_timesteps', None)
     
     # Shared data structures
     thermo_data = []
     frame_images = []
-    frame_queue = Queue(maxsize=render_config.get('max_queue_size', 10))
+    frame_queue = Queue(maxsize=max_queue_size)
     simulation_done = threading.Event()
     
     try:
         # Write script to run folder
         script_path = os.path.join(run_folder, "input.lammps")
         
-        # Start rendering worker
+        # Start rendering worker with direct parameters
+        print(f"[TOOLS DEBUG] Starting rendering worker with ovito_script: {ovito_script is not None}")
         render_thread = threading.Thread(
             target=rendering_worker,
-            args=(frame_queue, render_config, frame_images, simulation_done, data_callback)
+            args=(frame_queue, ovito_script, quality, camera_angle, 
+                  frame_images, simulation_done, data_callback)
         )
         render_thread.daemon = True
         render_thread.start()
@@ -565,9 +463,6 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         )
         
         # Start dump file monitor (async) - pass run_folder to find dump file dynamically
-        # Extract target timesteps from render_config if provided
-        target_timesteps = render_config.get('target_timesteps', None)
-        
         monitor_thread = threading.Thread(
             target=monitor_dump_file,
             args=(run_folder, frame_queue, simulation_done, data_callback, 
