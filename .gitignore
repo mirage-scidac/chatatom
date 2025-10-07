@@ -186,6 +186,7 @@ tests/test_assets/kim.log
 *.lammps
 output*
 dump.*
+run_*
 
 #Pycache
 __pycache__/

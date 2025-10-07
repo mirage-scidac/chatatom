@@ -1266,6 +1266,7 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
     
     import numpy as np
     from queue import Queue
+    import run_manager
     
     print(f"Running LAMMPS with Python MPI interface ({num_cores} cores)")
     print("Using concurrent rendering: visualization happens in parallel with simulation")
@@ -1368,30 +1369,51 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
         if frames_failed > 0:
             print(f"  [Rendering Thread] Note: Simulation completed successfully despite visualization failures")
     
-    # Create temporary directory (all ranks need this)
-    temp_dir = tempfile.mkdtemp(prefix="lammps_mpi_")
+    # Create run folder for organized output (only rank 0 creates it)
+    run_folder = None
+    if me == 0:
+        run_folder = run_manager.create_run_folder()
+        print(f"Created run folder: {run_folder}")
+        
+        # Save LAMMPS script
+        run_manager.save_lammps_script(run_folder, script_string)
+        
+        # Save OVITO script if present in render_config and not None
+        if render_config and 'script' in render_config and render_config['script']:
+            run_manager.save_ovito_script(run_folder, render_config['script'])
+        
+        # Save initial metadata
+        run_manager.save_simulation_metadata(run_folder, {
+            'num_cores': num_cores,
+            'status': 'starting',
+            'render_config': render_config if render_config else {}
+        })
+    
+    # Broadcast run folder path to all ranks
+    run_folder = comm.bcast(run_folder, root=0)
     
     try:
-        # Write script to file (all ranks)
-        script_path = os.path.join(temp_dir, "input.lammps")
-        if me == 0:
-            with open(script_path, 'w') as f:
-                f.write(script_string)
+        # Script is already saved in run folder
+        script_path = os.path.join(run_folder, "input.lammps")
         
         # Synchronize to ensure file is written
         comm.Barrier()
         
-        # Change to temporary directory
+        # Change to run folder directory
         original_dir = os.getcwd()
-        os.chdir(temp_dir)
+        os.chdir(run_folder)
+        
+        # Update status
+        if me == 0:
+            run_manager.update_simulation_status('.', 'running')
         
         # Initialize LAMMPS with MPI communicator
-        lmp = lammps.lammps(cmdargs=['-log', 'none', '-screen', 'none'], comm=comm)
+        lmp = lammps.lammps(cmdargs=['-log', 'log.lammps', '-screen', 'none'], comm=comm)
         
         # Parse script to identify run commands
         script_lines = script_string.split('\n')
         frame_counter = 0
-        MAX_FRAMES = 100
+        MAX_FRAMES = config.MAX_TRAJECTORY_FRAMES
         
         # Start rendering thread on rank 0 BEFORE simulation begins
         rendering_thread = None
@@ -1414,31 +1436,41 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
                     try:
                         total_steps = int(parts[1])
                         
-                        # Calculate smart interval
-                        interval = calculate_smart_dump_interval(
+                        # Calculate smart interval for frame capture
+                        frame_interval = calculate_smart_dump_interval(
                             total_steps,
                             render_config.get('interval'),
                             max_frames=MAX_FRAMES
                         )
                         
-                        if me == 0:
-                            print(f"Capturing frames every {interval} steps (max {MAX_FRAMES} frames)")
+                        # Use separate interval for thermo data streaming (more frequent)
+                        thermo_interval = config.THERMO_STREAM_INTERVAL
                         
-                        # Run in chunks for frame capture
+                        if me == 0:
+                            print(f"Capturing frames every {frame_interval} steps (max {MAX_FRAMES} frames)")
+                            print(f"Streaming thermo data every {thermo_interval} steps")
+                        
+                        # Run in chunks for thermo and frame capture
+                        # Use the smaller interval to ensure we capture both
                         steps_done = 0
+                        next_frame_step = frame_interval
+                        next_thermo_step = thermo_interval
+                        
                         while steps_done < total_steps:
-                            chunk_size = min(interval, total_steps - steps_done)
+                            # Determine chunk size: run until next thermo or frame capture point
+                            chunk_size = min(
+                                next_thermo_step - steps_done,
+                                next_frame_step - steps_done,
+                                total_steps - steps_done
+                            )
                             
                             # All ranks execute simulation
                             lmp.command(f"run {chunk_size}")
                             steps_done += chunk_size
                             
-                            # Extract frame data using MPI gather (FAST - no rendering)
-                            if frame_counter < MAX_FRAMES:
-                                frame_data = extract_lammps_frame_mpi(lmp, comm)
-                                
-                                # Only rank 0 queues data for rendering
-                                if me == 0 and frame_data:
+                            # Check if we should extract thermo data (more frequent)
+                            if steps_done >= next_thermo_step:
+                                if me == 0:
                                     # Extract and stream thermo data
                                     thermo_point = extract_thermo_data_realtime(lmp)
                                     thermo_point['step'] = steps_done
@@ -1449,7 +1481,16 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
                                             data_callback(thermo_point)
                                         except Exception as e:
                                             print(f"Warning: Error in thermo callback: {e}")
-                                    
+                                
+                                # Update next thermo step
+                                next_thermo_step += thermo_interval
+                            
+                            # Check if we should capture a frame (less frequent)
+                            if steps_done >= next_frame_step and frame_counter < MAX_FRAMES:
+                                frame_data = extract_lammps_frame_mpi(lmp, comm)
+                                
+                                # Only rank 0 queues data for rendering
+                                if me == 0 and frame_data:
                                     # Queue frame data for concurrent rendering
                                     try:
                                         frame_queue.put({
@@ -1469,6 +1510,9 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
                                             
                                     except:
                                         print(f"  Warning: Rendering queue full at step {steps_done}, skipping frame")
+                                
+                                # Update next frame step
+                                next_frame_step += frame_interval
                             
                             # Only sync for simulation, not rendering
                             comm.Barrier()
@@ -1517,20 +1561,26 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
             print(f"  - Thermodynamic data points: {len(thermo_data)}")
             print("=" * 60)
         
-        # Synchronize before file operations
+        # Synchronize before finalizing
         comm.Barrier()
         
-        # Only rank 0 handles file copying
+        # Only rank 0 handles file organization
         if me == 0:
-            for filename in os.listdir(temp_dir):
-                if filename.endswith('.atom') or filename.endswith('.dump'):
-                    permanent_path = os.path.join(original_dir, f"output_{filename}")
-                    shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
-                    output_files['dump'] = permanent_path
+            # Files are already in run folder, just record their paths
+            for filename in os.listdir(run_folder):
+                if filename.endswith('.atom') or filename.endswith('.dump') or filename.endswith('.lammpstrj'):
+                    output_files['dump'] = os.path.join(run_folder, filename)
                 elif filename.startswith('log.') or filename == 'log.lammps':
-                    permanent_path = os.path.join(original_dir, f"output_{filename}")
-                    shutil.copy2(os.path.join(temp_dir, filename), permanent_path)
-                    output_files['log'] = permanent_path
+                    output_files['log'] = os.path.join(run_folder, filename)
+            
+            # Update final metadata
+            run_manager.update_simulation_status(
+                '.', 
+                'completed',
+                frames_rendered=len(frame_images),
+                thermo_points=len(thermo_data),
+                output_files=output_files
+            )
             
             # Signal completion
             if data_callback:
@@ -1544,6 +1594,7 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
                     print(f"Warning: Error in completion callback: {e}")
             
             print(f"✅ MPI execution completed successfully")
+            print(f"   - Run folder: {run_folder}")
             print(f"   - Frames rendered: {len(frame_images)}")
             print(f"   - Thermo points: {len(thermo_data)}")
         
@@ -1555,8 +1606,7 @@ def run_lammps_mpi_python(script_string: str, render_config=None, data_callback=
     finally:
         # Clean up (all ranks)
         os.chdir(original_dir)
-        if me == 0:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        # Run folder is kept for analysis
 
 
 def run_lammps_with_async_visualization(script_string: str, render_config=None, data_callback=None, 
@@ -1700,7 +1750,7 @@ def run_lammps_with_async_visualization(script_string: str, render_config=None, 
             script_lines = script_string.split('\n')
             modified_script = []
             frame_counter = 0
-            MAX_FRAMES = 100  # Hard limit on total frames
+            MAX_FRAMES = config.MAX_TRAJECTORY_FRAMES
             
             for line in script_lines:
                 line = line.strip()

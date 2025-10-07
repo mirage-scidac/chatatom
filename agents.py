@@ -262,51 +262,32 @@ Respond with ONLY "YES" if this is a custom visualization request, or "NO" if it
                 'has_custom_request': False
             }
         
-        try:
-            # Generate rationale using the orchestrator's understanding
-            rationale_prompt = f"""Briefly explain (in 1-2 sentences) how to visualize this request using OVITO modifiers:
+        # Generate rationale using the orchestrator's understanding
+        rationale_prompt = f"""Briefly explain (in 1-2 sentences) how to visualize this request using OVITO modifiers:
 
 USER REQUEST: {user_request}
 
 Focus on which OVITO modifiers would be used (e.g., CommonNeighborAnalysisModifier, ColorCodingModifier, etc.)."""
-            
-            rationale = self.execute(rationale_prompt, temperature=0.3)
-            
-            # Generate OVITO script using the specialized generator
-            script = self.ovito_generator.generate_ovito_script(
-                user_request, 
-                simulation_context
-            )
-            
-            # Validate script
-            try:
-                self.ovito_executor.validate_and_sanitize(script)
-                warnings = []
-            except Exception as e:
-                warnings = [f"Script validation warning: {str(e)}"]
-            
-            return {
-                'mode': 'script',
-                'script': script,
-                'rationale': rationale,
-                'warnings': warnings,
-                'quality': 'medium',
-                'camera_angle': 'default',
-                'has_custom_request': True
-            }
-            
-        except Exception as e:
-            # If script generation fails, return error
-            return {
-                'mode': 'config',
-                'script': None,
-                'rationale': f"Failed to generate visualization script: {str(e)}",
-                'warnings': ['Script generation failed - falling back to basic visualization'],
-                'error': str(e),
-                'quality': 'medium',
-                'camera_angle': 'default',
-                'has_custom_request': True  # Still true, just failed to generate
-            }
+        
+        rationale = self.execute(rationale_prompt, temperature=0.3)
+        
+        # Generate OVITO script using the specialized generator
+        script = self.ovito_generator.generate_ovito_script(
+            user_request, 
+            simulation_context
+        )
+        
+        # Return the generated script without validation
+        # Validation will be handled by reviewer agent in the future
+        return {
+            'mode': 'script',
+            'script': script,
+            'rationale': rationale,
+            'warnings': [],
+            'quality': 'medium',
+            'camera_angle': 'default',
+            'has_custom_request': True
+        }
 
 class LammpsGeneratorAgent(Agent):
     def __init__(self):

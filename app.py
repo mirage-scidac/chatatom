@@ -562,7 +562,7 @@ def handle_streaming_simulation(data):
                 
                 # Merge with default rendering settings
                 render_config = {
-                    'interval': 50,  # Render every 50 steps for smooth animation
+                    'interval': None,  # Let smart calculation determine interval
                     'quality': viz_config.get('quality', 'medium'),
                     'camera_angle': viz_config.get('camera_angle', 'default'),
                     'mode': viz_config.get('mode', 'config'),
