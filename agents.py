@@ -219,6 +219,8 @@ If visualization preferences are detected, add a section:
 VISUALIZATION PREFERENCES:
 - Request: [user's visualization request in their own words]
 - Type: [filtering/coloring/analysis/display]
+- Data availability notes: If the LAMMPS dump already contains per-atom CNA values (the header lists `c_cna` alongside coordinates), explicitly pass that fact to the visualization generator. Remind it to inspect particle property names via `data_collection.particles.keys()` (per OVITO's data model docs) and to fall back to adding a CommonNeighborAnalysisModifier only when the `c_cna` column is truly absent.
+- Post-processing tips: When asking for printed structure statistics, ensure the visualization generator defines a `structure_names = {1: 'FCC', 2: 'HCP', 3: 'BCC', 4: 'ICO', 5: 'Other'}` mapping (based on the CommonNeighborAnalysisModifier docs) before using it in report formatting.
 
 IMPORTANT: Always include the FRAME SAMPLING STRATEGY section in your Phase 2 output. This is critical for the visualization pipeline to know which frames to render during the simulation.
 

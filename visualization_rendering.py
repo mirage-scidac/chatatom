@@ -90,6 +90,9 @@ def render_frame_to_image_custom(
             print("[RENDER] Using DataCollection (legacy mode)")
             pipeline = Pipeline(source=StaticSource(data=data_source))
         
+        # Start each render from a clean modifier stack to avoid per-frame accumulation
+        pipeline.modifiers.clear()
+
         if ovito_script:
             # Execute custom OVITO script
             print(f"[RENDER] Executing custom OVITO script ({len(ovito_script)} chars)")
@@ -113,7 +116,7 @@ def render_frame_to_image_custom(
             print("[RENDER] Using default visualization")
             apply_basic_visualization(pipeline)
         
-        # Add pipeline to scene
+        # Add pipeline to scene (docs/ovito_docs/pipelines.md)
         pipeline.add_to_scene()
         
         # Create viewport for rendering
@@ -180,6 +183,8 @@ def render_frame_to_image_custom(
             # Clean up temporary file
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+            # Remove pipeline from scene so subsequent frames start clean
+            pipeline.remove_from_scene()
     
     except Exception as e:
         print(f"Error rendering frame: {e}")

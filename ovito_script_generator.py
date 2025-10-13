@@ -39,15 +39,25 @@ Example - Using pre-computed CNA from LAMMPS:
 ```python
 from ovito.modifiers import ColorCodingModifier
 
-# LAMMPS computed CNA and saved as 'c_cna' in dump file
-# Map c_cna values to OVITO's Structure Type property
-# CNA values: 1=FCC, 2=HCP, 3=BCC, 4=ICO, 5=Other
+# Prefer the pre-computed DataCollection passed in by the executor
+# (this already corresponds to the target animation frame).
+data = data_collection if 'data_collection' in globals() and data_collection is not None else pipeline.compute()
 
-# Compute the pipeline to access data
-data = pipeline.compute()
+# Inspect property names via .keys() as described in the OVITO data model docs
+# (see docs/ovito_docs/data_model.md)
+particle_property_names = set(data.particles.keys())
 
-# Copy c_cna values to Structure Type property
-if 'c_cna' in data.particles:
+# Define mapping for structure identifiers (as documented in CommonNeighborAnalysisModifier)
+structure_names = {
+    1: "FCC",
+    2: "HCP",
+    3: "BCC",
+    4: "ICO",
+    5: "Other",
+}
+
+# Copy c_cna values to Structure Type property when available
+if 'c_cna' in particle_property_names:
     import numpy as np
     cna_values = np.array(data.particles['c_cna'])
     
@@ -63,6 +73,8 @@ pipeline.modifiers.append(color)
 ```
 
 IMPORTANT: When context indicates "CNA_PRECOMPUTED" or similar, ALWAYS use the pre-computed values instead of applying CommonNeighborAnalysisModifier.
+
+If the dump file is missing the expected 'c_cna' column (checked using the .keys() interface shown above) you must fall back to performing CommonNeighborAnalysisModifier yourself so that downstream modifiers have access to a 'Structure Type' property.
 
 1. PIPELINE STRUCTURE:
 ```python
@@ -162,14 +174,17 @@ pipeline.modifiers.append(surface)
 
 Pattern: "Show only crystalline atoms" (with pre-computed CNA):
 ```python
-from ovito.modifiers import SelectTypeModifier, DeleteSelectedModifier, ColorCodingModifier
+from ovito.modifiers import CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, ColorCodingModifier
 import numpy as np
 
 # Map pre-computed CNA to Structure Type
-data = pipeline.compute()
-if 'c_cna' in data.particles:
+data = data_collection if 'data_collection' in globals() and data_collection is not None else pipeline.compute()
+particle_property_names = set(data.particles.keys())
+if 'c_cna' in particle_property_names:
     cna_values = np.array(data.particles['c_cna'])
     data.particles_.create_property('Structure Type', data=cna_values)
+else:
+    pipeline.modifiers.append(CommonNeighborAnalysisModifier())
 
 # Select non-crystalline (Structure Type = 5)
 pipeline.modifiers.append(SelectTypeModifier(property='Structure Type', types={5}))
@@ -253,15 +268,19 @@ Generate a complete Python script that:
 
 Example output for "show only FCC atoms" (with pre-computed CNA):
 ```python
-from ovito.modifiers import SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
+from ovito.modifiers import CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
 import numpy as np
 
 # LAMMPS already computed CNA - use pre-computed values
 # Map c_cna to Structure Type property
-data = pipeline.compute()
-if 'c_cna' in data.particles:
+data = data_collection if 'data_collection' in globals() and data_collection is not None else pipeline.compute()
+particle_property_names = set(data.particles.keys())
+if 'c_cna' in particle_property_names:
     cna_values = np.array(data.particles['c_cna'])
     data.particles_.create_property('Structure Type', data=cna_values)
+else:
+    cna = CommonNeighborAnalysisModifier()
+    pipeline.modifiers.append(cna)
 
 # Select FCC atoms (Structure Type = 1)
 select_fcc = SelectTypeModifier(property='Structure Type', types={1})
