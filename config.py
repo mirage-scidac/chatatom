@@ -20,7 +20,7 @@ LAMMPS_REVIEWER_TEMPERATURE = 0.1
 OVITO_SCRIPT_TEMPERATURE = 0.1
 
 # LAMMPS Execution Configuration
-LAMMPS_CORES = 8  # Default number of cores for LAMMPS simulations
+LAMMPS_CORES = 32  # Default number of cores for LAMMPS simulations
 LAMMPS_USE_MPI = True  # Whether to use MPI for parallel execution (when cores > 1)
 LAMMPS_MPI_COMMAND = "mpirun"  # MPI command (could be mpirun, mpiexec, srun, etc.)
 LAMMPS_EXECUTABLE = "lmp"  # LAMMPS executable name
