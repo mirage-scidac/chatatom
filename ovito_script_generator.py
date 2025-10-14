@@ -37,17 +37,10 @@ If LAMMPS has already computed properties (indicated by context), use them direc
 
 Example - Using pre-computed CNA from LAMMPS:
 ```python
-from ovito.modifiers import ColorCodingModifier
+from ovito.modifiers import PythonModifier, ColorCodingModifier, CommonNeighborAnalysisModifier
+import numpy as np
 
-# Prefer the pre-computed DataCollection passed in by the executor
-# (this already corresponds to the target animation frame).
-data = data_collection if 'data_collection' in globals() and data_collection is not None else pipeline.compute()
-
-# Inspect property names via .keys() as described in the OVITO data model docs
-# (see docs/ovito_docs/data_model.md)
-particle_property_names = set(data.particles.keys())
-
-# Define mapping for structure identifiers (as documented in CommonNeighborAnalysisModifier)
+# Mapping documented in CommonNeighborAnalysisModifier (docs/ovito_docs/modifiers.md)
 structure_names = {
     1: "FCC",
     2: "HCP",
@@ -56,15 +49,27 @@ structure_names = {
     5: "Other",
 }
 
-# Copy c_cna values to Structure Type property when available
-if 'c_cna' in particle_property_names:
-    import numpy as np
-    cna_values = np.array(data.particles['c_cna'])
-    
-    # Create Structure Type property from c_cna values
-    data.particles_.create_property('Structure Type', data=cna_values)
+# Guard modifier (runs every frame) to ensure 'Structure Type' exists before other modifiers
+def ensure_structure_type(frame, data):
+    particle_property_names = set(data.particles.keys())  # uses PropertyContainer.keys() (docs/ovito_docs/data_model.md)
+    if 'Structure Type' in particle_property_names:
+        return
 
-# Now color by Structure Type
+    if 'c_cna' in particle_property_names:
+        cna_values = np.array(data.particles['c_cna'])
+        data.particles_.create_property('Structure Type', data=cna_values)
+        return
+
+    # Fallback: compute CNA inside OVITO for this frame only (docs/ovito_docs/user_modifier.md)
+    cna_modifier = CommonNeighborAnalysisModifier(
+        mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff,
+        cutoff=3.8,
+    )
+    data.apply(cna_modifier)  # In-place application keeps pipeline state per-frame
+
+pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
+
+# Downstream modifiers can rely on Structure Type being present each frame
 color = ColorCodingModifier(
     property='Structure Type',
     gradient=ColorCodingModifier.Viridis()
@@ -74,7 +79,18 @@ pipeline.modifiers.append(color)
 
 IMPORTANT: When context indicates "CNA_PRECOMPUTED" or similar, ALWAYS use the pre-computed values instead of applying CommonNeighborAnalysisModifier.
 
-If the dump file is missing the expected 'c_cna' column (checked using the .keys() interface shown above) you must fall back to performing CommonNeighborAnalysisModifier yourself so that downstream modifiers have access to a 'Structure Type' property.
+If the dump file is missing the expected 'c_cna' column, the PythonModifier guard shown above must invoke CommonNeighborAnalysisModifier (or an equivalent structure identification step) so that downstream modifiers still receive a valid 'Structure Type' property without emitting warnings.
+
+PER-FRAME PROPERTY GUARDS (CRITICAL):
+
+OVITO recomputes the entire modifier stack for every requested animation frame. Any property you create just once (e.g., by calling pipeline.compute() outside the modifier chain) will not persist across frames. To avoid “property missing” fallbacks, wrap every derived-property requirement in a modifier that executes per frame:
+
+1. Use PythonModifier (docs/ovito_docs/user_modifier.md) when you simply need to copy, rename, or aggregate existing per-atom data (e.g., copying c_cna into Structure Type, computing a selection flag, calculating statistics, snapshot logging).
+2. Use built-in analysis modifiers (CommonNeighborAnalysisModifier, CentroSymmetryModifier, DislocationAnalysisModifier, etc.) inside that PythonModifier via `data.apply(...)` (in-place) or by appending them directly to the pipeline so they execute each frame.
+3. Never rely on a one-off `pipeline.compute()` side-effect to add properties, because the executor will call compute() again for each frame and those properties will vanish.
+4. When multiple downstream modifiers depend on the same derived property, install exactly one guard modifier at the *start* of the pipeline to prepare that property, and let later steps assume it exists.
+
+This pattern applies broadly: if you need per-frame selections, classifications, statistics, or color channels, ensure a modifier establishes the required data during every pipeline evaluation.
 
 1. PIPELINE STRUCTURE:
 ```python
@@ -174,17 +190,19 @@ pipeline.modifiers.append(surface)
 
 Pattern: "Show only crystalline atoms" (with pre-computed CNA):
 ```python
-from ovito.modifiers import CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, ColorCodingModifier
+from ovito.modifiers import PythonModifier, CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, ColorCodingModifier
 import numpy as np
 
-# Map pre-computed CNA to Structure Type
-data = data_collection if 'data_collection' in globals() and data_collection is not None else pipeline.compute()
-particle_property_names = set(data.particles.keys())
-if 'c_cna' in particle_property_names:
-    cna_values = np.array(data.particles['c_cna'])
-    data.particles_.create_property('Structure Type', data=cna_values)
-else:
-    pipeline.modifiers.append(CommonNeighborAnalysisModifier())
+def ensure_structure_type(frame, data):
+    particle_property_names = set(data.particles.keys())
+    if 'Structure Type' in particle_property_names:
+        return
+    if 'c_cna' in particle_property_names:
+        data.particles_.create_property('Structure Type', data=np.array(data.particles['c_cna']))
+        return
+    data.apply(CommonNeighborAnalysisModifier(mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff, cutoff=3.8))
+
+pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
 
 # Select non-crystalline (Structure Type = 5)
 pipeline.modifiers.append(SelectTypeModifier(property='Structure Type', types={5}))
@@ -268,19 +286,19 @@ Generate a complete Python script that:
 
 Example output for "show only FCC atoms" (with pre-computed CNA):
 ```python
-from ovito.modifiers import CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
+from ovito.modifiers import PythonModifier, CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
 import numpy as np
 
-# LAMMPS already computed CNA - use pre-computed values
-# Map c_cna to Structure Type property
-data = data_collection if 'data_collection' in globals() and data_collection is not None else pipeline.compute()
-particle_property_names = set(data.particles.keys())
-if 'c_cna' in particle_property_names:
-    cna_values = np.array(data.particles['c_cna'])
-    data.particles_.create_property('Structure Type', data=cna_values)
-else:
-    cna = CommonNeighborAnalysisModifier()
-    pipeline.modifiers.append(cna)
+def ensure_structure_type(frame, data):
+    particle_property_names = set(data.particles.keys())
+    if 'Structure Type' in particle_property_names:
+        return
+    if 'c_cna' in particle_property_names:
+        data.particles_.create_property('Structure Type', data=np.array(data.particles['c_cna']))
+        return
+    data.apply(CommonNeighborAnalysisModifier(mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff, cutoff=3.8))
+
+pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
 
 # Select FCC atoms (Structure Type = 1)
 select_fcc = SelectTypeModifier(property='Structure Type', types={1})
