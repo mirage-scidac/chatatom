@@ -442,12 +442,17 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         render_thread.start()
         
         # Prepare MPI command
-        cmd = [
-            config.LAMMPS_MPI_COMMAND,
+        cmd = [config.LAMMPS_MPI_COMMAND]
+        
+        # Add hardware thread flag if enabled (fixes slot allocation on hyperthreaded systems)
+        if config.LAMMPS_USE_HWTHREADS:
+            cmd.append('--use-hwthread-cpus')
+        
+        cmd.extend([
             '-np', str(cores),
             config.LAMMPS_EXECUTABLE,
             '-in', script_path
-        ]
+        ])
         
         print(f"Executing: {' '.join(cmd)}")
         

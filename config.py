@@ -24,6 +24,7 @@ LAMMPS_CORES = 32  # Default number of cores for LAMMPS simulations
 LAMMPS_USE_MPI = True  # Whether to use MPI for parallel execution (when cores > 1)
 LAMMPS_MPI_COMMAND = "mpirun"  # MPI command (could be mpirun, mpiexec, srun, etc.)
 LAMMPS_EXECUTABLE = "lmp"  # LAMMPS executable name
+LAMMPS_USE_HWTHREADS = True  # Use hardware threads instead of just physical cores (fixes slot allocation on hyperthreaded systems)
 
 # Trajectory Visualization Configuration
 MAX_TRAJECTORY_FRAMES = 20  # Maximum number of frames to capture during simulation
