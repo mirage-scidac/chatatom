@@ -69,12 +69,24 @@ def ensure_structure_type(frame, data):
 
 pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
 
+
+def create_structure_color_modifier():
+    # Fixed mapping keeps colors stable across frames (docs/ovito_docs/modifiers.md)
+    modifier = ColorCodingModifier(
+        property='Structure Type',
+        gradient=ColorCodingModifier.Viridis(),
+    )
+    modifier.auto_adjust_range = False  # keep legend stable across frames
+    modifier.start_value = 1
+    modifier.end_value = 5
+    modifier.discretize_color_map = True
+    return modifier
+
+
 # Downstream modifiers can rely on Structure Type being present each frame
-color = ColorCodingModifier(
-    property='Structure Type',
-    gradient=ColorCodingModifier.Viridis()
-)
-pipeline.modifiers.append(color)
+pipeline.modifiers.append(create_structure_color_modifier())
+
+# Reuse create_structure_color_modifier() anywhere you need consistent structure coloring.
 ```
 
 IMPORTANT: When context indicates "CNA_PRECOMPUTED" or similar, ALWAYS use the pre-computed values instead of applying CommonNeighborAnalysisModifier.
@@ -140,12 +152,10 @@ pipeline.modifiers.append(InvertSelectionModifier())
 ColorCodingModifier:
 ```python
 from ovito.modifiers import ColorCodingModifier
-color = ColorCodingModifier(
-    property='Structure Type',
-    gradient=ColorCodingModifier.Viridis()  # or .Hot(), .Jet(), etc.
-)
+color = create_structure_color_modifier()  # Helper keeps palette stable across frames
 pipeline.modifiers.append(color)
 ```
+Disabling `auto_adjust_range` and choosing fixed `start_value`/`end_value` keeps the legend and colors stable across frames instead of re-scaling per timestep (see docs/ovito_docs/modifiers.md, ColorCodingModifier.auto_adjust_range).
 
 CentroSymmetryModifier (defect detection):
 ```python
@@ -188,41 +198,16 @@ pipeline.modifiers.append(surface)
 
 3. VISUALIZATION PATTERNS:
 
-Pattern: "Show only crystalline atoms" (with pre-computed CNA):
+Pattern: "Show only crystalline atoms":
 ```python
-from ovito.modifiers import PythonModifier, CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, ColorCodingModifier
-import numpy as np
-
-def ensure_structure_type(frame, data):
-    particle_property_names = set(data.particles.keys())
-    if 'Structure Type' in particle_property_names:
-        return
-    if 'c_cna' in particle_property_names:
-        data.particles_.create_property('Structure Type', data=np.array(data.particles['c_cna']))
-        return
-    data.apply(CommonNeighborAnalysisModifier(mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff, cutoff=3.8))
+from ovito.modifiers import PythonModifier, SelectTypeModifier, DeleteSelectedModifier
 
 pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
-
-# Select non-crystalline (Structure Type = 5)
 pipeline.modifiers.append(SelectTypeModifier(property='Structure Type', types={5}))
-# Delete selected
 pipeline.modifiers.append(DeleteSelectedModifier())
-# Color by structure
-pipeline.modifiers.append(ColorCodingModifier(property='Structure Type'))
+pipeline.modifiers.append(create_structure_color_modifier())
 ```
-
-Pattern: "Show only crystalline atoms" (without pre-computed CNA):
-```python
-# Apply CNA
-pipeline.modifiers.append(CommonNeighborAnalysisModifier(cutoff=3.5))
-# Select non-crystalline (Structure Type = 5)
-pipeline.modifiers.append(SelectTypeModifier(property='Structure Type', types={5}))
-# Delete selected
-pipeline.modifiers.append(DeleteSelectedModifier())
-# Color by structure
-pipeline.modifiers.append(ColorCodingModifier(property='Structure Type'))
-```
+The guard handles both pre-computed and on-demand CNA scenarios, so no duplicate workflows are needed.
 
 Pattern: "Highlight defects"
 ```python
@@ -284,59 +269,18 @@ Generate a complete Python script that:
 5. Returns the modified pipeline
 6. CHECKS CONTEXT for pre-computed properties and uses them when available
 
-Example output for "show only FCC atoms" (with pre-computed CNA):
+Example: "Show only FCC atoms":
 ```python
-from ovito.modifiers import PythonModifier, CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
-import numpy as np
-
-def ensure_structure_type(frame, data):
-    particle_property_names = set(data.particles.keys())
-    if 'Structure Type' in particle_property_names:
-        return
-    if 'c_cna' in particle_property_names:
-        data.particles_.create_property('Structure Type', data=np.array(data.particles['c_cna']))
-        return
-    data.apply(CommonNeighborAnalysisModifier(mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff, cutoff=3.8))
+from ovito.modifiers import PythonModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier
 
 pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
-
-# Select FCC atoms (Structure Type = 1)
 select_fcc = SelectTypeModifier(property='Structure Type', types={1})
 pipeline.modifiers.append(select_fcc)
-
-# Invert selection to select non-FCC atoms
 pipeline.modifiers.append(InvertSelectionModifier())
-
-# Delete non-FCC atoms
 pipeline.modifiers.append(DeleteSelectedModifier())
-
-# Color remaining FCC atoms
-color = ColorCodingModifier(property='Structure Type', gradient=ColorCodingModifier.Viridis())
-pipeline.modifiers.append(color)
+pipeline.modifiers.append(create_structure_color_modifier())
 ```
-
-Example output for "show only FCC atoms" (without pre-computed CNA):
-```python
-from ovito.modifiers import CommonNeighborAnalysisModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier, ColorCodingModifier
-
-# Apply Common Neighbor Analysis to identify crystal structures
-cna = CommonNeighborAnalysisModifier(cutoff=3.5)
-pipeline.modifiers.append(cna)
-
-# Select FCC atoms (Structure Type = 1)
-select_fcc = SelectTypeModifier(property='Structure Type', types={1})
-pipeline.modifiers.append(select_fcc)
-
-# Invert selection to select non-FCC atoms
-pipeline.modifiers.append(InvertSelectionModifier())
-
-# Delete non-FCC atoms
-pipeline.modifiers.append(DeleteSelectedModifier())
-
-# Color remaining FCC atoms
-color = ColorCodingModifier(property='Structure Type', gradient=ColorCodingModifier.Viridis())
-pipeline.modifiers.append(color)
-```
+Chain additional modifiers after these core steps as required (e.g., logging, further selections, or alternative color schemes built off the guard-prepared properties).
 
 IMPORTANT:
 - Generate ONLY the Python code, no markdown formatting

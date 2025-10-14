@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import re
 
 # This will be populated with the Flask app later.
 # For now, it contains the health checks.
@@ -139,8 +140,10 @@ def llm_stream():
 
             # Extract element from user command and build registry context
             registry_context = ""
+            lower_command = user_command.lower()
             for element in kim_utils.ELEMENT_PROPERTIES.keys():
-                if element.lower() in user_command.lower():
+                # Match chemical symbol as a standalone token to avoid false positives (e.g., 'ar' in 'Orchestrator')
+                if re.search(rf"\b{element.lower()}\b", lower_command):
                     # Get models for this element from registry
                     potentials = kim_utils.read_registry()
                     element_models = [p for p in potentials if p['element'] == element]
@@ -369,8 +372,9 @@ def llm_command():
         # 1. Orchestrator analyzes the request with registry context
         # Extract element from user command if present
         registry_context = ""
+        lower_command = user_command.lower()
         for element in kim_utils.ELEMENT_PROPERTIES.keys():
-            if element.lower() in user_command.lower():
+            if re.search(rf"\b{element.lower()}\b", lower_command):
                 # Get models for this element from registry
                 potentials = kim_utils.read_registry()
                 element_models = [p for p in potentials if p['element'] == element]
@@ -624,8 +628,9 @@ def llm_stream_live():
 
             # Extract element from user command and build registry context
             registry_context = ""
+            lower_command = user_command.lower()
             for element in kim_utils.ELEMENT_PROPERTIES.keys():
-                if element.lower() in user_command.lower():
+                if re.search(rf"\b{element.lower()}\b", lower_command):
                     # Get models for this element from registry
                     potentials = kim_utils.read_registry()
                     element_models = [p for p in potentials if p['element'] == element]
