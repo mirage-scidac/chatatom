@@ -174,17 +174,38 @@ PHASE 2 BEHAVIOR:
 - Process user feedback and update parameters accordingly
 - Use the structured format below to signal readiness for script generation
 
+CRITICAL - MULTI-PHASE SIMULATIONS:
+When describing simulations with multiple phases (equilibration, heating, cooling, holding, etc.), you MUST provide a detailed, explicit description of each phase in natural language. The Generator agent will parse your description to implement the simulation correctly.
+
+For multi-phase simulations, clearly articulate:
+1. The exact sequence of phases
+2. The precise duration of each phase in picoseconds
+3. The temperature parameters for each phase (starting temp, ending temp, or constant temp)
+4. Any special conditions (pressure, ensemble changes, etc.)
+
+Example of clear multi-phase description:
+"The simulation will proceed in 4 distinct phases:
+- Phase 1 (Equilibration): Hold the system at 300 K for 10 ps using NPT ensemble
+- Phase 2 (Heating): Ramp temperature from 300 K to 3000 K over 20 ps using NPT ensemble
+- Phase 3 (Cooling): Cool the system from 3000 K down to 100 K over 20 ps using NPT ensemble  
+- Phase 4 (Final Hold): Maintain the system at 100 K for 50 ps using NPT ensemble
+Total simulation time: 100 ps"
+
+This level of detail ensures the Generator creates the correct LAMMPS script with accurate phase durations and temperature profiles.
+
 PHASE 2 OUTPUT FORMAT:
 SIMULATION PARAMETERS:
 - Material: [element/compound]
 - KIM Model: [exact model ID selected by user]
-- Temperature: [value] K
+- Temperature: [value] K (or describe temperature profile for multi-phase simulations)
 - Ensemble: [NVE/NVT/NPT]
 - Duration: [value] [units]
 - Total steps: [calculated total timesteps]
 - System size: [value] unit cells (approximately [N] atoms)
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
+
+For multi-phase simulations, include a detailed description of the simulation phases either within the parameters section or immediately after it, using clear natural language as shown in the example above.
 
 FRAME SAMPLING STRATEGY:
 - Max frames: [value from config.MAX_TRAJECTORY_FRAMES]
@@ -311,6 +332,18 @@ Key guidelines:
 8. CRITICAL: Always initialize velocities for temperature-controlled simulations
 9. CRITICAL: If the Orchestrator provided a FRAME SAMPLING STRATEGY with target timesteps, include this as a comment near the top of the script in the exact format: "# Target timesteps: [list]"
 10. CRITICAL: If the Orchestrator indicates VISUALIZATION PREFERENCES requesting structure-based coloring (FCC, BCC, etc.), you MUST include CNA computation in the LAMMPS script to avoid redundant computation in OVITO
+
+CRITICAL - PARSING MULTI-PHASE SIMULATIONS:
+You MUST carefully read the ENTIRE simulation parameters provided by the Orchestrator. If the Orchestrator describes a multi-phase simulation (equilibration, heating, cooling, holding, etc.), you MUST:
+
+1. Extract each phase description from the Orchestrator's text
+2. Identify the exact duration of each phase in picoseconds
+3. Note the temperature parameters for each phase (constant, ramping up, ramping down)
+4. Calculate the number of timesteps for each phase (duration_ps / timestep)
+5. Implement each phase as a separate LAMMPS stage with its own fix and run command
+6. Ensure the total simulation time matches what the Orchestrator specified
+
+DO NOT guess or approximate phase durations. Use EXACTLY what the Orchestrator specified. If the Orchestrator's description is unclear, the script should reflect your best interpretation of their explicit instructions.
 
 Required LAMMPS script structure with KIM:
 - units metal (required)
