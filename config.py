@@ -30,3 +30,6 @@ MAX_TRAJECTORY_FRAMES = 20  # Maximum number of frames to capture during simulat
 
 # Thermodynamic Data Streaming Configuration
 THERMO_STREAM_INTERVAL = 100  # Steps between thermo data updates during live streaming (for live plots)
+
+# Application Server Configuration
+APP_PORT = 5002  # Port for the Flask application server

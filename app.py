@@ -1,4 +1,3 @@
-
 import subprocess
 import sys
 import os
@@ -1110,4 +1109,5 @@ def initialize_kim_registry():
 if __name__ == "__main__":
     run_health_checks()
     initialize_kim_registry()
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True)
+    socketio.run(app, host='0.0.0.0', port=config.APP_PORT, debug=True)
+
