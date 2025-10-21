@@ -1,7 +1,7 @@
-
 import subprocess
 import sys
 import os
+import re
 
 # This will be populated with the Flask app later.
 # For now, it contains the health checks.
@@ -107,7 +107,7 @@ def serve_index():
     return send_from_directory('.', 'index.html')
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
-from tools import run_lammps_simulation, run_lammps_simulation_streaming, run_lammps_with_async_visualization
+from tools import run_lammps_simulation
 import kim_utils
 
 @app.route('/api/llm-stream', methods=['GET'])
@@ -140,8 +140,10 @@ def llm_stream():
 
             # Extract element from user command and build registry context
             registry_context = ""
+            lower_command = user_command.lower()
             for element in kim_utils.ELEMENT_PROPERTIES.keys():
-                if element.lower() in user_command.lower():
+                # Match chemical symbol as a standalone token to avoid false positives (e.g., 'ar' in 'Orchestrator')
+                if re.search(rf"\b{element.lower()}\b", lower_command):
                     # Get models for this element from registry
                     potentials = kim_utils.read_registry()
                     element_models = [p for p in potentials if p['element'] == element]
@@ -244,6 +246,39 @@ Process the user's feedback and provide final simulation parameters using the SI
             review = ''.join(review_chunks)
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
 
+            # 4. Visualization agent - ALWAYS runs to show visualization is happening
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+            
+            # Parse visualization request from user command
+            from tools import parse_visualization_request
+            
+            # Extract material from analysis for context
+            simulation_context = {}
+            if 'Material:' in analysis:
+                # Simple extraction - look for material line
+                for line in analysis.split('\n'):
+                    if 'Material:' in line:
+                        material = line.split('Material:')[1].strip().split()[0]
+                        simulation_context['material'] = material
+                        break
+            
+            # Get OVITO script if custom visualization requested
+            ovito_script = parse_visualization_request(user_command, simulation_context, lammps_script)
+            
+            print(f"[APP] Visualization script: {'Custom (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default'}")
+            
+            # Generate appropriate message based on whether custom visualization was requested
+            if ovito_script:
+                # Custom visualization requested - show the script
+                viz_message = f"**Custom Visualization Requested**\n\n**Generated OVITO Script:**\n```python\n{ovito_script}\n```"
+            else:
+                # No custom visualization - show minimal message
+                viz_message = "Applying default visualization settings for trajectory rendering."
+            
+            # Stream the visualization message
+            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
+
             # Check if review passed
             if "REVIEW: PASS" in review:
                 # Enhanced execution logic with intent tracking
@@ -279,12 +314,12 @@ Process the user's feedback and provide final simulation parameters using the SI
                     yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Running LAMMPS simulation...', 'message_type': 'info'})}\n\n"
                     
                     try:
-                        output_files, thermo_data = run_lammps_simulation(lammps_script)
+                        output_files, thermo_data, frame_images = run_lammps_simulation(lammps_script)
                         
-                        success_message = f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points."
+                        success_message = f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points and {len(frame_images)} visualization frames."
                         yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': success_message, 'message_type': 'success'})}\n\n"
                         yield f"data: {json.dumps({'type': 'simulation_complete', 'thermo_data': thermo_data, 'output_files': output_files, 'script': lammps_script})}\n\n"
-                        
+                            
                     except Exception as e:
                         error_message = f"Simulation execution failed: {str(e)}"
                         yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
@@ -337,8 +372,9 @@ def llm_command():
         # 1. Orchestrator analyzes the request with registry context
         # Extract element from user command if present
         registry_context = ""
+        lower_command = user_command.lower()
         for element in kim_utils.ELEMENT_PROPERTIES.keys():
-            if element.lower() in user_command.lower():
+            if re.search(rf"\b{element.lower()}\b", lower_command):
                 # Get models for this element from registry
                 potentials = kim_utils.read_registry()
                 element_models = [p for p in potentials if p['element'] == element]
@@ -410,11 +446,11 @@ def llm_command():
             if should_run:
                 # 4. Execute the simulation
                 try:
-                    output_files, thermo_data = run_lammps_simulation(lammps_script)
+                    output_files, thermo_data, frame_images = run_lammps_simulation(lammps_script)
                     
                     conversation.append({
                         "agent": "System",
-                        "content": f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points.",
+                        "content": f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points and {len(frame_images)} visualization frames.",
                         "type": "success"
                     })
                     
@@ -481,6 +517,8 @@ def handle_streaming_simulation(data):
     """Handle streaming simulation requests via WebSocket with visualization"""
     try:
         lammps_script = data.get('script')
+        ovito_script = data.get('ovito_script')  # Get pre-generated OVITO script
+        
         if not lammps_script:
             emit('error', {'message': 'No LAMMPS script provided'})
             return
@@ -509,43 +547,43 @@ def handle_streaming_simulation(data):
         
         def run_simulation():
             try:
-                # Check if user wants visualization (detect keywords)
-                user_wants_viz = any(keyword in lammps_script.lower() for keyword in [
-                    'dump', 'trajectory', 'visualize', 'show'
-                ]) or True  # Default to always show visualization for MVP3
+                import re
                 
-                if user_wants_viz:
-                    # Use visualization-enabled simulation
-                    render_config = {
-                        'interval': 50,  # Render every 50 steps for smooth animation
-                        'quality': 'medium',
-                        'camera_angle': 'default'
-                    }
-                    
-                    output_files, all_thermo_data, frame_images = run_lammps_with_async_visualization(
-                        lammps_script, 
-                        render_config,
-                        data_callback
-                    )
-                    
-                    socketio.emit('simulation_complete', {
-                        'output_files': output_files,
-                        'total_points': len(all_thermo_data),
-                        'total_frames': len(frame_images),
-                        'message': f'Simulation completed successfully with {len(frame_images)} visualization frames!'
-                    })
-                else:
-                    # Use regular streaming simulation
-                    output_files, all_thermo_data = run_lammps_simulation_streaming(
-                        lammps_script, 
-                        data_callback
-                    )
-                    
-                    socketio.emit('simulation_complete', {
-                        'output_files': output_files,
-                        'total_points': len(all_thermo_data),
-                        'message': 'Simulation completed successfully!'
-                    })
+                # Extract frame sampling strategy from LAMMPS script comments
+                target_timesteps = None
+                for line in lammps_script.split('\n'):
+                    if 'Target timesteps:' in line or 'target timesteps:' in line.lower():
+                        # Extract the list of timesteps from the comment
+                        # Format: # Target timesteps: [0, 13000, 26000, ...]
+                        match = re.search(r'\[([\d,\s]+)\]', line)
+                        if match:
+                            timesteps_str = match.group(1)
+                            target_timesteps = [int(x.strip()) for x in timesteps_str.split(',')]
+                            print(f"[APP] Extracted target timesteps from script: {target_timesteps}")
+                            break
+                
+                # Simple render config with pre-generated OVITO script
+                render_config = {
+                    'ovito_script': ovito_script,  # OVITO script string or None (already generated)
+                    'target_timesteps': target_timesteps,
+                }
+                
+                print(f"[APP] Render config: {'Custom script (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default visualization'}")
+                
+                # Use configured number of cores from config.py
+                output_files, all_thermo_data, frame_images = run_lammps_simulation(
+                    lammps_script, 
+                    render_config,
+                    data_callback,
+                    num_cores=config.LAMMPS_CORES
+                )
+                
+                socketio.emit('simulation_complete', {
+                    'output_files': output_files,
+                    'total_points': len(all_thermo_data),
+                    'total_frames': len(frame_images),
+                    'message': f'Simulation completed successfully with {len(frame_images)} visualization frames!'
+                })
                 
             except Exception as e:
                 socketio.emit('simulation_error', {
@@ -590,8 +628,9 @@ def llm_stream_live():
 
             # Extract element from user command and build registry context
             registry_context = ""
+            lower_command = user_command.lower()
             for element in kim_utils.ELEMENT_PROPERTIES.keys():
-                if element.lower() in user_command.lower():
+                if re.search(rf"\b{element.lower()}\b", lower_command):
                     # Get models for this element from registry
                     potentials = kim_utils.read_registry()
                     element_models = [p for p in potentials if p['element'] == element]
@@ -687,6 +726,37 @@ Process the user's feedback and provide final simulation parameters using the SI
             review = ''.join(review_chunks)
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
 
+            # 4. Visualization agent - ALWAYS runs to show visualization is happening
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+            
+            # Parse visualization request from user command
+            from tools import parse_visualization_request
+            
+            # Extract material from analysis for context
+            simulation_context = {}
+            if 'Material:' in analysis:
+                # Simple extraction - look for material line
+                for line in analysis.split('\n'):
+                    if 'Material:' in line:
+                        material = line.split('Material:')[1].strip().split()[0]
+                        simulation_context['material'] = material
+                        break
+            
+            # Get OVITO script if custom visualization requested
+            ovito_script = parse_visualization_request(user_command, simulation_context, lammps_script)
+            
+            # Generate appropriate message based on whether custom visualization was requested
+            if ovito_script:
+                # Custom visualization requested - show the script
+                viz_message = f"**Custom Visualization Requested**\n\n**Generated OVITO Script:**\n```python\n{ovito_script}\n```"
+            else:
+                # No custom visualization - show minimal message
+                viz_message = "Applying default visualization settings for trajectory rendering."
+            
+            # Stream the visualization message
+            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
+
             # Check if review passed and determine execution
             if "REVIEW: PASS" in review:
                 user_command_lower = user_command.lower()
@@ -708,10 +778,10 @@ Process the user's feedback and provide final simulation parameters using the SI
                     should_run = True
                 
                 if should_run:
-                    # Signal to use streaming simulation
+                    # Signal to use streaming simulation with OVITO script
                     yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
                     yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': lammps_script})}\n\n"
+                    yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': lammps_script, 'ovito_script': ovito_script, 'user_command': user_command})}\n\n"
                     yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
@@ -1044,4 +1114,5 @@ def initialize_kim_registry():
 if __name__ == "__main__":
     run_health_checks()
     initialize_kim_registry()
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True)
+    socketio.run(app, host='0.0.0.0', port=config.APP_PORT, debug=True)
+

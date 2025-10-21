@@ -180,12 +180,20 @@ __pycache__/
 # Test output files
 tests/test_assets/kim.log
 
+#KIM potential registry
+kim_potentials_registry.md
+
 #Lammps outputs
 *.lammpstrj
 *.log
 *.lammps
 output*
 dump.*
+run_*/
+runs
 
 #Pycache
 __pycache__/
+
+#Misc
+.loglogin

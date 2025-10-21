@@ -41,7 +41,20 @@ With the `chatmd` environment active, install the required packages.
   uv pip install ovito openai flask flask-socketio pytest requests
   ```
 
-### 3. Install KIM Models
+### 3. Install Fortran Compiler (Required for KIM Models)
+
+Many KIM potential models contain Fortran code that needs to be compiled during installation. Install gfortran via conda:
+
+```bash
+conda install -c conda-forge gfortran -y
+```
+
+**Note**: You can skip this step if you already have a Fortran compiler (gfortran) installed on your system. To check if you have gfortran installed, run:
+```bash
+which gfortran
+```
+
+### 4. Install KIM Models
 
 Install commonly used KIM potential models:
 
@@ -50,7 +63,7 @@ Install commonly used KIM potential models:
 kim-api-collections-management install user LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004
 kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
 kim-api-collections-management install user EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
-kim-api-collections-management install user EAM_Dynamo_FoilesBasteseDaw_1986_Cu__MO_831902330215_000
+kim-api-collections-management install user EAM_Dynamo_FoilesBaskesDaw_1986Universal3_Cu__MO_666348409573_005
 ```
 
 **Note**: You can install additional KIM models as needed using:
@@ -126,15 +139,6 @@ This application uses the Knowledge Base of Interatomic Models (KIM) for all mol
 - **Reproducible simulations** across different systems
 - **Verified models** with proper documentation
 - **Automatic parameter handling** (no manual pair coefficients)
-
-### Supported Materials
-
-The application comes with pre-configured support for:
-
-- **Argon**: Lennard-Jones potential
-- **Silicon**: Stillinger-Weber potential  
-- **Aluminum**: EAM potential
-- **Copper**: EAM potential
 
 Additional KIM models can be installed as needed. See the [KIM documentation](docs/kim_potential/kim_potential_reference.md) for more details.
 
