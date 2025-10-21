@@ -8,6 +8,12 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Prism.js for syntax highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet" />
     <style>
         .typing-dots {
             display: inline-block;
@@ -115,6 +121,108 @@
         .parameter-list strong {
             min-width: 150px;
             color: #fbbf24;
+        }
+
+        /* Enhanced Code Block Styling */
+        .code-block-container {
+            position: relative;
+            background-color: #1e1e1e;
+            border-radius: 0.5rem;
+            margin: 1rem 0;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .code-block-header {
+            background-color: #2d2d2d;
+            padding: 0.75rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .code-block-title {
+            color: #60a5fa;
+            font-weight: 600;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .copy-button {
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+
+        .copy-button:hover {
+            background-color: #2563eb;
+        }
+
+        .copy-button.copied {
+            background-color: #10b981;
+        }
+
+        .code-block-content {
+            max-height: 500px;
+            overflow-y: auto;
+            overflow-x: auto;
+        }
+
+        /* Override Prism.js styles for better integration */
+        pre[class*="language-"] {
+            margin: 0;
+            padding: 1rem;
+            background-color: #1e1e1e !important;
+            border-radius: 0;
+        }
+
+        code[class*="language-"] {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            text-shadow: none;
+        }
+
+        /* Line numbers styling */
+        .line-numbers .line-numbers-rows {
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            padding-right: 0.5rem;
+            margin-right: 0.5rem;
+        }
+
+        .line-numbers-rows > span:before {
+            color: #6b7280;
+        }
+
+        /* Scrollbar styling for code blocks */
+        .code-block-content::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .code-block-content::-webkit-scrollbar-track {
+            background: #2d2d2d;
+        }
+
+        .code-block-content::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+
+        .code-block-content::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
         }
     </style>
 </head>
@@ -607,6 +715,10 @@
                 case 'Reviewer':
                     colorClass = 'bg-yellow-800 border-l-4 border-yellow-400';
                     agentIcon = '🔍';
+                    break;
+                case 'Visualization':
+                    colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                    agentIcon = '🎨';
                     break;
                 case 'System':
                     if (type === 'error') {
@@ -1214,6 +1326,51 @@
             }
         }
 
+        // Create enhanced code block with syntax highlighting
+        function createCodeBlock(code, title = 'Generated Code', language = 'python') {
+            const codeBlockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const escapedCode = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            return `
+                <div class="code-block-container">
+                    <div class="code-block-header">
+                        <div class="code-block-title">
+                            <span>📄</span>
+                            <span>${title}</span>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard('${codeBlockId}', this)">
+                            <span>📋</span>
+                            <span>Copy</span>
+                        </button>
+                    </div>
+                    <div class="code-block-content">
+                        <pre class="line-numbers"><code id="${codeBlockId}" class="language-${language}">${escapedCode}</code></pre>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Copy code to clipboard
+        function copyCodeToClipboard(codeBlockId, button) {
+            const codeElement = document.getElementById(codeBlockId);
+            const code = codeElement.textContent;
+            
+            navigator.clipboard.writeText(code).then(() => {
+                // Visual feedback
+                const originalHTML = button.innerHTML;
+                button.classList.add('copied');
+                button.innerHTML = '<span>✓</span><span>Copied!</span>';
+                
+                setTimeout(() => {
+                    button.classList.remove('copied');
+                    button.innerHTML = originalHTML;
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy code:', err);
+                alert('Failed to copy code to clipboard');
+            });
+        }
+
         function addStreamingMessage(agent, content, messageType) {
             // Ensure content is defined and not null
             if (content === undefined || content === null) {
@@ -1296,13 +1453,30 @@
                 // Format content based on type
                 let formattedContent = currentAgentMessages[sessionKey] || '';
                 if (messageType === 'script') {
-                    formattedContent = `<pre class="bg-gray-900 p-2 rounded mt-2 overflow-x-auto"><code>${formattedContent}</code></pre>`;
+                    // Determine script type and title
+                    let title = 'Generated Script';
+                    let language = 'python';
+                    
+                    if (formattedContent.includes('from ovito') || formattedContent.includes('import ovito')) {
+                        title = 'OVITO Visualization Script';
+                        language = 'python';
+                    } else if (formattedContent.includes('kim init') || formattedContent.includes('pair_style kim')) {
+                        title = 'LAMMPS Simulation Script';
+                        language = 'lammps';
+                    }
+                    
+                    formattedContent = createCodeBlock(formattedContent, title, language);
                 } else {
                     // Parse Markdown to HTML
                     formattedContent = marked.parse(formattedContent);
                 }
 
                 contentElement.innerHTML = formattedContent;
+                
+                // Apply syntax highlighting to any new code blocks
+                if (messageType === 'script' && typeof Prism !== 'undefined') {
+                    Prism.highlightAllUnder(contentElement);
+                }
             }
             
             // Auto-scroll
@@ -1587,11 +1761,15 @@
                                 console.log('🎬 SSE: Received start_streaming_simulation event');
                                 console.log('🔌 WebSocket status:', socket ? 'initialized' : 'not initialized');
                                 console.log('🔗 WebSocket connected:', socket && socket.connected);
+                                console.log('🎨 OVITO script:', data.ovito_script ? `Present (${data.ovito_script.length} chars)` : 'None');
                                 
                                 // Start streaming simulation via WebSocket
                                 if (socket && socket.connected) {
                                     console.log('📡 Emitting start_streaming_simulation to WebSocket server...');
-                                    socket.emit('start_streaming_simulation', { script: data.script });
+                                    socket.emit('start_streaming_simulation', { 
+                                        script: data.script,
+                                        ovito_script: data.ovito_script  // Pass OVITO script to WebSocket handler
+                                    });
                                 } else {
                                     console.warn('⚠️ WebSocket not available, falling back to batch simulation');
                                     // Fallback to regular simulation

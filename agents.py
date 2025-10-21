@@ -2,6 +2,7 @@
 from openai import OpenAI
 import config
 import kim_utils
+from typing import Dict, Any, Optional
 
 class Agent:
     def __init__(self, system_prompt, model=None, default_temperature=0.1):
@@ -63,6 +64,13 @@ class Agent:
 
 class OrchestratorAgent(Agent):
     def __init__(self):
+        # Import here to avoid circular dependency
+        from ovito_script_generator import OVITOScriptGenerator
+        from ovito_executor import DynamicOVITOExecutor
+        
+        self.ovito_generator = OVITOScriptGenerator()
+        self.ovito_executor = DynamicOVITOExecutor()
+        
         system_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
 
 PHASE 1 - ANALYSIS AND PROPOSAL:
@@ -166,19 +174,76 @@ PHASE 2 BEHAVIOR:
 - Process user feedback and update parameters accordingly
 - Use the structured format below to signal readiness for script generation
 
+CRITICAL - MULTI-PHASE SIMULATIONS:
+When describing simulations with multiple phases (equilibration, heating, cooling, holding, etc.), you MUST provide a detailed, explicit description of each phase in natural language. The Generator agent will parse your description to implement the simulation correctly.
+
+For multi-phase simulations, clearly articulate:
+1. The exact sequence of phases
+2. The precise duration of each phase in picoseconds
+3. The temperature parameters for each phase (starting temp, ending temp, or constant temp)
+4. Any special conditions (pressure, ensemble changes, etc.)
+
+Example of clear multi-phase description:
+"The simulation will proceed in 4 distinct phases:
+- Phase 1 (Equilibration): Hold the system at 300 K for 10 ps using NPT ensemble
+- Phase 2 (Heating): Ramp temperature from 300 K to 3000 K over 20 ps using NPT ensemble
+- Phase 3 (Cooling): Cool the system from 3000 K down to 100 K over 20 ps using NPT ensemble  
+- Phase 4 (Final Hold): Maintain the system at 100 K for 50 ps using NPT ensemble
+Total simulation time: 100 ps"
+
+This level of detail ensures the Generator creates the correct LAMMPS script with accurate phase durations and temperature profiles.
+
 PHASE 2 OUTPUT FORMAT:
 SIMULATION PARAMETERS:
 - Material: [element/compound]
 - KIM Model: [exact model ID selected by user]
-- Temperature: [value] K
+- Temperature: [value] K (or describe temperature profile for multi-phase simulations)
 - Ensemble: [NVE/NVT/NPT]
 - Duration: [value] [units]
+- Total steps: [calculated total timesteps]
 - System size: [value] unit cells (approximately [N] atoms)
-- Cores: [number]
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
 
+For multi-phase simulations, include a detailed description of the simulation phases either within the parameters section or immediately after it, using clear natural language as shown in the example above.
+
+FRAME SAMPLING STRATEGY:
+- Max frames: [value from config.MAX_TRAJECTORY_FRAMES]
+- Target timesteps: [list of evenly distributed timesteps]
+- Rationale: [brief explanation of distribution strategy]
+
 CRITICAL: You MUST include the "KIM Model:" line with the exact model ID that the user selected. This is a required parameter that the Generator agent needs to create the correct LAMMPS script.
+
+FRAME SAMPLING CALCULATION:
+When calculating the frame sampling strategy:
+1. Determine total simulation steps from the duration and timestep
+2. Import config and use config.MAX_TRAJECTORY_FRAMES as the target number of frames
+3. Calculate evenly distributed timesteps across the simulation
+4. Round to nearest dump frequency to ensure frames exist in dump file
+5. Ensure coverage of all simulation phases (equilibration, heating, cooling, etc.)
+
+IMPORTANT: You MUST import config at the start of your calculation to get the actual MAX_TRAJECTORY_FRAMES value.
+Do NOT assume or hardcode the number of frames - always use the configured value.
+
+Example for 120,000 step simulation with dump every 1000 steps and config.MAX_TRAJECTORY_FRAMES=20:
+- Target timesteps: [0, 6000, 12000, 18000, 24000, 30000, 36000, 42000, 48000, 54000, 60000, 66000, 72000, 78000, 84000, 90000, 96000, 102000, 108000, 114000]
+- This ensures frames from all phases of the simulation with 20 evenly distributed samples
+
+VISUALIZATION PREFERENCES (OPTIONAL):
+If the user specifies visualization preferences (e.g., "show only crystalline atoms", "color by structure", "highlight defects"), extract and note them separately. Common visualization requests include:
+- Filtering atoms (e.g., "only crystalline", "only surface atoms")
+- Coloring schemes (e.g., "color by structure type", "color by temperature")
+- Structural analysis (e.g., "identify defects", "show dislocations")
+- Display preferences (e.g., "high quality", "top view")
+
+If visualization preferences are detected, add a section:
+ VISUALIZATION PREFERENCES:
+ - Request: [user's visualization request in their own words]
+ - Type: [filtering/coloring/analysis/display]
+ - Data availability notes: Call out any per-atom fields already in the dump (e.g., `c_cna`, `c_pe`, custom scalars). Remind the visualization generator to inspect `data_collection.particles.keys()` (per OVITO's data model docs) and to install an early PythonModifier guard that runs every frame: reuse the stored properties when present, otherwise invoke the appropriate OVITO modifier (CommonNeighborAnalysisModifier, CentroSymmetryModifier, etc.) so that downstream steps never see missing data or warnings. When color coding needs to remain consistent between frames, tell it to disable automatic range scaling (`auto_adjust_range=False`) and set explicit `start_value`, `end_value`, and `discretize_color_map=True` where appropriate (see docs/ovito_docs/modifiers.md for ColorCodingModifier parameters).
+ - Post-processing tips: When asking for printed structure statistics, ensure the visualization generator defines a `structure_names = {1: 'FCC', 2: 'HCP', 3: 'BCC', 4: 'ICO', 5: 'Other'}` mapping (based on the CommonNeighborAnalysisModifier docs) before using it in report formatting.
+
+IMPORTANT: Always include the FRAME SAMPLING STRATEGY section in your Phase 2 output. This is critical for the visualization pipeline to know which frames to render during the simulation.
 
 Be helpful, educational, and conversational in your responses."""
         
@@ -187,6 +252,68 @@ Be helpful, educational, and conversational in your responses."""
             model=config.ORCHESTRATOR_MODEL,
             default_temperature=config.ORCHESTRATOR_TEMPERATURE
         )
+    
+    def parse_visualization_request(
+        self, 
+        user_request: str, 
+        simulation_context: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """
+        Generate OVITO script if custom visualization is requested.
+        
+        This method is the single source of truth for understanding visualization intent.
+        The LLM determines whether custom visualization is needed and generates the script.
+        
+        Args:
+            user_request: Natural language visualization request
+            simulation_context: Optional simulation context (material, structure, etc.)
+            
+        Returns:
+            OVITO Python script as a string, or None for default visualization
+        """
+        # Use LLM to determine if this is a custom visualization request
+        detection_prompt = f"""Analyze this user request and determine if it contains a CUSTOM visualization request.
+
+USER REQUEST: {user_request}
+
+A CUSTOM visualization request is one that asks for specific visual analysis like:
+- "show only crystalline atoms"
+- "color by structure type"
+- "highlight defects"
+- "visualize surface atoms"
+- "filter out amorphous regions"
+
+A request is NOT custom if it's just a general simulation request without specific visualization instructions.
+
+Respond with ONLY "YES" if this is a custom visualization request, or "NO" if it's not."""
+        
+        detection_response = self.execute(detection_prompt, temperature=0.1).strip().upper()
+        has_custom_request = "YES" in detection_response
+        
+        if not has_custom_request:
+            # No custom visualization - use default
+            print("[VIZ AGENT] No custom visualization requested, using default")
+            return None
+        
+        # Prepare simulation context
+        if simulation_context is None:
+            simulation_context = {}
+        
+        # Check if CNA is needed and mark for pre-computation in LAMMPS
+        cna_keywords = ['structure', 'fcc', 'bcc', 'hcp', 'crystalline', 'crystal', 'amorphous']
+        if any(keyword in user_request.lower() for keyword in cna_keywords):
+            simulation_context['cna_precomputed'] = True
+            print("[VIZ AGENT] CNA-based visualization detected, will use pre-computed values")
+        
+        # Generate OVITO script using the specialized generator
+        script = self.ovito_generator.generate_ovito_script(
+            user_request, 
+            simulation_context
+        )
+        
+        print(f"[VIZ AGENT] Generated custom OVITO script ({len(script)} chars)")
+        
+        return script
 
 class LammpsGeneratorAgent(Agent):
     def __init__(self):
@@ -203,6 +330,20 @@ Key guidelines:
 6. Your output should be only the raw LAMMPS script content. Do not include any markdown formatting, code block markers, or any text other than the LAMMPS commands.
 7. Include a comment about model installation if the model might not be available
 8. CRITICAL: Always initialize velocities for temperature-controlled simulations
+9. CRITICAL: If the Orchestrator provided a FRAME SAMPLING STRATEGY with target timesteps, include this as a comment near the top of the script in the exact format: "# Target timesteps: [list]"
+10. CRITICAL: If the Orchestrator indicates VISUALIZATION PREFERENCES requesting structure-based coloring (FCC, BCC, etc.), you MUST include CNA computation in the LAMMPS script to avoid redundant computation in OVITO
+
+CRITICAL - PARSING MULTI-PHASE SIMULATIONS:
+You MUST carefully read the ENTIRE simulation parameters provided by the Orchestrator. If the Orchestrator describes a multi-phase simulation (equilibration, heating, cooling, holding, etc.), you MUST:
+
+1. Extract each phase description from the Orchestrator's text
+2. Identify the exact duration of each phase in picoseconds
+3. Note the temperature parameters for each phase (constant, ramping up, ramping down)
+4. Calculate the number of timesteps for each phase (duration_ps / timestep)
+5. Implement each phase as a separate LAMMPS stage with its own fix and run command
+6. Ensure the total simulation time matches what the Orchestrator specified
+
+DO NOT guess or approximate phase durations. Use EXACTLY what the Orchestrator specified. If the Orchestrator's description is unclear, the script should reflect your best interpretation of their explicit instructions.
 
 Required LAMMPS script structure with KIM:
 - units metal (required)
@@ -254,12 +395,29 @@ NEVER use these commands (incompatible with KIM):
 - pair_style
 - pair_coeff
 
+STRUCTURE VISUALIZATION SUPPORT:
+When the Orchestrator's parameters include VISUALIZATION PREFERENCES requesting structure-based analysis (e.g., "color by structure type", "show FCC/BCC", "crystalline atoms"), you MUST:
+1. Add CNA computation: `compute cna all cna/atom 3.5`
+2. Include c_cna in the dump command: `dump 1 all custom ... c_cna`
+3. Add a marker comment: `# CNA_PRECOMPUTED - for OVITO visualization`
+
+Example dump command with CNA:
+```
+compute peratom all pe/atom
+compute cna all cna/atom 3.5
+dump 1 all custom 1000 output.dump id type x y z c_peratom c_cna
+```
+
+This allows OVITO to use the pre-computed CNA values instead of recomputing them, improving efficiency.
+
 ALWAYS include:
 - Model installation comment: # Install model if needed: kim-api-collections-management install user <MODEL_ID>
 - Proper thermo output for monitoring
 - Appropriate timestep and neighbor settings
 - Velocity initialization for temperature-controlled simulations
-- The EXACT KIM model ID specified in the SIMULATION PARAMETERS"""
+- The EXACT KIM model ID specified in the SIMULATION PARAMETERS
+- Frame sampling strategy comment if provided by Orchestrator (format: # Target timesteps: [0, 13000, 26000, ...])
+- CNA computation if visualization preferences request structure-based coloring"""
         super().__init__(
             system_prompt,
             model=config.LAMMPS_GENERATOR_MODEL,
