@@ -4,7 +4,7 @@ name: Sync Fork
 on:
   # Run the workflow every 90 minutes
   schedule:
-    - cron: '*/360 * * * *'
+    - cron: '0 */6 * * *'
   # Allow running the workflow manually from the Actions tab
   workflow_dispatch:
 
