@@ -1079,8 +1079,307 @@ curl -X POST http://localhost:5002/api/workflow/start \
 
 ---
 
-**Last Updated**: 2025-11-16 (v4 LEAN)
+---
+
+## Day 8: Legacy Code Cleanup
+
+After completing the migration, clean up all legacy code that has been replaced by the new DSPy-based implementation.
+
+### 31. Backup Legacy Code
+- [ ] Create backup branch:
+  ```bash
+  git checkout -b backup/pre-agentify-cleanup
+  git push -u origin backup/pre-agentify-cleanup
+  git checkout claude/agentify-multi-turn-plan-015TBZuSZD3GtccmWrbAjs7n
+  ```
+- [ ] Document what's being removed in commit message
+- [ ] Verify all new functionality is working before cleanup
+
+#### 32. Clean Up agents.py
+
+**Remove Legacy Agent Classes** (agents.py:7-486)
+
+- [ ] **Remove Base Agent class** (lines 7-63):
+  - [ ] Remove `__init__` method with OpenAI client
+  - [ ] Remove `execute()` method
+  - [ ] Remove `execute_stream()` method
+  - [ ] These are replaced by DSPy modules
+
+- [ ] **Remove OrchestratorAgent** (lines 65-316):
+  - [ ] Remove entire class definition
+  - [ ] Remove 249-line embedded system prompt
+  - [ ] Prompt is now in prompts.py as DSPy signature
+  - [ ] Functionality moved to workflow orchestration in app.py
+
+- [ ] **Remove LammpsGeneratorAgent** (lines 318-425):
+  - [ ] Remove entire class definition
+  - [ ] Remove embedded system prompt
+  - [ ] Replaced by `IterativeLammpsGeneration` DSPy module
+  - [ ] Prompt now in prompts.py
+
+- [ ] **Remove LammpsReviewerAgent** (lines 427-486):
+  - [ ] Remove entire class definition
+  - [ ] Remove embedded system prompt
+  - [ ] Integrated into `IterativeLammpsGeneration` module
+  - [ ] Prompt now in prompts.py
+
+**What to Keep in agents.py:**
+- [ ] New `SimpleMemory` class (or Mem0 integration)
+- [ ] New `IterativeLammpsGeneration` DSPy module
+- [ ] Any helper functions for memory formatting
+- [ ] Imports for DSPy, Mem0, JSON, datetime, uuid
+
+**Expected Result:** agents.py should be ~250 lines (down from 486)
+
+#### 33. Clean Up app.py
+
+**Remove Legacy Endpoints** (app.py has 3 legacy endpoints)
+
+- [ ] **Remove `/api/llm-stream` endpoint** (lines 113-353):
+  - [ ] Delete entire function
+  - [ ] This endpoint does linear workflow (no iteration)
+  - [ ] Replaced by `/api/workflow/start` + checkpoint endpoints
+
+- [ ] **Remove `/api/llm-command` endpoint** (lines 355-503):
+  - [ ] Delete entire function
+  - [ ] Non-streaming version of legacy workflow
+  - [ ] No longer needed with checkpoint system
+
+- [ ] **Remove `/api/llm-stream-live` endpoint** (lines 601-809):
+  - [ ] Delete entire function
+  - [ ] Duplicate of `/api/llm-stream` with WebSocket support
+  - [ ] Simulation execution moved to checkpoint approval
+
+**Remove Legacy Workflow Logic:**
+- [ ] Remove Phase 1/Phase 2 conversation context handling
+- [ ] Remove `conversation_context` query parameter logic
+- [ ] Remove `execution_intent` detection code
+- [ ] Remove direct agent instantiation (e.g., `orchestrator = OrchestratorAgent()`)
+- [ ] This is all replaced by session-based checkpoint workflow
+
+**What to Keep in app.py:**
+- [ ] Flask app setup
+- [ ] SocketIO setup
+- [ ] Health check functions (check_dependencies, check_llm_api)
+- [ ] KIM potentials API endpoints (lines 815-1062)
+- [ ] WebSocket handlers for streaming simulation
+- [ ] WebSocket handlers for KIM downloads
+- [ ] Registry initialization
+- [ ] New checkpoint endpoints (`/api/workflow/start`, `/api/checkpoint/parameters`, `/api/checkpoint/script`)
+- [ ] New session storage
+- [ ] New DSPy + Mem0 initialization
+
+**Expected Result:** app.py should be ~950 lines (down from 1119)
+
+#### 34. Update index.html
+
+**Update Frontend to Use New Endpoints:**
+
+- [ ] **Update sendMessage() function** (lines 1699-1845):
+  - [ ] Remove EventSource connection to `/api/llm-stream-live`
+  - [ ] Replace with `fetch()` call to `/api/workflow/start`
+  - [ ] Remove Phase 1/Phase 2 context handling
+  - [ ] Remove `conversationContext` variable
+  - [ ] Remove `executionIntent` tracking
+  - [ ] Replace with new checkpoint modal workflow
+
+- [ ] **Remove Legacy SSE Handling:**
+  - [ ] Remove event listeners for: `agent_start`, `agent_content`, `agent_complete`
+  - [ ] Remove `awaiting_confirmation` handler
+  - [ ] Remove `needs_more_info` handler
+  - [ ] Remove `review_failed` handler
+  - [ ] These are replaced by checkpoint modals
+
+- [ ] **Remove Legacy Variables:**
+  - [ ] Remove `isStreaming` flag (line 1053)
+  - [ ] Remove `conversationContext` (line 1054)
+  - [ ] Remove `executionIntent` (line 1055)
+  - [ ] Replaced by checkpoint session management
+
+**What to Keep in index.html:**
+- [ ] All CSS and styling
+- [ ] WebSocket connection for streaming simulation
+- [ ] Trajectory viewer
+- [ ] Thermodynamic plots
+- [ ] KIM potentials tab
+- [ ] New checkpoint modal UI (added in Day 6)
+- [ ] New workflow functions (added in Day 6)
+
+**Expected Result:** index.html should be ~1900 lines (slightly larger due to checkpoint UI)
+
+#### 35. Update Imports and References
+
+- [ ] In app.py, update imports:
+  ```python
+  # Remove
+  from agents import Agent, OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
+
+  # Add (if not already there)
+  from agents import SimpleMemory, IterativeLammpsGeneration
+  import dspy
+  ```
+
+- [ ] Check for any other files that import legacy agents:
+  ```bash
+  grep -r "OrchestratorAgent\|LammpsGeneratorAgent\|LammpsReviewerAgent" *.py
+  ```
+
+- [ ] Update any found references
+
+#### 36. Test After Cleanup
+
+- [ ] **Smoke Test:**
+  - [ ] Start server: `python app.py`
+  - [ ] Check for import errors
+  - [ ] Check health checks pass
+  - [ ] Open browser to index.html
+
+- [ ] **Functional Test:**
+  - [ ] Start new workflow
+  - [ ] Approve parameters checkpoint
+  - [ ] Approve script checkpoint
+  - [ ] Run simulation
+  - [ ] Verify no errors in browser console
+  - [ ] Verify no errors in server logs
+
+- [ ] **Endpoint Test:**
+  - [ ] Old endpoints should be gone:
+    ```bash
+    curl http://localhost:5002/api/llm-stream  # Should 404
+    curl http://localhost:5002/api/llm-command  # Should 404
+    curl http://localhost:5002/api/llm-stream-live  # Should 404
+    ```
+
+  - [ ] New endpoints should work:
+    ```bash
+    curl -X POST http://localhost:5002/api/workflow/start \
+      -H "Content-Type: application/json" \
+      -d '{"request": "Run Cu simulation"}'
+    ```
+
+#### 37. Commit Cleanup
+
+- [ ] Review all changes:
+  ```bash
+  git status
+  git diff
+  ```
+
+- [ ] Commit with descriptive message:
+  ```bash
+  git add agents.py app.py index.html
+  git commit -m "$(cat <<'EOF'
+  Clean up legacy code after agentify migration
+
+  Removed legacy agent implementations:
+  - Base Agent class with OpenAI client (agents.py:7-63)
+  - OrchestratorAgent with 249-line embedded prompt (agents.py:65-316)
+  - LammpsGeneratorAgent (agents.py:318-425)
+  - LammpsReviewerAgent (agents.py:427-486)
+
+  Removed legacy API endpoints:
+  - /api/llm-stream (linear workflow, no iteration)
+  - /api/llm-command (non-streaming variant)
+  - /api/llm-stream-live (streaming variant)
+
+  Updated frontend:
+  - Removed Phase 1/Phase 2 conversation handling
+  - Removed legacy SSE event listeners
+  - Updated to use new checkpoint workflow
+
+  Code reduction:
+  - agents.py: 486 → ~250 lines (-236 lines)
+  - app.py: 1119 → ~950 lines (-169 lines)
+  - Total: -405 lines of legacy code
+
+  All functionality preserved in new DSPy-based implementation.
+  EOF
+  )"
+  ```
+
+- [ ] Push to branch:
+  ```bash
+  git push -u origin claude/agentify-multi-turn-plan-015TBZuSZD3GtccmWrbAjs7n
+  ```
+
+#### 38. Verify Code Metrics
+
+- [ ] **Line count verification:**
+  ```bash
+  wc -l agents.py  # Should be ~250 lines
+  wc -l app.py     # Should be ~950 lines
+  wc -l prompts.py # Should be ~200 lines
+  ```
+
+- [ ] **Total new code added:**
+  - [ ] prompts.py: ~200 lines (new file)
+  - [ ] agents.py additions: ~250 lines (SimpleMemory + IterativeLammpsGeneration)
+  - [ ] app.py additions: ~100 lines (checkpoint endpoints)
+  - [ ] index.html additions: ~200 lines (checkpoint UI)
+  - [ ] **Total added: ~750 lines**
+
+- [ ] **Total legacy code removed:**
+  - [ ] agents.py: -236 lines
+  - [ ] app.py: -169 lines
+  - [ ] **Total removed: -405 lines**
+
+- [ ] **Net code change: +345 lines** for full agent collaboration + memory + checkpoints!
+
+**End of Day 8**: Codebase cleaned, legacy code removed ✓
+
+---
+
+## Updated Success Checklist
+
+### Core Functionality:
+- [ ] Agents iterate up to 3 times before giving up
+- [ ] Memory stores user feedback correctly
+- [ ] Memory retrieves relevant learnings
+- [ ] User can approve/modify parameters
+- [ ] User can approve/request changes to script
+- [ ] Feedback stored in memory after each checkpoint
+- [ ] Memory reinforced when patterns work
+- [ ] **Legacy code completely removed**
+- [ ] **No broken imports or references**
+- [ ] **All tests pass after cleanup**
+
+### Quality:
+- [ ] No breaking changes to existing features
+- [ ] Error handling for all edge cases
+- [ ] UI is responsive and intuitive
+- [ ] Memory file doesn't grow unbounded (< 1MB after 100 runs)
+- [ ] Average checkpoint latency < 1s
+- [ ] **Clean git history with descriptive commits**
+- [ ] **Code is well-documented and maintainable**
+
+### Learning Effectiveness:
+- [ ] Second run shows memories from first run
+- [ ] Third run shows stronger memories (higher reinforcements)
+- [ ] User preferences actually applied
+- [ ] System improves over time (observable)
+
+---
+
+## Progress Tracking
+
+**Started**: [DATE]
+**Target**: 8 days (7 days implementation + 1 day cleanup)
+
+- [ ] Day 1: DSPy Setup - 0/3 sections
+- [ ] Day 2: Memory System - 0/3 sections
+- [ ] Day 3: Signatures & Iteration - 0/4 sections
+- [ ] Day 4: Checkpoint Backend - 0/5 sections
+- [ ] Day 5: Integration Testing - 0/3 sections
+- [ ] Day 6: Frontend UI - 0/6 sections
+- [ ] Day 7: Polish & Deploy - 0/6 sections
+- [ ] **Day 8: Legacy Code Cleanup - 0/8 sections**
+
+**Overall Progress**: 0/38 sections (0/90 tasks)
+
+---
+
+**Last Updated**: 2025-11-16 (v4 LEAN with cleanup tasks)
 **Status**: ✅ Ready to Implement
-**Timeline**: 7 days
+**Timeline**: 8 days (7 implementation + 1 cleanup)
 **Complexity**: Low
 **Perfect For**: Single-user research deployment
