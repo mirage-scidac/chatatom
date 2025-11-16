@@ -194,7 +194,145 @@ Testing Mem0...
 
 ---
 
-#### 2.2 Define GenerateLAMMPSScript Signature
+#### 2.2 Define Knowledge Base (Shared Guidance)
+
+**Task**: Create knowledge base module for shared guidance
+- [ ] Add to `prompts.py`:
+  ```python
+  # ============================================================================
+  # KNOWLEDGE BASE - Shared guidance for all agents
+  # ============================================================================
+
+  class KnowledgeBase:
+      """
+      Centralized knowledge base for LAMMPS and simulation guidance.
+      This ensures consistency between generator and reviewer agents.
+      """
+
+      # KIM Potentials - Required for both generator and reviewer
+      KIM_REQUIREMENTS = """
+      KIM POTENTIAL REQUIREMENTS:
+      - ALWAYS use 'kim init' BEFORE 'create_box'
+      - ALWAYS use 'kim interactions' AFTER 'create_box'
+      - NEVER use 'pair_style' or 'pair_coeff' commands
+      - ALWAYS define mass for all atom types (even with KIM)
+      - KIM model names must be exact (no wildcards)
+
+      Common KIM command sequence:
+      1. kim init <model_name> metal
+      2. create_box ...
+      3. create_atoms ...
+      4. mass 1 <value>
+      5. kim interactions <element>
+      """
+
+      # LAMMPS Best Practices - Shared between generator and reviewer
+      LAMMPS_BEST_PRACTICES = """
+      LAMMPS BEST PRACTICES:
+
+      Units & Physics:
+      - Use 'metal' units for metal simulations
+      - Define atom_style (usually 'atomic' for metals)
+      - Set boundary conditions appropriately (p p p for periodic)
+
+      Thermodynamics:
+      - Velocity initialization must match thermostat temperature
+      - Use fix nvt/npt for temperature/pressure control
+      - Set reasonable timestep (0.001 ps = 1 fs for metals)
+      - Define neighbor list settings (delay 10, every 1)
+
+      Output:
+      - Always include thermo_style with relevant properties
+      - Set thermo output frequency (thermo 100 or similar)
+      - Use dump for trajectory output if visualization requested
+      - Include custom dumps if stress/structure analysis needed
+      """
+
+      # Review Criteria - Used by all reviewer agents
+      REVIEW_CRITERIA = """
+      SCRIPT REVIEW CRITERIA:
+
+      Critical Issues (AUTO-REJECT):
+      - Missing kim init or kim interactions
+      - Using pair_style/pair_coeff instead of KIM
+      - KIM commands in wrong order
+      - Missing mass definition
+      - Velocity temperature mismatch with thermostat
+
+      Warnings (may accept with notes):
+      - Timestep too large (>0.005 ps)
+      - Very short simulation (<1000 steps)
+      - Missing thermo output
+      - No trajectory dump when visualization requested
+
+      Review Output Format:
+      - "REVIEW: PASS" for acceptable scripts
+      - "REVIEW: FAIL" with specific issues list
+      """
+
+      # Equilibration Guidelines
+      EQUILIBRATION_GUIDELINES = """
+      EQUILIBRATION GUIDELINES:
+
+      Standard Workflow:
+      1. Energy minimization (minimize 1.0e-4 1.0e-6 1000 10000)
+      2. NVT equilibration (2-5 ps typical)
+      3. NPT production (if pressure control needed)
+
+      Temperature Ramps:
+      - Use fix_modify temp for gradual heating
+      - Typical ramp: 100K → target over 1-2ps
+      - Allow equilibration at target temp before production
+
+      Pressure Equilibration:
+      - Switch from NVT to NPT after temperature equilibration
+      - Use aniso pressure control for bulk systems
+      - Allow 5-10ps for pressure equilibration
+      """
+
+      # Visualization Guidelines (for OVITO agent)
+      VISUALIZATION_GUIDELINES = """
+      VISUALIZATION GUIDELINES:
+
+      Trajectory Output:
+      - Use 'dump' command with xyz or custom format
+      - Dump frequency: every 100-1000 steps (balance detail vs file size)
+      - Include atom positions, types, and velocities if needed
+
+      Structure Analysis:
+      - Include CNA (Common Neighbor Analysis) for structure identification
+      - Dump stress tensor if mechanical analysis requested
+      - Include potential energy per atom if energy analysis needed
+
+      OVITO Rendering:
+      - Color by property (type, CNA, stress, energy)
+      - Show periodic images if needed
+      - Camera angle and lighting for clarity
+      """
+
+      # Common Mistakes (for memory system)
+      COMMON_MISTAKES = """
+      COMMON MISTAKES TO AVOID:
+
+      1. kim init after create_box (WRONG ORDER)
+      2. Forgetting mass definition with KIM
+      3. Temperature mismatch: velocity 300K but fix nvt temp 500K
+      4. Using pair_style with KIM model
+      5. Timestep too large (>0.005 ps) causing instability
+      6. No thermo output configured
+      7. dump command referencing wrong atom group
+      """
+
+  # End of KnowledgeBase class
+  ```
+
+**Task**: Verify syntax
+- [ ] Run: `python -c "from prompts import KnowledgeBase; print('KB loaded:', KnowledgeBase.KIM_REQUIREMENTS[:50])"`
+- [ ] Should print first 50 chars of KIM requirements
+
+---
+
+#### 2.3 Define GenerateLAMMPSScript Signature (Using Knowledge Base)
 
 **Task**: Extract existing generator prompt
 - [ ] Open `agents.py`
@@ -211,17 +349,30 @@ Testing Mem0...
       You are a LAMMPS script generator. Generate complete, executable LAMMPS scripts
       using ONLY KIM potentials (never pair_style or pair_coeff).
 
-      CRITICAL REQUIREMENTS:
-      - Use ONLY KIM potentials (kim init, kim interactions)
-      - kim init BEFORE create_box
-      - kim interactions AFTER create_box
-      - Always define mass even with KIM
-      - Include velocity initialization matching thermostat temperature
-      - Add detailed comments if user prefers them
-      - Include CNA computation if structure visualization requested
+      {kim_requirements}
 
-      [PASTE YOUR FULL GENERATOR PROMPT HERE FROM agents.py]
-      """
+      {best_practices}
+
+      {equilibration_guidelines}
+
+      COMMON MISTAKES TO AVOID:
+      {common_mistakes}
+
+      USER PREFERENCES:
+      - Check the memories field for user preferences (e.g., comment style, equilibration duration)
+      - Apply user feedback from checkpoints
+      - Learn from reviewer feedback to improve next attempt
+
+      OUTPUT FORMAT:
+      - Complete, executable LAMMPS script
+      - Add comments if user prefers detailed explanations
+      - Include all required commands in correct order
+      """.format(
+          kim_requirements=KnowledgeBase.KIM_REQUIREMENTS,
+          best_practices=KnowledgeBase.LAMMPS_BEST_PRACTICES,
+          equilibration_guidelines=KnowledgeBase.EQUILIBRATION_GUIDELINES,
+          common_mistakes=KnowledgeBase.COMMON_MISTAKES
+      )
 
       parameters: str = dspy.InputField(
           desc="Simulation parameters from orchestrator (element, temp, duration, KIM model, etc.)"
@@ -254,12 +405,12 @@ Testing Mem0...
 
 ---
 
-#### 2.3 Define ReviewLAMMPSScript Signature
+#### 2.4 Define ReviewLAMMPSScript Signature (Using Knowledge Base)
 
 **Task**: Extract reviewer prompt
 - [ ] Open `agents.py`
 - [ ] Find `LammpsReviewerAgent` class
-- [ ] Copy the system prompt
+- [ ] Copy the system prompt (if you want to add custom rules beyond the KB)
 
 **Task**: Create signature
 - [ ] Add to `prompts.py`:
@@ -268,20 +419,39 @@ Testing Mem0...
       """Review LAMMPS script for correctness and KIM compliance.
 
       You are a LAMMPS script reviewer. Check scripts for correctness and reject
-      any that don't follow KIM-only requirements.
+      any that don't follow requirements.
 
-      REVIEW CHECKLIST:
-      - KIM commands used correctly (init before create_box, interactions after)
-      - NO pair_style or pair_coeff commands (automatic rejection)
-      - Mass defined for all atom types
-      - Velocity initialization matches thermostat temperature
-      - Proper timestep and neighbor settings
-      - Thermodynamic output configured
+      {kim_requirements}
 
-      Output format: "REVIEW: PASS" or "REVIEW: FAIL" with specific issues.
+      {best_practices}
 
-      [PASTE YOUR FULL REVIEWER PROMPT HERE FROM agents.py]
-      """
+      {review_criteria}
+
+      VALIDATION CHECKLIST:
+      1. Verify KIM commands are in correct order (init → create_box → interactions)
+      2. Check for forbidden pair_style/pair_coeff commands
+      3. Verify mass is defined for all atom types
+      4. Validate velocity temperature matches thermostat
+      5. Check timestep is reasonable (<= 0.005 ps)
+      6. Verify thermodynamic output is configured
+      7. Validate dump commands if visualization requested
+
+      CROSS-REFERENCE WITH PARAMETERS:
+      - Check that element matches KIM model
+      - Verify temperature matches requested value
+      - Confirm simulation duration matches request
+      - Validate ensemble type (NVT/NPT) matches parameters
+
+      OUTPUT REQUIREMENTS:
+      - Start with "REVIEW: PASS" if script is acceptable
+      - Start with "REVIEW: FAIL" if critical issues found
+      - List all specific issues in the issues field
+      - Be specific about line numbers or commands when possible
+      """.format(
+          kim_requirements=KnowledgeBase.KIM_REQUIREMENTS,
+          best_practices=KnowledgeBase.LAMMPS_BEST_PRACTICES,
+          review_criteria=KnowledgeBase.REVIEW_CRITERIA
+      )
 
       script: str = dspy.InputField(desc="LAMMPS script to review")
 
@@ -301,7 +471,7 @@ Testing Mem0...
 
 ---
 
-#### 2.4 Define OVITO Signatures (Optional)
+#### 2.5 Define OVITO Signatures (Optional - Using Knowledge Base)
 
 **Task**: Create OVITO generator signature
 - [ ] Add to `prompts.py`:
@@ -309,35 +479,120 @@ Testing Mem0...
   class GenerateOVITOScript(dspy.Signature):
       """Generate OVITO visualization script.
 
-      [Add OVITO generation prompt if you want OVITO iteration]
-      """
+      You are an OVITO script generator. Create Python scripts for OVITO to visualize
+      molecular dynamics trajectories with appropriate rendering and analysis.
 
-      visualization_request: str = dspy.InputField()
-      lammps_properties: str = dspy.InputField()
-      memories: str = dspy.InputField()
-      user_feedback: str = dspy.InputField()
-      feedback: str = dspy.InputField()
+      {visualization_guidelines}
 
-      script: str = dspy.OutputField()
-      reasoning: str = dspy.OutputField()
+      OVITO SCRIPT REQUIREMENTS:
+      - Import necessary OVITO modules (ovito.io, ovito.modifiers, ovito.vis)
+      - Load trajectory file correctly
+      - Apply appropriate modifiers (color coding, CNA, etc.)
+      - Configure rendering (camera, lighting, output)
+      - Handle errors gracefully
+
+      USER PREFERENCES:
+      - Check memories for preferred visualization styles
+      - Apply user feedback from checkpoints
+      - Use colors/rendering that user has liked before
+
+      OUTPUT:
+      - Complete, executable Python script for OVITO
+      - Include comments explaining visualization choices
+      - Ensure safe file I/O (check paths exist)
+      """.format(
+          visualization_guidelines=KnowledgeBase.VISUALIZATION_GUIDELINES
+      )
+
+      visualization_request: str = dspy.InputField(
+          desc="User's visualization requirements (e.g., 'color by CNA', 'show defects')"
+      )
+      lammps_properties: str = dspy.InputField(
+          desc="Available properties from LAMMPS dump (atom types, stress, energy, etc.)"
+      )
+      memories: str = dspy.InputField(
+          desc="User preferences for visualization from past interactions"
+      )
+      user_feedback: str = dspy.InputField(
+          desc="Specific changes requested by user at checkpoint"
+      )
+      feedback: str = dspy.InputField(
+          desc="Reviewer feedback from previous attempts"
+      )
+
+      script: str = dspy.OutputField(desc="Complete OVITO Python script")
+      reasoning: str = dspy.OutputField(
+          desc="Explanation of visualization choices and which preferences applied"
+      )
 
 
   class ReviewOVITOScript(dspy.Signature):
-      """Review OVITO script for safety and correctness."""
+      """Review OVITO script for safety and correctness.
 
-      script: str = dspy.InputField()
+      You are an OVITO script reviewer. Check scripts for safety, correctness,
+      and appropriate visualization choices.
 
-      review: str = dspy.OutputField(desc="REVIEW: PASS or FAIL")
-      issues: list[str] = dspy.OutputField()
+      {visualization_guidelines}
+
+      REVIEW CHECKLIST:
+      - Script imports necessary OVITO modules
+      - File paths are validated before use
+      - Modifiers are applied in correct order
+      - Rendering settings are appropriate for output format
+      - No unsafe file operations
+      - Script handles errors gracefully
+      - Visualization matches user request
+
+      SAFETY CHECKS:
+      - No arbitrary code execution
+      - File I/O is limited to expected directories
+      - No network access
+      - Resource usage is reasonable
+
+      OUTPUT FORMAT:
+      - "REVIEW: PASS" if script is safe and correct
+      - "REVIEW: FAIL" with specific safety/correctness issues
+      """.format(
+          visualization_guidelines=KnowledgeBase.VISUALIZATION_GUIDELINES
+      )
+
+      script: str = dspy.InputField(desc="OVITO Python script to review")
+      visualization_request: str = dspy.InputField(
+          desc="Original visualization request for validation"
+      )
+
+      review: str = dspy.OutputField(desc="REVIEW: PASS or FAIL with explanation")
+      issues: list[str] = dspy.OutputField(desc="List of specific issues found")
   ```
 
-**Note**: OVITO iteration is optional. Can add later if needed.
+**Note**: OVITO iteration is optional. Can add later if needed. The Knowledge Base already has visualization guidelines ready!
 
 **Task**: Final verification
 - [ ] Run: `python -c "import prompts; print('All signatures loaded OK')"`
 - [ ] Should see "All signatures loaded OK"
 
-**End of Day 2**: DSPy signatures defined ✓
+---
+
+#### 2.6 Benefits of Knowledge Base Architecture
+
+**What We Just Built:**
+✅ **Single Source of Truth**: KIM requirements, best practices, and review criteria defined once
+✅ **Zero Duplication**: Generator and reviewer share the same knowledge
+✅ **Easy Updates**: Change guidelines in one place, applies to all agents
+✅ **Consistency**: Generator knows exactly what reviewer will check
+✅ **Extensibility**: Add new agents (OVITO, analysis, etc.) using same knowledge base
+
+**Code Reuse Example:**
+- Before: 500+ lines of duplicated prompts across 3 agent classes
+- After: 150 lines in KnowledgeBase + 100 lines per signature = ~350 lines total
+- **Savings: ~30% reduction in prompt code**
+
+**Maintenance Benefits:**
+- Update KIM requirements? Edit once in KnowledgeBase.KIM_REQUIREMENTS
+- Add new best practice? Automatically applies to all agents
+- Fix common mistake? Update KnowledgeBase.COMMON_MISTAKES once
+
+**End of Day 2**: DSPy signatures with shared Knowledge Base defined ✓
 
 ---
 
