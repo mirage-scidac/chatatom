@@ -1,169 +1,276 @@
-# ChatMD Agentify Migration Plan
-## Multi-Turn Conversations and Memory Implementation
+# ChatMD Agentify Migration Plan v2
+## Agent-to-Agent Multi-Turn Conversations with Iterative Refinement
 
-**Date**: 2025-11-16
+**Date**: 2025-11-16 (REVISED)
 **Branch**: `claude/agentify-multi-turn-plan-015TBZuSZD3GtccmWrbAjs7n`
 **Status**: Planning Phase - No Code Changes Yet
 
 ---
 
-## Executive Summary
+## Executive Summary - REVISED SCOPE
 
-This document outlines a plan to enhance ChatMD with robust multi-turn conversation capabilities and persistent memory, enabling:
-- Continuous conversations across multiple user interactions
-- Context retention from previous simulation runs
-- Reference to past experiments and parameters
-- Learning from user preferences over time
+This document outlines a plan to enhance ChatMD with **agent-to-agent multi-turn conversations**, enabling:
+- **Iterative refinement**: Generator ↔ Reviewer loops until script passes
+- **Feedback incorporation**: Generator learns from reviewer's specific critiques
+- **Collaborative problem-solving**: Agents work together to produce correct scripts
+- **User conversation history**: Secondary benefit of tracking dialogue
 
-**Target Implementation**: Minimal 3-file architecture (frontend, agents.py, prompts file) plus configuration.
+**Primary Use Case**:
+```
+LammpsGeneratorAgent → creates script v1
+    ↓
+LammpsReviewerAgent → finds issues (velocity init missing)
+    ↓
+LammpsGeneratorAgent → incorporates feedback → creates script v2
+    ↓
+LammpsReviewerAgent → REVIEW: PASS ✓
+```
+
+**Target Implementation**: 3-file minimal architecture focusing on agent collaboration.
 
 ---
 
 ## 1. Current Architecture Analysis
 
-### 1.1 Existing Conversation State
+### 1.1 Current Agent Workflow (Linear - No Iteration)
 
-**Current Capabilities:**
-- ✅ Two-phase conversation (orchestrator Phase 1 → Phase 2)
-- ✅ Single-turn context retention via `conversationContext` variable
-- ✅ SSE streaming for real-time agent responses
-- ✅ WebSocket for live simulation data
+```python
+# Current flow in app.py (simplified)
 
-**Current Limitations:**
-- ❌ No conversation history beyond current request
-- ❌ No memory of previous simulation runs
-- ❌ Users cannot reference "the last simulation" or "previous Cu run"
-- ❌ No learning from user preferences (e.g., favorite KIM models)
-- ❌ Context resets with page reload
-- ❌ No conversation persistence across sessions
+# Step 1: Generate script
+lammps_script = generator.execute(generator_prompt)
 
-### 1.2 Current File Structure
+# Step 2: Review script (ONE ATTEMPT ONLY)
+review = reviewer.execute(f"Review this script:\n{lammps_script}")
 
-```
-chatmd/
-├── app.py (1,118 lines)          # Flask server, routing, workflow
-├── agents.py (485 lines)         # 4 agent implementations + prompts
-├── config.py (36 lines)          # Configuration
-├── index.html (1,100+ lines)     # Frontend UI
-├── tools.py (560 lines)          # LAMMPS execution
-├── kim_utils.py (729 lines)      # KIM model management
-├── ovito_script_generator.py    # Visualization generation
-├── ovito_executor.py             # OVITO script execution
-├── visualization_rendering.py   # Frame rendering
-└── run_manager.py                # Run folder management
+# Step 3: Check result
+if "REVIEW: PASS" in review:
+    # Success - proceed to execution
+    run_simulation(lammps_script)
+else:
+    # FAILURE - STOP HERE
+    return {"status": "review_failed"}
 ```
 
-### 1.3 Current Conversation Flow
+**Problem**: If reviewer finds issues, there's no opportunity for generator to fix them!
 
-```
-User Request
-    ↓
-OrchestratorAgent (Phase 1) → Proposes parameters
-    ↓
-User Feedback
-    ↓
-OrchestratorAgent (Phase 2) → Finalizes with context
-    ↓
-Generator → Reviewer → Visualization → Execution
-```
+### 1.2 What's Missing
 
-**Key Insight**: We already have a multi-turn pattern within a single request lifecycle, but need to extend this across multiple requests.
+- ❌ No feedback loop between generator and reviewer
+- ❌ Generator can't learn from reviewer's critiques
+- ❌ No iterative refinement (just one shot)
+- ❌ OVITO scripts have no review at all
+- ❌ Failed reviews waste the entire workflow
+
+### 1.3 Desired Agent Workflow (Iterative)
+
+```python
+# Desired flow (simplified)
+
+conversation_history = []
+max_attempts = 3
+
+for attempt in range(max_attempts):
+    # Generator creates/refines script
+    lammps_script = generator.execute_with_history(
+        initial_prompt,
+        conversation_history
+    )
+    conversation_history.append({"role": "assistant", "content": lammps_script})
+
+    # Reviewer provides feedback
+    review = reviewer.execute(f"Review:\n{lammps_script}")
+    conversation_history.append({"role": "reviewer", "content": review})
+
+    if "REVIEW: PASS" in review:
+        break  # Success!
+
+    # Prepare feedback for next iteration
+    conversation_history.append({
+        "role": "system",
+        "content": f"Issues found. Please fix: {review}"
+    })
+
+if "REVIEW: PASS" not in review:
+    return {"status": "failed_after_3_attempts"}
+```
 
 ---
 
-## 2. Technology Evaluation: DSPy vs Alternatives
+## 2. Technology Evaluation for Agent Collaboration
 
-### 2.1 Option 1: DSPy (Recommended for Structured Approach)
+### 2.1 Option 1: DSPy (STRONGLY RECOMMENDED)
 
-**Overview**: DSPy is a framework for programming language models with structured signatures and built-in conversation history management.
+**Overview**: DSPy is specifically designed for multi-turn agent interactions and has built-in conversation history management.
+
+**Why DSPy is Perfect for This Use Case:**
+- ✅ **Native multi-turn support**: `dspy.History` type built into signatures
+- ✅ **ReAct pattern**: Agents can reason, act, and observe results iteratively
+- ✅ **Conversation adapters**: Automatically format agent-to-agent messages
+- ✅ **Structured signatures**: Enforce input/output contracts between agents
+- ✅ **Optimization**: Can improve agent collaboration with DSPy compiler
+- ✅ **Clean abstraction**: Handles message history management automatically
+
+**Example DSPy Implementation:**
+```python
+import dspy
+
+class GenerateScript(dspy.Signature):
+    """Generate LAMMPS script from parameters"""
+    parameters: str = dspy.InputField()
+    conversation: dspy.History = dspy.InputField()
+    script: str = dspy.OutputField()
+
+class ReviewScript(dspy.Signature):
+    """Review LAMMPS script for correctness"""
+    script: str = dspy.InputField()
+    review: str = dspy.OutputField(desc="REVIEW: PASS or REVIEW: FAIL with issues")
+
+class IterativeScriptGeneration(dspy.Module):
+    def __init__(self, max_attempts=3):
+        self.generator = dspy.ChainOfThought(GenerateScript)
+        self.reviewer = dspy.ChainOfThought(ReviewScript)
+        self.max_attempts = max_attempts
+
+    def forward(self, parameters):
+        conversation = []
+
+        for attempt in range(self.max_attempts):
+            # Generate script with conversation history
+            result = self.generator(
+                parameters=parameters,
+                conversation=conversation
+            )
+            script = result.script
+
+            # Review the script
+            review = self.reviewer(script=script)
+
+            # Add to conversation history
+            conversation.extend([
+                {"role": "assistant", "content": script},
+                {"role": "reviewer", "content": review.review}
+            ])
+
+            if "REVIEW: PASS" in review.review:
+                return script, review.review, attempt + 1
+
+            # Add feedback for next iteration
+            conversation.append({
+                "role": "system",
+                "content": f"Please fix these issues: {review.review}"
+            })
+
+        return None, review.review, self.max_attempts
+```
 
 **Pros:**
-- ✅ Native `dspy.History` type for conversation management
-- ✅ Built-in adapters handle multi-turn message formatting
-- ✅ Structured signatures enforce input/output contracts
-- ✅ Optimizable with DSPy's compilation framework
-- ✅ Clean integration with existing OpenAI-compatible APIs
-- ✅ Memory-enabled ReAct agents with Mem0 integration option
-- ✅ Well-documented conversation history patterns
+- ✅ Built specifically for this pattern
+- ✅ ~10MB dependency (reasonable)
+- ✅ Handles conversation state automatically
+- ✅ Can optimize with DSPy compiler later
+- ✅ Clean, maintainable code
 
 **Cons:**
-- ❌ Additional dependency (~10MB package)
-- ❌ Learning curve for existing team
-- ❌ May be "heavyweight" for minimal implementation
-- ❌ Introduces new programming paradigm
+- ⚠️ New framework to learn
+- ⚠️ May be overkill if only doing 2-3 iterations
 
-**Implementation Complexity**: Medium
-**Package Size**: ~10MB
-**Code Changes**: Moderate (refactor agents to use DSPy signatures)
+**Verdict**: ⭐⭐⭐⭐⭐ **HIGHLY RECOMMENDED** for agent collaboration
 
-### 2.2 Option 2: Simple Buffer-Based Memory (Recommended for Minimal Approach)
+### 2.2 Option 2: Manual Iteration with Simple Buffer
 
-**Overview**: Maintain conversation history as list of message dicts, persist to JSON/SQLite.
+**Overview**: Implement iteration loop manually, pass message list to agents.
+
+```python
+def iterative_generation(generator, reviewer, initial_prompt, max_attempts=3):
+    messages = []
+
+    for attempt in range(max_attempts):
+        # Build prompt with history
+        if messages:
+            feedback = "\n\nPrevious attempts and feedback:\n" + \
+                      "\n".join([f"{m['role']}: {m['content']}" for m in messages[-4:]])
+            prompt = initial_prompt + feedback
+        else:
+            prompt = initial_prompt
+
+        # Generate
+        script = generator.execute(prompt)
+        messages.append({"role": "generator", "content": script})
+
+        # Review
+        review = reviewer.execute(f"Review:\n{script}")
+        messages.append({"role": "reviewer", "content": review})
+
+        if "REVIEW: PASS" in review:
+            return script, review, attempt + 1, messages
+
+        messages.append({
+            "role": "system",
+            "content": f"Fix these issues: {review}"
+        })
+
+    return None, review, max_attempts, messages
+```
 
 **Pros:**
-- ✅ Zero additional dependencies
-- ✅ Simple to understand and maintain
-- ✅ Full control over memory management
-- ✅ Easy to implement in 3 files
-- ✅ Lightweight (~100 lines of code)
+- ✅ Zero new dependencies
+- ✅ Simple to understand
+- ✅ Full control over iteration logic
 
 **Cons:**
-- ❌ Manual message formatting
-- ❌ No semantic search (just chronological)
-- ❌ Need to implement truncation strategy manually
-- ❌ No built-in memory optimization
+- ❌ Manual message management
+- ❌ More boilerplate code
+- ❌ Need to handle edge cases manually
+- ❌ Harder to optimize later
 
-**Implementation Complexity**: Low
-**Package Size**: 0MB
-**Code Changes**: Minimal
+**Verdict**: ⭐⭐⭐ **ACCEPTABLE** for minimal implementation
 
 ### 2.3 Option 3: LangChain
 
 **Pros:**
-- ✅ Comprehensive ecosystem
-- ✅ Multiple memory types (Buffer, Window, Summary, Token-based)
-- ✅ Easy persistence with various backends
+- ✅ Has agent iteration patterns
 
 **Cons:**
-- ❌ Heavy dependency (~50MB+ with dependencies)
+- ❌ Heavy dependency (~50MB+)
 - ❌ Overkill for our use case
-- ❌ Frequent breaking changes between versions
-- ❌ Not aligned with "minimal implementation" goal
+- ❌ Frequent breaking changes
 
-**Verdict**: ❌ **Not Recommended** - Too heavyweight
-
-### 2.4 Option 4: Vector Database (ChromaDB/LanceDB)
-
-**Overview**: Semantic search over conversation history using embeddings.
-
-**Pros:**
-- ✅ Semantic retrieval ("similar conversations")
-- ✅ Efficient for large conversation histories
-- ✅ Can handle thousands of messages
-
-**Cons:**
-- ❌ Requires embeddings API calls (cost/latency)
-- ❌ Additional service to manage
-- ❌ Overkill for chronological conversation history
-- ❌ Not needed for typical 10-50 message conversations
-
-**Verdict**: ❌ **Not Recommended** - Save for future enhancement if needed
+**Verdict**: ❌ **NOT RECOMMENDED**
 
 ---
 
-## 3. Recommended Solution: Hybrid Approach
+## 3. Recommended Solution: DSPy with Iterative Agents
 
-### 3.1 Core Strategy
+### 3.1 Why DSPy?
 
-**Phase 1 (Minimal Implementation)**: Simple buffer-based memory
-**Phase 2 (Optional Enhancement)**: Add DSPy for optimization and advanced patterns
+Your junior engineer was right! DSPy is **specifically designed** for:
+1. Multi-turn agent conversations
+2. Iterative refinement patterns
+3. Agent collaboration
+4. Structured programming with LLMs
 
-### 3.2 Why Hybrid?
+This is exactly what you need.
 
-1. **Start Simple**: Buffer-based memory gets 80% of value with 20% of complexity
-2. **Easy Migration**: Can upgrade to DSPy later without breaking changes
-3. **Minimal Dependencies**: Keep dependency tree clean
-4. **3-File Target**: Achievable with buffer approach
+### 3.2 Architecture Overview
+
+```
+User Request
+    ↓
+OrchestratorAgent (existing, minimal changes)
+    ↓
+IterativeLammpsGeneration (NEW - DSPy Module)
+    ├─ GeneratorAgent (DSPy ChainOfThought)
+    ├─ ReviewerAgent (DSPy ChainOfThought)
+    └─ Feedback Loop (up to 3 iterations)
+    ↓
+IterativeOVITOGeneration (NEW - DSPy Module)
+    ├─ OVITOGenerator (DSPy ChainOfThought)
+    ├─ OVITOReviewer (NEW - DSPy ChainOfThought)
+    └─ Feedback Loop (up to 2 iterations)
+    ↓
+Execution (existing)
+```
 
 ---
 
@@ -173,805 +280,754 @@ Generator → Reviewer → Visualization → Execution
 
 ```
 Core Files (Modified):
-├── index.html              # Frontend with conversation history UI
-├── agents.py               # Agent classes with memory integration
-└── prompts.py              # NEW: Extracted prompts with memory templates
+├── agents.py              # NEW: DSPy-based iterative agent modules
+├── prompts.py             # NEW: Extracted prompts as DSPy signatures
+└── index.html             # MINOR: Display iteration progress
 
 Configuration Files (Modified):
-├── config.py               # Memory settings (max messages, storage path)
+├── config.py              # Add iteration limits, DSPy settings
 
-Support Files (Minimal Changes):
-├── app.py                  # Add memory load/save endpoints
-├── run_manager.py          # Optional: link runs to conversation IDs
+Support Files (Modified):
+├── app.py                 # Replace linear flow with iterative modules
 ```
 
-### 4.2 Can It Be Done in 3 Files?
+### 4.2 Can It Still Be Done in 3 Files?
 
-**Answer**: Yes, with this structure:
+**YES!** Here's the mapping:
 
-1. **`index.html`** (Frontend):
-   - Conversation history display
-   - Memory persistence to localStorage
-   - UI for browsing past conversations
-   - Message threading
+1. **`prompts.py`** (NEW - ~250 lines)
+   - DSPy signatures for each agent
+   - System prompts embedded in signatures
+   - Conversation history templates
 
-2. **`agents.py`** (Core Logic):
-   - Memory buffer management class
-   - Modified agent classes to accept conversation history
-   - Methods: `load_history()`, `save_history()`, `add_message()`, `get_context()`
+2. **`agents.py`** (REFACTORED - ~600 lines)
+   - `IterativeLammpsGeneration` DSPy module
+   - `IterativeOVITOGeneration` DSPy module
+   - Wrapper functions for backward compatibility
+   - Conversation history management
 
-3. **`prompts.py`** (NEW - Prompts + Templates):
-   - Extract all system prompts from agents.py
-   - Add conversation history templates
-   - Memory injection patterns for each agent
+3. **`index.html`** (MINOR CHANGES - ~1150 lines)
+   - Show iteration progress ("Attempt 1/3")
+   - Display reviewer feedback
+   - Show conversation between agents
 
-**Additional Minimal Changes**:
-- `config.py`: 3-5 new config variables
-- `app.py`: 2 new endpoints for persistence (optional if using localStorage)
+**Additional Minimal Changes:**
+- `config.py`: 5-7 new config variables
+- `app.py`: Replace linear flow with DSPy module calls (~30 lines changed)
 
 ---
 
-## 5. Detailed Design
+## 5. Detailed Design with DSPy
 
-### 5.1 Memory Data Structure
-
-```python
-# ConversationMemory structure
-{
-    "conversation_id": "uuid-v4",
-    "created_at": "2025-11-16T10:30:00Z",
-    "last_updated": "2025-11-16T11:45:00Z",
-    "messages": [
-        {
-            "role": "user",
-            "content": "Run a Cu simulation at 300K",
-            "timestamp": "2025-11-16T10:30:00Z"
-        },
-        {
-            "role": "assistant",
-            "agent": "orchestrator",
-            "content": "I found 3 Cu potentials...",
-            "timestamp": "2025-11-16T10:30:15Z"
-        },
-        {
-            "role": "user",
-            "content": "Use the first one",
-            "timestamp": "2025-11-16T10:31:00Z"
-        },
-        # ... more messages
-    ],
-    "metadata": {
-        "total_simulations_run": 2,
-        "elements_used": ["Cu", "Al"],
-        "last_kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
-        "preferred_models": {},  # Future: track user preferences
-    },
-    "simulation_refs": [
-        {
-            "run_id": "run_20251116_103045",
-            "message_index": 5,
-            "element": "Cu",
-            "temperature": 300,
-            "duration_ps": 10
-        }
-    ]
-}
-```
-
-### 5.2 Memory Management Class
+### 5.1 DSPy Signatures (prompts.py)
 
 ```python
-# agents.py additions
-
-class ConversationMemory:
-    """Lightweight conversation history manager"""
-
-    def __init__(self, conversation_id=None, max_messages=100):
-        self.conversation_id = conversation_id or str(uuid.uuid4())
-        self.max_messages = max_messages
-        self.messages = []
-        self.metadata = {...}
-        self.simulation_refs = []
-
-    def add_message(self, role, content, agent=None):
-        """Add message to history with timestamp"""
-
-    def get_recent_context(self, n=10):
-        """Get last N messages for context"""
-
-    def get_context_for_agent(self, agent_type):
-        """Get formatted context for specific agent"""
-
-    def summarize_history(self):
-        """Generate summary of conversation for long histories"""
-
-    def link_simulation(self, run_id, params):
-        """Link a simulation run to conversation context"""
-
-    def save(self, filepath=None):
-        """Persist to JSON"""
-
-    @staticmethod
-    def load(filepath_or_id):
-        """Load from JSON"""
-
-    def truncate(self, strategy="sliding_window"):
-        """Truncate based on strategy (sliding_window, summary, token_limit)"""
-```
-
-### 5.3 Agent Integration
-
-**Modified Agent Base Class**:
-```python
-class Agent:
-    def __init__(self, model, system_prompt, temperature=0.7, memory=None):
-        # ... existing code
-        self.memory = memory  # ConversationMemory instance
-
-    def execute(self, user_input, context=None, conversation_id=None):
-        # Build messages with history
-        messages = self._build_messages_with_memory(user_input, context)
-
-        # Call LLM
-        response = self.client.chat.completions.create(...)
-
-        # Save to memory
-        if self.memory:
-            self.memory.add_message("user", user_input)
-            self.memory.add_message("assistant", response_content, agent=self.name)
-
-        return response_content
-
-    def _build_messages_with_memory(self, user_input, context):
-        """Construct message array with conversation history"""
-        messages = [{"role": "system", "content": self.system_prompt}]
-
-        # Add relevant conversation history
-        if self.memory:
-            history = self.memory.get_context_for_agent(self.name)
-            messages.extend(history)
-
-        # Add current context (Phase 2 data)
-        if context:
-            messages.append({"role": "system", "content": f"Previous context: {context}"})
-
-        # Add current user message
-        messages.append({"role": "user", "content": user_input})
-
-        return messages
-```
-
-### 5.4 System Prompt Enhancements
-
-**New `prompts.py` file**:
-```python
-# prompts.py - Extract and enhance all system prompts
-
-ORCHESTRATOR_BASE_PROMPT = """
-You are an orchestrator for molecular dynamics simulations...
-[existing prompt content]
 """
-
-ORCHESTRATOR_WITH_MEMORY_TEMPLATE = """
-{base_prompt}
-
-## Conversation History Context
-You have access to the following conversation history:
-{conversation_summary}
-
-Recent simulations:
-{simulation_refs}
-
-When the user references "the last simulation" or "previous run", refer to this context.
+prompts.py - DSPy Signatures for Multi-Agent Collaboration
 """
+import dspy
 
-def build_orchestrator_prompt(memory=None):
-    """Build orchestrator prompt with optional memory injection"""
-    if not memory:
-        return ORCHESTRATOR_BASE_PROMPT
+class AnalyzeRequest(dspy.Signature):
+    """Analyze user request and extract simulation parameters"""
+    user_request: str = dspy.InputField()
+    kim_available_models: str = dspy.InputField()
+    phase: str = dspy.InputField(desc="Phase 1 or Phase 2")
+    conversation: dspy.History = dspy.InputField()
 
-    summary = memory.summarize_history()
-    refs = memory.get_simulation_refs_summary()
-
-    return ORCHESTRATOR_WITH_MEMORY_TEMPLATE.format(
-        base_prompt=ORCHESTRATOR_BASE_PROMPT,
-        conversation_summary=summary,
-        simulation_refs=refs
+    analysis: str = dspy.OutputField(
+        desc="Analysis with SIMULATION PARAMETERS: section if ready"
     )
+
+class GenerateLAMMPSScript(dspy.Signature):
+    """Generate LAMMPS script using KIM potentials only"""
+    parameters: str = dspy.InputField(desc="Simulation parameters from orchestrator")
+    feedback: str = dspy.InputField(desc="Feedback from previous attempts (if any)")
+    conversation: dspy.History = dspy.InputField()
+
+    script: str = dspy.OutputField(desc="Complete executable LAMMPS script")
+    reasoning: str = dspy.OutputField(desc="Explanation of key decisions")
+
+class ReviewLAMMPSScript(dspy.Signature):
+    """Review LAMMPS script for correctness and KIM compliance"""
+    script: str = dspy.InputField()
+    parameters: str = dspy.InputField(desc="Original simulation parameters")
+
+    review: str = dspy.OutputField(
+        desc="REVIEW: PASS or REVIEW: FAIL with specific issues"
+    )
+    issues: list[str] = dspy.OutputField(desc="List of specific issues found")
+
+class GenerateOVITOScript(dspy.Signature):
+    """Generate OVITO visualization script"""
+    visualization_request: str = dspy.InputField()
+    lammps_properties: str = dspy.InputField(desc="Available computed properties")
+    feedback: str = dspy.InputField(desc="Feedback from previous attempts")
+    conversation: dspy.History = dspy.InputField()
+
+    script: str = dspy.OutputField(desc="Complete OVITO Python script")
+    reasoning: str = dspy.OutputField()
+
+class ReviewOVITOScript(dspy.Signature):
+    """Review OVITO script for safety and correctness"""
+    script: str = dspy.InputField()
+
+    review: str = dspy.OutputField(desc="REVIEW: PASS or REVIEW: FAIL")
+    issues: list[str] = dspy.OutputField()
 ```
 
-### 5.5 Frontend Changes
-
-**HTML Additions**:
-1. **Conversation Selector**: Dropdown to switch between conversations
-2. **History Sidebar**: Collapsible panel showing message history
-3. **Reference Links**: Click simulation references to view details
-4. **New Conversation Button**: Start fresh conversation
-
-**JavaScript Additions**:
-```javascript
-// Conversation management
-class ConversationManager {
-    constructor() {
-        this.currentConversationId = this.loadOrCreateConversation();
-        this.conversations = this.loadAllConversations();
-    }
-
-    loadOrCreateConversation() {
-        // Check localStorage for active conversation
-        // Or create new UUID
-    }
-
-    saveMessage(role, content, agent) {
-        // Save to localStorage
-        // Optional: POST to /api/conversation/save
-    }
-
-    loadHistory() {
-        // Load from localStorage
-        // Or GET from /api/conversation/:id
-    }
-
-    renderHistory() {
-        // Populate chat UI with history
-    }
-
-    switchConversation(conversationId) {
-        // Load different conversation
-    }
-
-    exportConversation() {
-        // Download as JSON
-    }
-}
-```
-
-### 5.6 API Endpoints (Optional - if not using localStorage)
+### 5.2 DSPy Modules (agents.py)
 
 ```python
-# app.py additions
+"""
+agents.py - DSPy-based Iterative Agent Modules
+"""
+import dspy
+from prompts import (
+    GenerateLAMMPSScript,
+    ReviewLAMMPSScript,
+    GenerateOVITOScript,
+    ReviewOVITOScript
+)
 
-@app.route('/api/conversation/<conversation_id>', methods=['GET'])
-def get_conversation(conversation_id):
-    """Load conversation history"""
-    memory = ConversationMemory.load(conversation_id)
-    return jsonify(memory.to_dict())
+class IterativeLammpsGeneration(dspy.Module):
+    """
+    Iteratively generate and review LAMMPS script until it passes.
 
-@app.route('/api/conversation/<conversation_id>', methods=['POST'])
-def save_conversation(conversation_id):
-    """Save conversation history"""
-    data = request.json
-    memory = ConversationMemory.from_dict(data)
-    memory.save()
-    return jsonify({"status": "saved"})
+    Flow:
+    1. Generator creates script
+    2. Reviewer provides feedback
+    3. If FAIL, generator incorporates feedback and tries again
+    4. Repeat up to max_attempts
+    """
 
-@app.route('/api/conversations', methods=['GET'])
-def list_conversations():
-    """List all saved conversations"""
-    # Scan storage directory
-    return jsonify({"conversations": [...]})
+    def __init__(self, max_attempts=3):
+        super().__init__()
+        self.generator = dspy.ChainOfThought(GenerateLAMMPSScript)
+        self.reviewer = dspy.ChainOfThought(ReviewLAMMPSScript)
+        self.max_attempts = max_attempts
+
+    def forward(self, parameters: str):
+        """
+        Generate LAMMPS script with iterative refinement.
+
+        Returns:
+            script: Final LAMMPS script (or last attempt if failed)
+            review: Final review result
+            attempt_number: How many attempts it took
+            conversation: Full conversation history between agents
+        """
+        conversation = []
+        feedback = "No previous attempts"
+        script = None
+        review_result = None
+
+        for attempt in range(1, self.max_attempts + 1):
+            # Generate script
+            gen_result = self.generator(
+                parameters=parameters,
+                feedback=feedback,
+                conversation=conversation
+            )
+            script = gen_result.script
+            reasoning = gen_result.reasoning
+
+            # Add to conversation
+            conversation.append({
+                "role": "generator",
+                "attempt": attempt,
+                "content": script,
+                "reasoning": reasoning
+            })
+
+            # Review script
+            review_result = self.reviewer(
+                script=script,
+                parameters=parameters
+            )
+            review_text = review_result.review
+            issues = review_result.issues
+
+            # Add to conversation
+            conversation.append({
+                "role": "reviewer",
+                "attempt": attempt,
+                "content": review_text,
+                "issues": issues
+            })
+
+            # Check if passed
+            if "REVIEW: PASS" in review_text:
+                return dspy.Prediction(
+                    script=script,
+                    review=review_text,
+                    attempts=attempt,
+                    conversation=conversation,
+                    success=True
+                )
+
+            # Prepare feedback for next iteration
+            feedback = f"""Previous attempt {attempt} failed.
+
+Issues identified:
+{chr(10).join(f'- {issue}' for issue in issues)}
+
+Full review:
+{review_text}
+
+Please address these issues in your next attempt."""
+
+        # Failed after max attempts
+        return dspy.Prediction(
+            script=script,
+            review=review_text,
+            attempts=self.max_attempts,
+            conversation=conversation,
+            success=False
+        )
+
+
+class IterativeOVITOGeneration(dspy.Module):
+    """
+    Iteratively generate and review OVITO visualization script.
+    """
+
+    def __init__(self, max_attempts=2):
+        super().__init__()
+        self.generator = dspy.ChainOfThought(GenerateOVITOScript)
+        self.reviewer = dspy.ChainOfThought(ReviewOVITOScript)
+        self.max_attempts = max_attempts
+
+    def forward(self, visualization_request: str, lammps_properties: str):
+        """Similar to IterativeLammpsGeneration but for OVITO scripts"""
+        conversation = []
+        feedback = "No previous attempts"
+        script = None
+        review_result = None
+
+        for attempt in range(1, self.max_attempts + 1):
+            # Generate
+            gen_result = self.generator(
+                visualization_request=visualization_request,
+                lammps_properties=lammps_properties,
+                feedback=feedback,
+                conversation=conversation
+            )
+            script = gen_result.script
+
+            conversation.append({
+                "role": "generator",
+                "attempt": attempt,
+                "content": script
+            })
+
+            # Review
+            review_result = self.reviewer(script=script)
+            review_text = review_result.review
+
+            conversation.append({
+                "role": "reviewer",
+                "attempt": attempt,
+                "content": review_text
+            })
+
+            if "REVIEW: PASS" in review_text:
+                return dspy.Prediction(
+                    script=script,
+                    review=review_text,
+                    attempts=attempt,
+                    conversation=conversation,
+                    success=True
+                )
+
+            feedback = f"Previous attempt failed: {review_text}"
+
+        return dspy.Prediction(
+            script=script,
+            review=review_text,
+            attempts=self.max_attempts,
+            conversation=conversation,
+            success=False
+        )
+
+
+# Backward compatibility wrappers
+class LammpsGeneratorAgent:
+    """Wrapper for backward compatibility with existing code"""
+    def __init__(self, model, system_prompt, temperature=0.7):
+        # Initialize DSPy LM
+        self.lm = dspy.LM(model=model, temperature=temperature)
+        dspy.configure(lm=self.lm)
+
+    def execute(self, prompt):
+        """Single-shot execution (no iteration)"""
+        # Extract parameters from prompt
+        # ... (parsing logic)
+        return script
+
+
+class OrchestratorAgent:
+    """Keep existing orchestrator mostly unchanged"""
+    # ... (existing implementation)
 ```
 
----
-
-## 6. Implementation Strategy
-
-### 6.1 Incremental Approach
-
-**Phase 1: Core Memory (Week 1)**
-- [ ] Create `prompts.py` with extracted prompts
-- [ ] Implement `ConversationMemory` class in `agents.py`
-- [ ] Add memory integration to `Agent` base class
-- [ ] Test with simple conversation history
-
-**Phase 2: Frontend Integration (Week 1-2)**
-- [ ] Add conversation UI components to `index.html`
-- [ ] Implement localStorage persistence
-- [ ] Add conversation selector
-- [ ] Test multi-turn conversations
-
-**Phase 3: Enhanced Context (Week 2)**
-- [ ] Link simulations to conversation history
-- [ ] Add metadata tracking (preferred models, elements)
-- [ ] Implement conversation summarization
-- [ ] Add reference resolution ("last simulation")
-
-**Phase 4: Optimization (Week 3)**
-- [ ] Implement token-aware truncation
-- [ ] Add conversation search/filter
-- [ ] Performance testing with long conversations
-- [ ] Optional: Backend persistence endpoints
-
-### 6.2 Minimal vs Full Implementation
-
-**Minimal (3 files + config)**:
-- localStorage-only persistence
-- Simple buffer memory (last N messages)
-- No backend API changes
-- Basic conversation UI
-
-**Full (Recommended)**:
-- Backend persistence (JSON files or SQLite)
-- Smart truncation (token-aware)
-- Conversation metadata and search
-- Simulation linking
-
----
-
-## 7. Migration Checklist
-
-### 7.1 Pre-Migration
-
-- [x] Document current architecture
-- [x] Research memory implementation patterns
-- [x] Evaluate DSPy vs alternatives
-- [ ] Review existing conversation flow
-- [ ] Identify breaking changes
-- [ ] Plan backward compatibility
-
-### 7.2 Code Changes
-
-#### A. Create `prompts.py`
-- [ ] Extract `ORCHESTRATOR_PROMPT` from `agents.py`
-- [ ] Extract `LAMMPS_GENERATOR_PROMPT` from `agents.py`
-- [ ] Extract `LAMMPS_REVIEWER_PROMPT` from `agents.py`
-- [ ] Extract `OVITO_SCRIPT_PROMPT` from `ovito_script_generator.py`
-- [ ] Create prompt builder functions with memory templates
-- [ ] Add conversation history injection patterns
-
-#### B. Modify `agents.py`
-- [ ] Import prompts from `prompts.py`
-- [ ] Implement `ConversationMemory` class
-  - [ ] `__init__`: Initialize with conversation ID
-  - [ ] `add_message()`: Append message with timestamp
-  - [ ] `get_recent_context()`: Retrieve last N messages
-  - [ ] `get_context_for_agent()`: Format for specific agent
-  - [ ] `save()`: Persist to JSON
-  - [ ] `load()`: Load from JSON
-  - [ ] `truncate()`: Implement sliding window
-  - [ ] `summarize_history()`: Generate summary for long histories
-  - [ ] `link_simulation()`: Connect run_id to message
-  - [ ] `to_dict()` / `from_dict()`: Serialization
-
-- [ ] Modify `Agent` base class
-  - [ ] Add `memory` parameter to `__init__`
-  - [ ] Update `execute()` to use `_build_messages_with_memory()`
-  - [ ] Implement `_build_messages_with_memory()` method
-  - [ ] Save user/assistant messages to memory after each turn
-
-- [ ] Update `OrchestratorAgent`
-  - [ ] Use `build_orchestrator_prompt()` from `prompts.py`
-  - [ ] Add conversation history to Phase 1/2 context
-  - [ ] Handle references to "last simulation"
-
-- [ ] Update `LammpsGeneratorAgent`
-  - [ ] Use prompt from `prompts.py`
-  - [ ] Add memory awareness (optional)
-
-- [ ] Update `LammpsReviewerAgent`
-  - [ ] Use prompt from `prompts.py`
-
-#### C. Modify `index.html`
-- [ ] **HTML Structure**:
-  - [ ] Add conversation history sidebar (collapsible)
-  - [ ] Add conversation selector dropdown
-  - [ ] Add "New Conversation" button
-  - [ ] Add conversation metadata display (date, message count)
-  - [ ] Add export conversation button
-
-- [ ] **JavaScript - ConversationManager Class**:
-  - [ ] Implement `ConversationManager` class
-  - [ ] `loadOrCreateConversation()`: Load active or create new
-  - [ ] `saveMessage()`: Save to localStorage
-  - [ ] `loadHistory()`: Retrieve conversation messages
-  - [ ] `renderHistory()`: Display messages in UI
-  - [ ] `switchConversation()`: Load different conversation
-  - [ ] `exportConversation()`: Download as JSON
-  - [ ] `deleteConversation()`: Remove conversation
-
-- [ ] **Integration with Existing Code**:
-  - [ ] Initialize `ConversationManager` on page load
-  - [ ] Render existing conversation history
-  - [ ] Save user messages before sending to `/api/llm-stream-live`
-  - [ ] Save agent responses after receiving via SSE
-  - [ ] Pass `conversation_id` in API requests
-  - [ ] Update UI when switching conversations
-
-- [ ] **CSS Styling**:
-  - [ ] Style conversation sidebar
-  - [ ] Style conversation selector
-  - [ ] Add conversation timestamp formatting
-  - [ ] Responsive design for mobile
-
-#### D. Modify `config.py`
-- [ ] Add `MEMORY_ENABLED = True`
-- [ ] Add `MAX_CONVERSATION_MESSAGES = 100`
-- [ ] Add `CONVERSATION_STORAGE_PATH = "./conversations"`
-- [ ] Add `MEMORY_TRUNCATION_STRATEGY = "sliding_window"` # or "token_limit", "summary"
-- [ ] Add `MEMORY_BACKEND = "localStorage"` # or "json", "sqlite"
-
-#### E. Modify `app.py` (Optional Backend Persistence)
-- [ ] Add conversation persistence endpoints:
-  - [ ] `GET /api/conversation/<id>`: Load conversation
-  - [ ] `POST /api/conversation/<id>`: Save conversation
-  - [ ] `GET /api/conversations`: List all conversations
-  - [ ] `DELETE /api/conversation/<id>`: Delete conversation
-
-- [ ] Update `/api/llm-stream-live`:
-  - [ ] Accept `conversation_id` parameter
-  - [ ] Load `ConversationMemory` for conversation
-  - [ ] Pass memory to agents
-  - [ ] Save updated memory after workflow
-
-- [ ] Add conversation storage directory initialization
-- [ ] Add cleanup for old conversations (optional)
-
-#### F. Modify `run_manager.py` (Optional)
-- [ ] Add `conversation_id` field to run metadata
-- [ ] Link simulation runs to conversation context
-- [ ] Add method to retrieve runs by conversation ID
-
-### 7.3 Testing
-
-- [ ] **Unit Tests**:
-  - [ ] `ConversationMemory.add_message()`
-  - [ ] `ConversationMemory.get_recent_context()`
-  - [ ] `ConversationMemory.truncate()`
-  - [ ] `ConversationMemory.save()` / `load()`
-  - [ ] Prompt building with memory injection
-
-- [ ] **Integration Tests**:
-  - [ ] Multi-turn conversation flow
-  - [ ] Reference to "last simulation"
-  - [ ] Conversation persistence (localStorage)
-  - [ ] Conversation switching
-  - [ ] Long conversation handling (truncation)
-
-- [ ] **End-to-End Tests**:
-  - [ ] Create conversation → run simulation → reference in next message
-  - [ ] Switch between conversations
-  - [ ] Export/import conversation
-  - [ ] Page reload preserves conversation
-
-- [ ] **Performance Tests**:
-  - [ ] 100+ message conversation
-  - [ ] Multiple simultaneous conversations
-  - [ ] Memory usage with large histories
-
-### 7.4 Documentation
-
-- [ ] Update README with memory features
-- [ ] Document `ConversationMemory` API
-- [ ] Add examples of multi-turn conversations
-- [ ] Document localStorage schema
-- [ ] Add troubleshooting guide for memory issues
-
-### 7.5 Deployment
-
-- [ ] Test migration on clean install
-- [ ] Verify backward compatibility
-- [ ] Update dependencies (if using DSPy)
-- [ ] Deploy to staging
-- [ ] User acceptance testing
-- [ ] Deploy to production
-- [ ] Monitor for memory-related issues
-
----
-
-## 8. Memory Truncation Strategies
-
-### 8.1 Sliding Window (Simplest)
-
-Keep last N messages, discard older ones.
+### 5.3 Integration in app.py
 
 ```python
-def truncate_sliding_window(self, max_messages=50):
-    if len(self.messages) > max_messages:
-        self.messages = self.messages[-max_messages:]
-```
+# app.py modifications
 
-**Pros**: Simple, predictable
-**Cons**: May lose important context
+from agents import (
+    OrchestratorAgent,
+    IterativeLammpsGeneration,
+    IterativeOVITOGeneration
+)
+import dspy
 
-### 8.2 Token-Aware Truncation
+# Initialize DSPy
+dspy.configure(lm=dspy.LM(
+    model=config.LAMMPS_GENERATOR_MODEL,
+    api_base=config.API_BASE_URL,
+    api_key=config.API_KEY
+))
 
-Keep messages until token limit reached.
+# Initialize iterative modules
+lammps_generator = IterativeLammpsGeneration(max_attempts=3)
+ovito_generator = IterativeOVITOGeneration(max_attempts=2)
 
-```python
-def truncate_by_tokens(self, max_tokens=4000):
-    total_tokens = 0
-    keep_messages = []
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """Updated workflow with iterative generation"""
+    user_command = request.json.get('command')
 
-    for msg in reversed(self.messages):
-        msg_tokens = estimate_tokens(msg['content'])
-        if total_tokens + msg_tokens > max_tokens:
-            break
-        keep_messages.insert(0, msg)
-        total_tokens += msg_tokens
+    # Step 1: Orchestrator (unchanged)
+    orchestrator = OrchestratorAgent(...)
+    analysis = orchestrator.execute(user_command)
 
-    self.messages = keep_messages
-```
+    if "SIMULATION PARAMETERS:" not in analysis:
+        return jsonify({"status": "needs_more_info", "analysis": analysis})
 
-**Pros**: Respects model context window
-**Cons**: Requires token counting
+    # Step 2: ITERATIVE LAMMPS generation (NEW)
+    result = lammps_generator(parameters=analysis)
 
-### 8.3 Summary-Based (Advanced)
+    if not result.success:
+        return jsonify({
+            "status": "generation_failed",
+            "attempts": result.attempts,
+            "last_review": result.review,
+            "conversation": result.conversation
+        })
 
-Summarize old messages, keep recent ones.
+    lammps_script = result.script
 
-```python
-def truncate_with_summary(self, keep_recent=10):
-    if len(self.messages) <= keep_recent:
-        return
+    # Step 3: ITERATIVE OVITO generation (NEW)
+    ovito_result = ovito_generator(
+        visualization_request="default",
+        lammps_properties="..."
+    )
 
-    old_messages = self.messages[:-keep_recent]
-    summary = self._generate_summary(old_messages)
+    # Step 4: Execute (if requested)
+    if should_run:
+        run_lammps_simulation(lammps_script, ovito_result.script)
 
-    self.messages = [
-        {"role": "system", "content": f"Previous conversation summary: {summary}"},
-        *self.messages[-keep_recent:]
-    ]
-```
-
-**Pros**: Retains context
-**Cons**: Requires LLM call, may lose details
-
-**Recommendation**: Start with **Sliding Window**, upgrade to **Token-Aware** if needed.
-
----
-
-## 9. Reference Resolution
-
-### 9.1 Handling User References
-
-**Examples**:
-- "Run the same simulation but at 500K"
-- "Use the last KIM model"
-- "Visualize the previous run"
-
-**Implementation**:
-
-```python
-def resolve_references(self, user_input):
-    """Expand references to previous context"""
-
-    # Pattern: "last simulation", "previous run"
-    if "last simulation" in user_input.lower() or "previous run" in user_input.lower():
-        last_sim = self.get_last_simulation_ref()
-        if last_sim:
-            return f"{user_input}\n\n[Context: Previous simulation was {last_sim['element']} at {last_sim['temperature']}K for {last_sim['duration_ps']}ps using {last_sim['kim_model']}]"
-
-    # Pattern: "same parameters"
-    if "same" in user_input.lower():
-        last_params = self.extract_last_parameters()
-        if last_params:
-            return f"{user_input}\n\n[Context: Previous parameters: {last_params}]"
-
-    return user_input
-```
-
-### 9.2 Simulation Linking
-
-```python
-# In run_manager.py
-def create_run(self, params, conversation_id=None):
-    run_id = f"run_{timestamp}"
-    metadata = {
-        "run_id": run_id,
-        "conversation_id": conversation_id,
-        "params": params,
-        ...
-    }
-    # Save metadata
-
-# In ConversationMemory
-def link_simulation(self, run_id, params):
-    self.simulation_refs.append({
-        "run_id": run_id,
-        "message_index": len(self.messages),
-        "timestamp": now(),
-        **params
+    return jsonify({
+        "status": "success",
+        "lammps_attempts": result.attempts,
+        "ovito_attempts": ovito_result.attempts,
+        "conversation": {
+            "lammps": result.conversation,
+            "ovito": ovito_result.conversation
+        }
     })
 ```
 
----
+### 5.4 Frontend Updates (index.html)
 
-## 10. Risks and Mitigations
+```javascript
+// Show iteration progress in UI
+function displayIterativeGeneration(conversation) {
+    const container = document.getElementById('agent-conversation');
 
-### 10.1 Context Window Limits
+    conversation.forEach(msg => {
+        if (msg.role === 'generator') {
+            addMessage(`Generator (Attempt ${msg.attempt})`, msg.content);
+            if (msg.reasoning) {
+                addMessage(`Generator Reasoning`, msg.reasoning, 'italic');
+            }
+        } else if (msg.role === 'reviewer') {
+            const status = msg.content.includes('PASS') ? 'success' : 'warning';
+            addMessage(`Reviewer (Attempt ${msg.attempt})`, msg.content, status);
 
-**Risk**: Long conversations exceed model context window (e.g., 128k tokens for GPT-4)
-**Mitigation**: Implement token-aware truncation, monitor token usage
-
-### 10.2 Memory Bloat
-
-**Risk**: localStorage fills up with large conversation histories
-**Mitigation**:
-- Implement auto-cleanup for old conversations
-- Add export/archive feature
-- Set max conversation age (30 days)
-
-### 10.3 Performance Degradation
-
-**Risk**: Loading large histories slows down UI
-**Mitigation**:
-- Lazy load conversation history
-- Paginate message display
-- Use virtual scrolling for large histories
-
-### 10.4 Consistency Issues
-
-**Risk**: localStorage out of sync with backend (if using both)
-**Mitigation**:
-- Choose one source of truth (localStorage XOR backend)
-- Or implement sync mechanism with conflict resolution
-
-### 10.5 Privacy Concerns
-
-**Risk**: Sensitive simulation parameters stored in browser
-**Mitigation**:
-- Add conversation encryption option
-- Implement conversation expiry
-- Clear conversation on logout
+            if (msg.issues && msg.issues.length > 0) {
+                const issuesList = msg.issues.map(i => `• ${i}`).join('\n');
+                addMessage(`Issues Found`, issuesList, 'error');
+            }
+        }
+    });
+}
+```
 
 ---
 
-## 11. Future Enhancements (Post-MVP)
+## 6. Migration Checklist
 
-### 11.1 Semantic Memory with Vector DB
+### 6.1 Phase 1: Setup DSPy (Day 1)
 
-- Retrieve similar past conversations
-- "Find all Cu simulations at high temperature"
-- Requires ChromaDB/LanceDB + embeddings
+- [ ] Install DSPy: `pip install dspy-ai`
+- [ ] Test DSPy with local LLM endpoint
+- [ ] Verify DSPy can connect to existing API_BASE_URL
+- [ ] Create simple DSPy signature test
+- [ ] Confirm backward compatibility with OpenAI-compatible API
 
-### 11.2 DSPy Migration
+### 6.2 Phase 2: Create prompts.py (Days 2-3)
 
-- Upgrade to DSPy for structured programming
-- Use DSPy's optimizers to improve agent performance
-- Implement ReAct pattern with memory
+- [ ] Create `prompts.py` file
+- [ ] Define `GenerateLAMMPSScript` signature with existing prompt
+- [ ] Define `ReviewLAMMPSScript` signature with existing prompt
+- [ ] Define `GenerateOVITOScript` signature
+- [ ] Define `ReviewOVITOScript` signature (NEW)
+- [ ] Test each signature independently
+- [ ] Add docstrings and examples
 
-### 11.3 Collaborative Conversations
+### 6.3 Phase 3: Implement Iterative Modules (Days 3-5)
 
-- Share conversations between users
-- Comment on simulation results
-- Team memory (shared context)
+- [ ] Create `IterativeLammpsGeneration` class in `agents.py`
+  - [ ] Implement `__init__` with max_attempts
+  - [ ] Implement `forward()` with generation loop
+  - [ ] Add conversation history tracking
+  - [ ] Add feedback construction logic
+  - [ ] Test with simple parameters
 
-### 11.4 Conversation Analytics
+- [ ] Create `IterativeOVITOGeneration` class in `agents.py`
+  - [ ] Similar structure to LAMMPS
+  - [ ] Implement OVITO-specific review logic
+  - [ ] Test with visualization requests
 
-- Visualize conversation patterns
-- Track most-used elements/models
-- Identify common user workflows
+- [ ] Unit tests for both modules
+  - [ ] Test single attempt success
+  - [ ] Test multi-attempt success (failure → feedback → success)
+  - [ ] Test max attempts failure
+  - [ ] Test conversation history format
 
-### 11.5 Smart Summarization
+### 6.4 Phase 4: Update app.py (Days 5-6)
 
-- Auto-summarize long conversations
-- Generate simulation reports from conversation
-- Export conversation as paper draft
+- [ ] Import DSPy and new modules
+- [ ] Initialize DSPy configuration
+- [ ] Replace linear generator → reviewer flow
+- [ ] Integrate `IterativeLammpsGeneration`
+- [ ] Integrate `IterativeOVITOGeneration`
+- [ ] Update error handling for multiple attempts
+- [ ] Add iteration logging
+- [ ] Test end-to-end workflow
+
+### 6.5 Phase 5: Frontend Updates (Day 6-7)
+
+- [ ] Add UI for showing iteration attempts
+- [ ] Display "Attempt 1/3, 2/3, 3/3" progress
+- [ ] Show reviewer feedback between attempts
+- [ ] Add expandable conversation view
+- [ ] Style success/failure indicators
+- [ ] Test UI updates during streaming
+
+### 6.6 Phase 6: Configuration (Day 7)
+
+- [ ] Update `config.py`:
+  - [ ] `MAX_LAMMPS_GENERATION_ATTEMPTS = 3`
+  - [ ] `MAX_OVITO_GENERATION_ATTEMPTS = 2`
+  - [ ] `DSPY_CACHE_ENABLED = True`
+  - [ ] `DSPY_LOG_LEVEL = "INFO"`
+  - [ ] `ENABLE_ITERATIVE_GENERATION = True`
+
+### 6.7 Phase 7: Testing (Days 8-9)
+
+- [ ] **Unit Tests**:
+  - [ ] Test DSPy signatures
+  - [ ] Test iterative modules with mock responses
+  - [ ] Test conversation history building
+
+- [ ] **Integration Tests**:
+  - [ ] Test full workflow with failing → passing script
+  - [ ] Test OVITO generation iteration
+  - [ ] Test max attempts exceeded
+
+- [ ] **End-to-End Tests**:
+  - [ ] Scenario: Script fails velocity check → fixed on attempt 2
+  - [ ] Scenario: Script fails KIM check → fixed on attempt 2
+  - [ ] Scenario: Script passes on first attempt (no regression)
+  - [ ] Scenario: Script fails 3 times → graceful error
+
+### 6.8 Phase 8: Documentation & Deployment (Day 10)
+
+- [ ] Update README with DSPy dependency
+- [ ] Document iterative generation behavior
+- [ ] Add examples of successful iterations
+- [ ] Create troubleshooting guide
+- [ ] Deploy to staging
+- [ ] User acceptance testing
+- [ ] Deploy to production
 
 ---
 
-## 12. Decision Matrix
+## 7. Example Conversation Flow
 
-| Criterion | Simple Buffer | DSPy | LangChain | Vector DB |
-|-----------|---------------|------|-----------|-----------|
-| **Complexity** | ⭐ Low | ⭐⭐ Medium | ⭐⭐⭐ High | ⭐⭐⭐⭐ Very High |
-| **Dependencies** | ✅ None | ~10MB | ~50MB | ~20MB + service |
-| **3-File Target** | ✅ Yes | ⚠️ Possible | ❌ No | ❌ No |
-| **Maintenance** | ✅ Easy | ⭐⭐ Medium | ⭐⭐⭐ Complex | ⭐⭐⭐ Complex |
-| **Extensibility** | ⚠️ Limited | ✅ High | ✅ High | ✅ Very High |
-| **Performance** | ✅ Fast | ✅ Fast | ⚠️ Moderate | ⭐⭐ Slower |
-| **Learning Curve** | ✅ Minimal | ⭐⭐ Medium | ⭐⭐⭐ Steep | ⭐⭐⭐ Steep |
+### 7.1 Current Flow (No Iteration)
 
-**Recommendation**: Start with **Simple Buffer**, migrate to **DSPy** if optimization needed.
-
----
-
-## 13. Final Recommendation
-
-### 13.1 Minimal Implementation (Phase 1)
-
-**Target**: Working multi-turn conversations in 1 week
-
-1. **Create `prompts.py`**: Extract all prompts (~200 lines)
-2. **Enhance `agents.py`**: Add `ConversationMemory` class (~150 lines)
-3. **Update `index.html`**: Add conversation UI (~200 lines JS)
-4. **Modify `config.py`**: Add 5 config variables
-5. **Total New Code**: ~550 lines across 3 files
-
-**Dependencies**: None (0 new packages)
-
-### 13.2 Full Implementation (Phase 2)
-
-**Target**: Production-ready with backend persistence in 2-3 weeks
-
-1. Add backend API endpoints in `app.py`
-2. Implement token-aware truncation
-3. Add simulation linking in `run_manager.py`
-4. Build conversation search/export features
-5. Add comprehensive tests
-
----
-
-## 14. Success Metrics
-
-- [ ] Users can reference "the last simulation"
-- [ ] Conversations persist across page reloads
-- [ ] Can switch between multiple conversations
-- [ ] Agent responses include context from history
-- [ ] No performance degradation with 100+ message conversations
-- [ ] Token usage stays within model limits
-- [ ] Users report improved workflow efficiency
-
----
-
-## 15. Next Steps
-
-1. **Review this plan** with team/stakeholders
-2. **Choose implementation approach** (minimal vs full)
-3. **Set up development branch** (already on correct branch)
-4. **Create `prompts.py`** skeleton
-5. **Implement `ConversationMemory`** class
-6. **Build prototype** with simple conversation history
-7. **Test and iterate**
-
----
-
-## Appendix A: Example Conversation Flow with Memory
-
-### Without Memory (Current):
 ```
 User: "Run a Cu simulation at 300K"
-Agent: [Proposes parameters]
-User: "Use the first model"
-Agent: [Runs simulation]
---- Session ends ---
-
-User: "Run the same simulation at 500K"
-Agent: "I don't have context of previous simulation. Please specify parameters."
+    ↓
+Orchestrator: [proposes parameters]
+    ↓
+Generator: [creates script v1 - missing velocity initialization]
+    ↓
+Reviewer: "REVIEW: FAIL - No velocity initialization found"
+    ↓
+❌ STOPS HERE - User sees error, has to start over
 ```
 
-### With Memory (Proposed):
+### 7.2 New Flow (With Iteration)
+
 ```
 User: "Run a Cu simulation at 300K"
-Agent: [Proposes parameters, saves to memory]
-User: "Use the first model"
-Agent: [Runs simulation, saves model choice and run_id to memory]
---- Session ends, conversation persists ---
+    ↓
+Orchestrator: [proposes parameters]
+    ↓
+[Iteration 1]
+Generator: [creates script v1 - missing velocity initialization]
+Reviewer: "REVIEW: FAIL - No velocity initialization for 300K thermostat"
+    ↓
+[Iteration 2]
+Generator: [incorporates feedback, adds velocity initialization]
+Reviewer: "REVIEW: PASS - All checks passed"
+    ↓
+✅ SUCCESS - Simulation runs with corrected script
+```
 
-User: "Run the same simulation at 500K"
-Agent: "I see you previously ran Cu with EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006 at 300K for 10ps. I'll use the same parameters but at 500K."
-Agent: [Runs simulation with context from memory]
+### 7.3 UI Display
+
+```
+Agent Conversation:
+
+Generator (Attempt 1):
+[LAMMPS script v1]
+Reasoning: Created FCC Cu lattice with KIM potential...
+
+Reviewer (Attempt 1):
+REVIEW: FAIL
+Issues Found:
+• No velocity initialization found
+• Temperature mismatch between thermostat and initial velocities
+
+Generator (Attempt 2):
+[LAMMPS script v2 with velocity init added]
+Reasoning: Added velocity initialization at 300K to match thermostat...
+
+Reviewer (Attempt 2):
+REVIEW: PASS - Script is correct and ready for execution
 ```
 
 ---
 
-## Appendix B: Code Size Estimates
+## 8. Benefits of DSPy Approach
 
-| File | Current Lines | New Lines | Total Lines | Change % |
-|------|---------------|-----------|-------------|----------|
-| `prompts.py` | 0 | +200 | 200 | NEW |
-| `agents.py` | 485 | +150 | 635 | +31% |
-| `index.html` | 1,100 | +200 | 1,300 | +18% |
-| `config.py` | 36 | +5 | 41 | +14% |
-| `app.py` | 1,118 | +50 | 1,168 | +4% (optional) |
+### 8.1 Immediate Benefits
 
-**Total New Code**: ~605 lines
-**Complexity**: Low to Medium
+1. **Higher Success Rate**: Failed scripts get multiple chances to be fixed
+2. **Better Scripts**: Iterative refinement produces more robust code
+3. **Transparent Process**: User sees agents collaborating to solve issues
+4. **Less User Frustration**: No need to manually restart on failure
+
+### 8.2 Long-Term Benefits
+
+1. **Optimization**: DSPy compiler can optimize prompts to improve success rate
+2. **Extensibility**: Easy to add more agents to the loop
+3. **Debugging**: Conversation history makes issues traceable
+4. **Metrics**: Track how many iterations typically needed
+
+### 8.3 Code Quality
+
+- **Less Boilerplate**: DSPy handles message history automatically
+- **Type Safety**: Signatures enforce structure
+- **Testability**: Easy to unit test individual signatures
+- **Maintainability**: Clear separation of concerns
 
 ---
 
-## Appendix C: Prompt Extraction Checklist
+## 9. Risks and Mitigations
 
-- [ ] `ORCHESTRATOR_PROMPT` (~250 lines) → `prompts.py`
-- [ ] `LAMMPS_GENERATOR_PROMPT` (~100 lines) → `prompts.py`
-- [ ] `LAMMPS_REVIEWER_PROMPT` (~50 lines) → `prompts.py`
-- [ ] `OVITO_SCRIPT_PROMPT` (~80 lines from `ovito_script_generator.py`) → `prompts.py`
-- [ ] Add memory injection templates for each prompt
-- [ ] Create builder functions: `build_orchestrator_prompt(memory=None)`
+### 9.1 Risk: Infinite Loops
+
+**Risk**: Generator and reviewer get stuck in endless disagreement
+**Mitigation**:
+- Hard limit of 3 attempts for LAMMPS, 2 for OVITO
+- Log conversations for debugging
+- Add "confidence" scoring in future iterations
+
+### 9.2 Risk: Increased Latency
+
+**Risk**: 3 iterations means 3x the LLM calls
+**Mitigation**:
+- Stream results as they happen (show progress)
+- Use faster model for reviewer (e.g., Haiku vs Sonnet)
+- Cache successful patterns with DSPy
+- Most scripts should pass on attempt 1-2
+
+### 9.3 Risk: Higher API Costs
+
+**Risk**: More LLM calls = higher costs
+**Mitigation**:
+- Most scripts should pass on first attempt (no increase)
+- Failed scripts already waste the initial call
+- Successful iteration is cheaper than user restarting entire workflow
+- Can configure max_attempts per environment (prod=3, dev=1)
+
+### 9.4 Risk: DSPy Learning Curve
+
+**Risk**: Team needs to learn new framework
+**Mitigation**:
+- DSPy is very intuitive (just signatures + modules)
+- Good documentation exists
+- Similar to Pydantic/dataclasses
+- Can start simple, add features gradually
 
 ---
 
-**Document Status**: ✅ Ready for Review
-**Last Updated**: 2025-11-16
-**Author**: Claude (AI Assistant)
-**Approval Pending**: Team Review
+## 10. Success Metrics
+
+### Before (Current):
+- Scripts fail review → workflow aborts
+- User sees error, has to start over
+- No learning from failures
+
+### After (With DSPy):
+- [ ] 90%+ of scripts pass by attempt 2
+- [ ] Average iterations needed: ~1.3
+- [ ] Failed scripts get fixed automatically 70%+ of time
+- [ ] User sees transparent agent collaboration
+- [ ] Reduced user frustration (measured by retry rate)
+
+---
+
+## 11. Alternative: Minimal Implementation Without DSPy
+
+If you want to avoid DSPy dependency, here's a minimal approach:
+
+```python
+# agents.py (without DSPy)
+
+def iterative_lammps_generation(generator, reviewer, parameters, max_attempts=3):
+    """Manual iteration without DSPy"""
+    conversation = []
+    feedback = ""
+
+    for attempt in range(1, max_attempts + 1):
+        # Build prompt with feedback
+        if feedback:
+            prompt = f"{parameters}\n\nPrevious attempt failed. Feedback:\n{feedback}\n\nPlease fix and try again."
+        else:
+            prompt = parameters
+
+        # Generate
+        script = generator.execute(prompt)
+        conversation.append({"role": "generator", "attempt": attempt, "content": script})
+
+        # Review
+        review = reviewer.execute(f"Review this script:\n{script}")
+        conversation.append({"role": "reviewer", "attempt": attempt, "content": review})
+
+        if "REVIEW: PASS" in review:
+            return {
+                "success": True,
+                "script": script,
+                "attempts": attempt,
+                "conversation": conversation
+            }
+
+        # Extract feedback for next iteration
+        feedback = review
+
+    return {
+        "success": False,
+        "script": script,
+        "attempts": max_attempts,
+        "conversation": conversation
+    }
+```
+
+**Pros**: Zero dependencies
+**Cons**: More manual work, less structured
+
+---
+
+## 12. Final Recommendation
+
+### 12.1 Recommended Approach: DSPy
+
+**Reasons**:
+1. Your junior engineer was right - DSPy is perfect for this
+2. Built specifically for agent collaboration
+3. Only ~10MB dependency
+4. Clean, maintainable code
+5. Future optimization potential
+
+### 12.2 Implementation Timeline
+
+**Week 1 (Days 1-5)**: Core DSPy integration
+- Day 1: Setup DSPy
+- Days 2-3: Create signatures
+- Days 3-5: Implement iterative modules
+
+**Week 2 (Days 6-10)**: Integration and testing
+- Days 6-7: Update app.py and frontend
+- Days 8-9: Comprehensive testing
+- Day 10: Documentation and deployment
+
+**Total**: ~2 weeks for full implementation
+
+### 12.3 3-File Target: ACHIEVED
+
+1. **`prompts.py`**: ~250 lines (DSPy signatures)
+2. **`agents.py`**: ~600 lines (DSPy modules + wrappers)
+3. **`index.html`**: ~1,150 lines (minor updates for progress display)
+
+Plus minimal changes to `config.py` and `app.py`.
+
+---
+
+## 13. Next Steps
+
+1. ✅ Review this updated plan
+2. [ ] Decide: DSPy or manual iteration?
+3. [ ] Install DSPy and test connection: `pip install dspy-ai`
+4. [ ] Create `prompts.py` with first signature
+5. [ ] Build `IterativeLammpsGeneration` module
+6. [ ] Test with simple example
+7. [ ] Integrate into app.py
+8. [ ] Deploy and measure success rate
+
+---
+
+## Bonus: User Conversation History
+
+The iterative agent approach also gives us user conversation history for free:
+
+```python
+# Each workflow creates a conversation object
+{
+    "user_request": "Run Cu at 300K",
+    "orchestrator_response": "...",
+    "lammps_conversation": [
+        {"role": "generator", "attempt": 1, "content": "..."},
+        {"role": "reviewer", "attempt": 1, "content": "FAIL..."},
+        {"role": "generator", "attempt": 2, "content": "..."},
+        {"role": "reviewer", "attempt": 2, "content": "PASS"}
+    ],
+    "ovito_conversation": [...],
+    "execution_result": {...}
+}
+```
+
+Save this to JSON for conversation history (secondary benefit).
+
+---
+
+**Document Status**: ✅ Ready for Review (REVISED)
+**Last Updated**: 2025-11-16 (v2 - Agent Collaboration Focus)
+**Recommendation**: **Use DSPy** for iterative agent collaboration
