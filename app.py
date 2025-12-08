@@ -1029,7 +1029,7 @@ def handle_kim_download(data):
 
 
 @socketio.on('initialize_recommended_potentials')
-def handle_initialize_recommended():
+def handle_initialize_recommended(data=None):
     """Handle initialization of recommended potentials via WebSocket"""
     try:
         def progress_callback(model_id, status_type, message):

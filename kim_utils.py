@@ -13,6 +13,11 @@ import requests
 import os
 from datetime import datetime
 import re
+import sys
+
+# Define absolute path to kim-api-collections-management
+# Assumes it is in the same directory as the python executable
+KIM_API_CMD = os.path.join(os.path.dirname(sys.executable), "kim-api-collections-management")
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +178,15 @@ def get_installed_kim_models() -> List[str]:
         List of installed model IDs
     """
     try:
+        if not os.path.exists(KIM_API_CMD):
+            logger.warning(f"KIM API command not found at {KIM_API_CMD}")
+            # Fallback to system path lookup if specific path fails
+            cmd = "kim-api-collections-management"
+        else:
+            cmd = KIM_API_CMD
+            
         result = subprocess.run(
-            ["kim-api-collections-management", "list"],
+            [cmd, "list"],
             capture_output=True,
             text=True,
             timeout=10
@@ -285,8 +297,13 @@ def install_and_verify_kim_model(model_id: str, timeout: int = 120) -> Tuple[boo
     try:
         # Install the model
         logger.info(f"Downloading and installing {model_id}...")
+        if not os.path.exists(KIM_API_CMD):
+            cmd = "kim-api-collections-management"
+        else:
+            cmd = KIM_API_CMD
+            
         result = subprocess.run(
-            ["kim-api-collections-management", "install", "user", model_id],
+            [cmd, "install", "user", model_id],
             capture_output=True,
             text=True,
             timeout=timeout
@@ -427,13 +444,55 @@ def ensure_kim_model_available(element: str, model_id: Optional[str] = None) -> 
 # Registry Management Functions
 # ============================================================================
 
+def _create_default_registry() -> bool:
+    """
+    Create the default registry file if it doesn't exist.
+    """
+    try:
+        content = """
+# KIM Potentials Registry
+
+This file tracks the status of KIM potentials used in the application.
+
+## Single Element Potentials
+
+| Element | Model ID | Type | Status | Last Checked | Description |
+| :---: | :--- | :---: | :---: | :---: | :--- |
+| Cu | EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006 | EAM | ⬇️ | - | Recommended for Copper |
+| Al | EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005 | EAM | ⬇️ | - | Recommended for Aluminum |
+| Ni | EAM_Dynamo_AcklandTichyVitek_1987_Ni__MO_977363131043_006 | EAM | ⬇️ | - | Recommended for Nickel |
+| Si | SW_StillingerWeber_1985_Si__MO_103435434588_006 | SW | ⬇️ | - | Recommended for Silicon |
+
+## Binary/Ternary Potentials
+
+| Elements | Model ID | Type | Status | Last Checked | Description |
+| :---: | :--- | :---: | :---: | :---: | :--- |
+| - | - | - | - | - | - |
+
+---
+**Last Updated:** 2025-12-08 09:00:00
+"""
+        with open(REGISTRY_FILE, 'w') as f:
+            f.write(content.strip())
+        logger.info(f"Created default registry file: {REGISTRY_FILE}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create default registry: {e}")
+        return False
+
+
 def read_registry() -> List[Dict[str, str]]:
+
     """
     Read the KIM potentials registry from the markdown file.
     
     Returns:
         List of dictionaries containing potential information
     """
+    if not os.path.exists(REGISTRY_FILE):
+        logger.info(f"Registry file {REGISTRY_FILE} not found, creating default...")
+        _create_default_registry()
+        
     if not os.path.exists(REGISTRY_FILE):
         logger.warning(f"Registry file {REGISTRY_FILE} not found")
         return []
@@ -512,6 +571,9 @@ def update_registry(model_id: str, downloaded: bool = True) -> bool:
     Returns:
         True if update was successful, False otherwise
     """
+    if not os.path.exists(REGISTRY_FILE):
+        _create_default_registry()
+
     if not os.path.exists(REGISTRY_FILE):
         logger.error(f"Registry file {REGISTRY_FILE} not found")
         return False
@@ -682,6 +744,9 @@ def add_potential_to_registry(element: str, model_id: str, model_type: str, desc
     Returns:
         True if successful, False otherwise
     """
+    if not os.path.exists(REGISTRY_FILE):
+        _create_default_registry()
+
     if not os.path.exists(REGISTRY_FILE):
         logger.error(f"Registry file {REGISTRY_FILE} not found")
         return False
