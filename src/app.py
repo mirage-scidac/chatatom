@@ -104,7 +104,7 @@ client = OpenAI(base_url=config.API_BASE_URL, api_key=config.API_KEY)
 
 @app.route('/')
 def serve_index():
-    return send_from_directory('.', 'index.html')
+    return send_from_directory('..', 'index.html')
 
 from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
 from tools import run_lammps_simulation
