@@ -117,7 +117,7 @@ The system will automatically:
 With the `chatmd` environment active, run the Flask server:
 
 ```bash
-python app.py
+python src/app.py
 ```
 
 The application will be available at `http://localhost:5001`.
