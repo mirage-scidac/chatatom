@@ -38,6 +38,7 @@ With the `chatmd` environment active, install the required packages.
 
 - **Python Packages (via uv):**
   ```bash
+  conda install uv pip
   uv pip install ovito openai flask flask-socketio pytest requests
   ```
 
