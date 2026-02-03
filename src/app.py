@@ -106,9 +106,383 @@ client = OpenAI(base_url=config.API_BASE_URL, api_key=config.API_KEY)
 def serve_index():
     return send_from_directory('..', 'index.html')
 
-from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
+from agents import (
+    OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent,
+    IterativeLammpsGeneration, PlanVerifier, SmartOrchestrator,
+    configure_dspy_lm
+)
 from tools import run_lammps_simulation
 import kim_utils
+import uuid
+from datetime import datetime
+
+# =============================================================================
+# Session Storage for Checkpoint Workflow
+# =============================================================================
+
+# In-memory session storage (will be replaced with SQLite in Phase 2)
+workflow_sessions = {}
+
+
+def create_session(user_request: str) -> str:
+    """Create a new workflow session."""
+    session_id = str(uuid.uuid4())
+    workflow_sessions[session_id] = {
+        "session_id": session_id,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "stage": "analysis",
+        "user_request": user_request,
+        "analysis": None,
+        "verification": None,
+        "parameters": None,
+        "script": None,
+        "review": None,
+        "conversation": []
+    }
+    return session_id
+
+
+def get_session(session_id: str) -> dict:
+    """Get a workflow session by ID."""
+    return workflow_sessions.get(session_id)
+
+
+def update_session(session_id: str, updates: dict) -> bool:
+    """Update a workflow session."""
+    if session_id not in workflow_sessions:
+        return False
+    workflow_sessions[session_id].update(updates)
+    workflow_sessions[session_id]["updated_at"] = datetime.now().isoformat()
+    return True
+
+
+# =============================================================================
+# Checkpoint Workflow API Endpoints
+# =============================================================================
+
+@app.route('/api/workflow/start', methods=['POST'])
+def workflow_start():
+    """
+    Start a new agentic workflow with verification.
+
+    This endpoint:
+    1. Analyzes the user request
+    2. Verifies the simulation plan is feasible
+    3. Returns a checkpoint for user approval
+
+    Request body:
+        {"request": "simulate copper at 300K for 10ps"}
+
+    Response:
+        {
+            "session_id": "uuid",
+            "stage": "parameters_pending",
+            "analysis": {...},
+            "verification": {...},
+            "checkpoint": {
+                "type": "parameters",
+                "data": {...},
+                "confidence": 0.85
+            }
+        }
+    """
+    try:
+        data = request.get_json()
+        user_request = data.get('request')
+
+        if not user_request:
+            return jsonify({"error": "Request not provided"}), 400
+
+        # Configure DSPy
+        configure_dspy_lm()
+
+        # Create session
+        session_id = create_session(user_request)
+        session = get_session(session_id)
+
+        # Build registry context
+        registry_context = kim_utils.build_registry_context_for_command(user_request)
+
+        # Analyze request using SmartOrchestrator
+        orchestrator = SmartOrchestrator()
+        analysis = orchestrator.analyze_request(user_request, registry_context)
+
+        # Check if clarification is needed
+        if analysis.needs_clarification:
+            update_session(session_id, {
+                "stage": "clarification_needed",
+                "analysis": {
+                    "material": analysis.material,
+                    "temperature": analysis.temperature,
+                    "ensemble": analysis.ensemble,
+                    "duration_ps": analysis.duration_ps,
+                    "kim_model": analysis.kim_model,
+                    "system_size": analysis.system_size,
+                    "confidence": analysis.confidence
+                }
+            })
+
+            return jsonify({
+                "session_id": session_id,
+                "stage": "clarification_needed",
+                "question": analysis.clarification_question,
+                "partial_analysis": {
+                    "material": analysis.material,
+                    "temperature": analysis.temperature,
+                    "confidence": analysis.confidence
+                }
+            })
+
+        # Verify the plan
+        verifier = PlanVerifier()
+        verification = verifier.forward(
+            material=analysis.material,
+            kim_model=analysis.kim_model,
+            temperature=analysis.temperature,
+            ensemble=analysis.ensemble,
+            duration_ps=analysis.duration_ps,
+            system_size=analysis.system_size
+        )
+
+        # Update session
+        update_session(session_id, {
+            "stage": "parameters_pending",
+            "analysis": {
+                "material": analysis.material,
+                "temperature": analysis.temperature,
+                "ensemble": analysis.ensemble,
+                "duration_ps": analysis.duration_ps,
+                "kim_model": analysis.kim_model,
+                "system_size": analysis.system_size,
+                "confidence": analysis.confidence
+            },
+            "verification": {
+                "is_feasible": verification.is_feasible,
+                "issues": verification.issues,
+                "suggestions": verification.suggestions,
+                "confidence": verification.confidence,
+                "kim_model_available": verification.kim_model_available
+            }
+        })
+
+        return jsonify({
+            "session_id": session_id,
+            "stage": "parameters_pending",
+            "analysis": {
+                "material": analysis.material,
+                "temperature": analysis.temperature,
+                "ensemble": analysis.ensemble,
+                "duration_ps": analysis.duration_ps,
+                "kim_model": analysis.kim_model,
+                "system_size": analysis.system_size,
+                "confidence": analysis.confidence
+            },
+            "verification": {
+                "is_feasible": verification.is_feasible,
+                "issues": verification.issues,
+                "suggestions": verification.suggestions,
+                "confidence": verification.confidence,
+                "kim_model_available": verification.kim_model_available
+            },
+            "checkpoint": {
+                "type": "parameters",
+                "message": "Please review and approve these simulation parameters",
+                "requires_approval": True
+            }
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/checkpoint/parameters', methods=['POST'])
+def checkpoint_parameters():
+    """
+    Handle parameter approval checkpoint.
+
+    Request body:
+        {
+            "session_id": "uuid",
+            "approved": true,
+            "modifications": {}  # Optional parameter modifications
+        }
+
+    Response:
+        {
+            "session_id": "uuid",
+            "stage": "script_pending",
+            "script": "...",
+            "review": {...},
+            "checkpoint": {...}
+        }
+    """
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        approved = data.get('approved', False)
+        modifications = data.get('modifications', {})
+
+        if not session_id:
+            return jsonify({"error": "session_id required"}), 400
+
+        session = get_session(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+
+        if session['stage'] != 'parameters_pending':
+            return jsonify({"error": f"Invalid stage: {session['stage']}"}), 400
+
+        if not approved:
+            return jsonify({
+                "session_id": session_id,
+                "stage": "cancelled",
+                "message": "Workflow cancelled by user"
+            })
+
+        # Apply any modifications
+        params = session['analysis'].copy()
+        params.update(modifications)
+
+        # Configure DSPy
+        configure_dspy_lm()
+
+        # Generate script using IterativeLammpsGeneration
+        generator = IterativeLammpsGeneration(max_attempts=3)
+        result = generator.forward(
+            material=params['material'],
+            kim_model=params['kim_model'],
+            temperature=params['temperature'],
+            ensemble=params['ensemble'],
+            duration_ps=params['duration_ps'],
+            system_size=params.get('system_size', 5)
+        )
+
+        # Update session
+        update_session(session_id, {
+            "stage": "script_pending",
+            "parameters": params,
+            "script": result.script,
+            "review": {
+                "passed": result.review_passed,
+                "attempts": result.attempts,
+                "issues": result.issues,
+                "suggestions": result.suggestions,
+                "confidence": result.confidence
+            },
+            "conversation": result.conversation
+        })
+
+        return jsonify({
+            "session_id": session_id,
+            "stage": "script_pending",
+            "script": result.script,
+            "review": {
+                "passed": result.review_passed,
+                "attempts": result.attempts,
+                "issues": result.issues,
+                "suggestions": result.suggestions,
+                "confidence": result.confidence
+            },
+            "checkpoint": {
+                "type": "script",
+                "message": "Please review and approve this LAMMPS script",
+                "requires_approval": True
+            }
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/checkpoint/script', methods=['POST'])
+def checkpoint_script():
+    """
+    Handle script approval checkpoint.
+
+    Request body:
+        {
+            "session_id": "uuid",
+            "approved": true,
+            "run_simulation": true  # Whether to execute the simulation
+        }
+
+    Response:
+        {
+            "session_id": "uuid",
+            "stage": "ready" | "executing",
+            "message": "..."
+        }
+    """
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        approved = data.get('approved', False)
+        run_simulation = data.get('run_simulation', False)
+
+        if not session_id:
+            return jsonify({"error": "session_id required"}), 400
+
+        session = get_session(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+
+        if session['stage'] != 'script_pending':
+            return jsonify({"error": f"Invalid stage: {session['stage']}"}), 400
+
+        if not approved:
+            return jsonify({
+                "session_id": session_id,
+                "stage": "cancelled",
+                "message": "Workflow cancelled by user"
+            })
+
+        if run_simulation:
+            # Update stage to executing
+            update_session(session_id, {"stage": "executing"})
+
+            return jsonify({
+                "session_id": session_id,
+                "stage": "executing",
+                "script": session['script'],
+                "message": "Script approved. Use WebSocket to start streaming simulation.",
+                "websocket_event": "start_streaming_simulation"
+            })
+        else:
+            # Just mark as ready
+            update_session(session_id, {"stage": "ready"})
+
+            return jsonify({
+                "session_id": session_id,
+                "stage": "ready",
+                "script": session['script'],
+                "message": "Script approved and ready for execution"
+            })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/workflow/session/<session_id>', methods=['GET'])
+def get_workflow_session(session_id):
+    """Get the current state of a workflow session."""
+    session = get_session(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify(session)
+
 
 @app.route('/api/llm-stream', methods=['GET'])
 def llm_stream():
@@ -224,10 +598,11 @@ Process the user's feedback and provide final simulation parameters using the SI
 
             # 4. Visualization agent - ALWAYS runs to show visualization is happening
             yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
-            
-            # Parse visualization request from user command
+
+            # Parse visualization request from orchestrator analysis
+            # The analysis contains VISUALIZATION PREFERENCES if the user requested custom viz
             from tools import parse_visualization_request
-            
+
             # Extract material from analysis for context
             simulation_context = {}
             if 'Material:' in analysis:
@@ -237,9 +612,11 @@ Process the user's feedback and provide final simulation parameters using the SI
                         material = line.split('Material:')[1].strip().split()[0]
                         simulation_context['material'] = material
                         break
-            
-            # Get OVITO script if custom visualization requested
-            ovito_script = parse_visualization_request(user_command, simulation_context, lammps_script)
+
+            # Use the analysis (not user_command) to detect visualization preferences
+            # The analysis contains structured VISUALIZATION PREFERENCES section
+            viz_request = analysis if 'VISUALIZATION' in analysis.upper() else user_command
+            ovito_script = parse_visualization_request(viz_request, simulation_context, lammps_script)
             
             print(f"[APP] Visualization script: {'Custom (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default'}")
             
@@ -657,10 +1034,11 @@ Process the user's feedback and provide final simulation parameters using the SI
 
             # 4. Visualization agent - ALWAYS runs to show visualization is happening
             yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
-            
-            # Parse visualization request from user command
+
+            # Parse visualization request from orchestrator analysis
+            # The analysis contains VISUALIZATION PREFERENCES if the user requested custom viz
             from tools import parse_visualization_request
-            
+
             # Extract material from analysis for context
             simulation_context = {}
             if 'Material:' in analysis:
@@ -670,9 +1048,11 @@ Process the user's feedback and provide final simulation parameters using the SI
                         material = line.split('Material:')[1].strip().split()[0]
                         simulation_context['material'] = material
                         break
-            
-            # Get OVITO script if custom visualization requested
-            ovito_script = parse_visualization_request(user_command, simulation_context, lammps_script)
+
+            # Use the analysis (not user_command) to detect visualization preferences
+            # The analysis contains structured VISUALIZATION PREFERENCES section
+            viz_request = analysis if 'VISUALIZATION' in analysis.upper() else user_command
+            ovito_script = parse_visualization_request(viz_request, simulation_context, lammps_script)
             
             # Generate appropriate message based on whether custom visualization was requested
             if ovito_script:

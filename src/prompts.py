@@ -3,8 +3,111 @@ System Prompts and Knowledge Base for ChatMD Agents.
 
 This module centralizes all LLM system prompts used by the agent classes,
 making them easier to maintain, version, and test independently.
+
+It also contains DSPy signatures for the agentic workflow.
 """
 
+from typing import List, Optional
+import dspy
+
+
+# =============================================================================
+# DSPy Signatures for Agentic Workflow
+# =============================================================================
+
+class AnalyzeRequest(dspy.Signature):
+    """Analyze a user's simulation request and extract structured parameters.
+
+    Given a natural language request for a molecular dynamics simulation,
+    extract the key parameters and determine what additional information
+    is needed from the user.
+    """
+    user_request: str = dspy.InputField(desc="Natural language simulation request from user")
+    registry_context: str = dspy.InputField(desc="Available KIM models from registry", default="")
+
+    material: str = dspy.OutputField(desc="Element or compound to simulate (e.g., Cu, Al, Si)")
+    temperature: float = dspy.OutputField(desc="Target temperature in Kelvin")
+    ensemble: str = dspy.OutputField(desc="Thermodynamic ensemble: NVE, NVT, or NPT")
+    duration_ps: float = dspy.OutputField(desc="Simulation duration in picoseconds")
+    kim_model: str = dspy.OutputField(desc="Selected KIM model ID from registry")
+    system_size: int = dspy.OutputField(desc="Number of unit cells per dimension", default=5)
+    needs_clarification: bool = dspy.OutputField(desc="Whether more info is needed from user")
+    clarification_question: str = dspy.OutputField(desc="Question to ask user if clarification needed", default="")
+    confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0 for the analysis")
+
+
+class VerifySimulationPlan(dspy.Signature):
+    """Verify that a simulation plan is feasible before generation.
+
+    Check that the KIM model is available, parameters are physically reasonable,
+    and the simulation can be executed successfully.
+    """
+    material: str = dspy.InputField(desc="Element or compound")
+    kim_model: str = dspy.InputField(desc="KIM model ID to use")
+    temperature: float = dspy.InputField(desc="Target temperature in Kelvin")
+    ensemble: str = dspy.InputField(desc="Thermodynamic ensemble")
+    duration_ps: float = dspy.InputField(desc="Simulation duration in picoseconds")
+    system_size: int = dspy.InputField(desc="Unit cells per dimension")
+
+    is_feasible: bool = dspy.OutputField(desc="Whether the simulation can be executed")
+    issues: List[str] = dspy.OutputField(desc="List of issues found, empty if none")
+    suggestions: List[str] = dspy.OutputField(desc="Suggestions for fixing issues")
+    confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0")
+
+
+class GenerateLAMMPSScript(dspy.Signature):
+    """Generate a complete LAMMPS input script from structured parameters.
+
+    Create an executable LAMMPS script using KIM potentials based on
+    the provided simulation parameters.
+    """
+    material: str = dspy.InputField(desc="Element or compound")
+    kim_model: str = dspy.InputField(desc="KIM model ID")
+    temperature: float = dspy.InputField(desc="Target temperature in Kelvin")
+    ensemble: str = dspy.InputField(desc="Thermodynamic ensemble: NVE, NVT, or NPT")
+    duration_ps: float = dspy.InputField(desc="Simulation duration in picoseconds")
+    system_size: int = dspy.InputField(desc="Unit cells per dimension")
+    thermo_freq: int = dspy.InputField(desc="Thermodynamic output frequency in steps", default=100)
+    dump_freq: int = dspy.InputField(desc="Trajectory dump frequency in steps", default=1000)
+    visualization_notes: str = dspy.InputField(desc="Notes about visualization requirements", default="")
+
+    lammps_script: str = dspy.OutputField(desc="Complete LAMMPS input script")
+    explanation: str = dspy.OutputField(desc="Brief explanation of key script features")
+
+
+class ReviewLAMMPSScript(dspy.Signature):
+    """Review a LAMMPS script for correctness and best practices.
+
+    Analyze the script for syntax errors, physics issues, and KIM
+    compatibility. Provide specific feedback for improvement.
+    """
+    lammps_script: str = dspy.InputField(desc="LAMMPS script to review")
+    intended_parameters: str = dspy.InputField(desc="Description of intended simulation", default="")
+
+    is_valid: bool = dspy.OutputField(desc="Whether the script passes review")
+    issues: List[str] = dspy.OutputField(desc="List of issues found")
+    suggestions: List[str] = dspy.OutputField(desc="Suggestions for improvement")
+    severity: str = dspy.OutputField(desc="Highest issue severity: none, warning, or error")
+
+
+class SelectTools(dspy.Signature):
+    """Select appropriate tools for handling a user request.
+
+    Given the current context and available tools, decide which
+    tools to invoke and in what order.
+    """
+    user_request: str = dspy.InputField(desc="Current user request")
+    available_tools: List[str] = dspy.InputField(desc="List of available tool names")
+    conversation_context: str = dspy.InputField(desc="Recent conversation history", default="")
+
+    selected_tools: List[str] = dspy.OutputField(desc="Tools to invoke in order")
+    tool_arguments: List[str] = dspy.OutputField(desc="Arguments for each selected tool")
+    reasoning: str = dspy.OutputField(desc="Explanation for tool selection")
+
+
+# =============================================================================
+# Knowledge Base
+# =============================================================================
 
 class KnowledgeBase:
     """Shared knowledge and guidance snippets used across multiple agents."""
