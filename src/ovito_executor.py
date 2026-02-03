@@ -131,19 +131,3 @@ class DynamicOVITOExecutor:
                             raise SecurityError(f"Unauthorized import from: {module}")
         except SyntaxError as e:
             raise SecurityError(f"Script contains syntax errors: {e}")
-    
-    def validate_and_sanitize(self, script: str) -> str:
-        """
-        Validate and optionally sanitize a script.
-        
-        Args:
-            script: Python script to validate
-            
-        Returns:
-            Validated (and potentially sanitized) script
-            
-        Raises:
-            SecurityError: If script contains dangerous operations
-        """
-        self._validate_script(script)
-        return script

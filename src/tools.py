@@ -408,14 +408,7 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
     if render_config is None:
         render_config = {}
     
-    print(f"[TOOLS DEBUG] render_config type: {type(render_config)}")
-    print(f"[TOOLS DEBUG] render_config keys: {render_config.keys() if isinstance(render_config, dict) else 'N/A'}")
     ovito_script = render_config.get('ovito_script', None)
-    print(f"[TOOLS DEBUG] Extracted ovito_script from render_config: {ovito_script is not None} ({len(ovito_script) if ovito_script else 0} chars)")
-    if ovito_script:
-        print(f"[TOOLS DEBUG] Script preview: {ovito_script[:200]}...")
-    else:
-        print(f"[TOOLS DEBUG] ovito_script is None or empty")
     quality = render_config.get('quality', 'medium')
     camera_angle = render_config.get('camera_angle', 'default')
     max_queue_size = render_config.get('max_queue_size', 10)
@@ -432,7 +425,6 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         script_path = os.path.join(run_folder, "input.lammps")
         
         # Start rendering worker with direct parameters
-        print(f"[TOOLS DEBUG] Starting rendering worker with ovito_script: {ovito_script is not None}")
         render_thread = threading.Thread(
             target=rendering_worker,
             args=(frame_queue, ovito_script, quality, camera_angle, 

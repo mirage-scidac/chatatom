@@ -386,58 +386,50 @@ def install_user_selected_model(model_id: str) -> Tuple[bool, str]:
         return False, error_details
 
 
-def ensure_kim_model_available(element: str, model_id: Optional[str] = None) -> Tuple[bool, str, str]:
+def build_registry_context_for_command(user_command: str) -> str:
     """
-    Ensure a KIM model is available for the given element.
-    
-    DEPRECATED: Use install_user_selected_model() for the new two-step selection process.
-    
-    This is the legacy entry point that includes automatic fallback logic.
-    It will:
-    1. Use the provided model_id if given
-    2. Otherwise, find the best available model for the element
-    3. Install the model if not already installed
-    4. Verify the installation
-    
+    Build KIM registry context string for a user command.
+
+    Searches the user command for known element symbols and returns
+    a formatted string with available KIM models for that element,
+    suitable for including in LLM prompts.
+
     Args:
-        element: Chemical symbol of the element
-        model_id: Optional specific model ID to use
-        
+        user_command: Natural language command from user
+
     Returns:
-        Tuple of (success: bool, model_id: str, message: str)
+        Formatted registry context string, or empty string if no element found
     """
-    logger.info(f"Ensuring KIM model available for {element}")
-    
-    # If no model specified, find the best one
-    if model_id is None:
-        model_id = find_best_kim_model(element)
-        if model_id is None:
-            return False, "", f"No KIM models found for element {element}"
-    
-    # Check if model is already installed
-    if is_model_installed(model_id):
-        logger.info(f"Model {model_id} already available")
-        return True, model_id, "Model already installed"
-    
-    # Install and verify the model
-    success, message = install_and_verify_kim_model(model_id)
-    
-    if success:
-        return True, model_id, message
-    else:
-        # If installation failed, try to find an alternative from registry
-        logger.warning(f"Failed to install {model_id}, looking for alternatives...")
-        
-        registry_models = _get_models_from_registry(element)
-        for model_info in registry_models:
-            alt_model = model_info['id']
-            if alt_model != model_id:
-                logger.info(f"Trying alternative model: {alt_model}")
-                success, message = install_and_verify_kim_model(alt_model)
-                if success:
-                    return True, alt_model, f"Used alternative model: {message}"
-        
-        return False, model_id, f"All installation attempts failed: {message}"
+    registry_context = ""
+    lower_command = user_command.lower()
+
+    for element in ELEMENT_PROPERTIES.keys():
+        # Match chemical symbol as a standalone token to avoid false positives
+        # (e.g., 'ar' in 'Orchestrator')
+        import re
+        if re.search(rf"\b{element.lower()}\b", lower_command):
+            # Get models for this element from registry
+            potentials = read_registry()
+            element_models = [p for p in potentials if p['element'] == element]
+
+            if element_models:
+                registry_context = f"\n\nAVAILABLE KIM MODELS FOR {element} (from registry):\n"
+                downloaded_models = [m for m in element_models if m['downloaded']]
+                pending_models = [m for m in element_models if not m['downloaded']]
+
+                if downloaded_models:
+                    registry_context += "\nALREADY DOWNLOADED (Ready to use immediately):\n"
+                    for i, model in enumerate(downloaded_models, 1):
+                        registry_context += f"✅ {i}. {model['model_id']} ({model['type']})\n"
+                        registry_context += f"   → This model is installed and ready to go!\n"
+
+                if pending_models:
+                    registry_context += "\nAVAILABLE FOR DOWNLOAD:\n"
+                    for i, model in enumerate(pending_models, len(downloaded_models) + 1):
+                        registry_context += f"⬇️ {i}. {model['model_id']} ({model['type']})\n"
+            break
+
+    return registry_context
 
 
 # ============================================================================
