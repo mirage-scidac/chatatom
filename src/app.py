@@ -115,46 +115,34 @@ from tools import run_lammps_simulation
 import kim_utils
 import uuid
 from datetime import datetime
+from session_manager import get_session_manager
 
 # =============================================================================
 # Session Storage for Checkpoint Workflow
 # =============================================================================
 
-# In-memory session storage (will be replaced with SQLite in Phase 2)
-workflow_sessions = {}
+# SQLite-based session persistence (replaces in-memory storage)
+# Sessions now survive server restarts
 
 
 def create_session(user_request: str) -> str:
-    """Create a new workflow session."""
+    """Create a new workflow session using SQLite backend."""
     session_id = str(uuid.uuid4())
-    workflow_sessions[session_id] = {
-        "session_id": session_id,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-        "stage": "analysis",
-        "user_request": user_request,
-        "analysis": None,
-        "verification": None,
-        "parameters": None,
-        "script": None,
-        "review": None,
-        "conversation": []
-    }
+    session_manager = get_session_manager()
+    session_manager.create(session_id, user_request)
     return session_id
 
 
 def get_session(session_id: str) -> dict:
-    """Get a workflow session by ID."""
-    return workflow_sessions.get(session_id)
+    """Get a workflow session by ID from SQLite."""
+    session_manager = get_session_manager()
+    return session_manager.get(session_id)
 
 
 def update_session(session_id: str, updates: dict) -> bool:
-    """Update a workflow session."""
-    if session_id not in workflow_sessions:
-        return False
-    workflow_sessions[session_id].update(updates)
-    workflow_sessions[session_id]["updated_at"] = datetime.now().isoformat()
-    return True
+    """Update a workflow session in SQLite."""
+    session_manager = get_session_manager()
+    return session_manager.update(session_id, updates)
 
 
 # =============================================================================

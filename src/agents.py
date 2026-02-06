@@ -14,6 +14,7 @@ from prompts import (
     ReviewLAMMPSScript,
     SelectTools,
 )
+from memory import get_memory_backend, MemoryEntry
 
 class Agent:
     def __init__(self, system_prompt, model=None, default_temperature=0.1):
@@ -201,13 +202,96 @@ class IterativeLammpsGeneration(dspy.Module):
 
     This module generates a LAMMPS script, reviews it, and if issues are found,
     iteratively improves it up to max_attempts times.
+
+    Integrates with the memory system to:
+    - Retrieve relevant past failures before generation
+    - Store new failures and successes for future reference
     """
 
-    def __init__(self, max_attempts: int = 3):
+    def __init__(self, max_attempts: int = 3, use_memory: bool = True):
         super().__init__()
         self.max_attempts = max_attempts
         self.generator = dspy.ChainOfThought(GenerateLAMMPSScript)
         self.reviewer = dspy.ChainOfThought(ReviewLAMMPSScript)
+        self.use_memory = use_memory
+        self._memory = None
+
+    @property
+    def memory(self):
+        """Lazy-load memory backend to avoid initialization issues."""
+        if self._memory is None and self.use_memory:
+            try:
+                self._memory = get_memory_backend()
+            except Exception as e:
+                print(f"[MEMORY] Failed to initialize: {e}")
+                self.use_memory = False
+        return self._memory
+
+    def _get_memory_context(self, material: str, ensemble: str, kim_model: str) -> str:
+        """Retrieve relevant memories to inform generation."""
+        if not self.use_memory or not self.memory:
+            return ""
+
+        try:
+            # Search for relevant past failures
+            query = f"{material} {ensemble} simulation"
+            relevant_failures = self.memory.search(query, category="failure", limit=3)
+
+            if not relevant_failures:
+                return ""
+
+            memory_lines = ["Previous issues to avoid:"]
+            for m in relevant_failures:
+                memory_lines.append(f"- {m.content}")
+
+            return "\n".join(memory_lines)
+        except Exception as e:
+            print(f"[MEMORY] Search failed: {e}")
+            return ""
+
+    def _store_failure(self, material: str, kim_model: str, ensemble: str,
+                      issues: List[str], attempt: int):
+        """Store a failure in memory for future reference."""
+        if not self.use_memory or not self.memory:
+            return
+
+        try:
+            content = f"Script for {material} ({kim_model}) failed: {'; '.join(issues[:2])}"
+            self.memory.add(
+                content=content,
+                category="failure",
+                metadata={
+                    "material": material,
+                    "kim_model": kim_model,
+                    "ensemble": ensemble,
+                    "attempt": attempt,
+                    "issues": issues[:3]
+                }
+            )
+        except Exception as e:
+            print(f"[MEMORY] Failed to store failure: {e}")
+
+    def _store_success(self, material: str, kim_model: str, ensemble: str,
+                      temperature: float, attempts: int):
+        """Store a successful generation pattern."""
+        if not self.use_memory or not self.memory:
+            return
+
+        try:
+            content = f"Successful {material} {ensemble} simulation at {temperature}K"
+            self.memory.add(
+                content=content,
+                category="success",
+                metadata={
+                    "material": material,
+                    "kim_model": kim_model,
+                    "ensemble": ensemble,
+                    "temperature": temperature,
+                    "attempts_needed": attempts
+                }
+            )
+        except Exception as e:
+            print(f"[MEMORY] Failed to store success: {e}")
 
     def forward(
         self,
@@ -232,9 +316,19 @@ class IterativeLammpsGeneration(dspy.Module):
         all_issues = []
         all_suggestions = []
 
+        # Retrieve relevant memories before first generation
+        memory_context = self._get_memory_context(material, ensemble, kim_model)
+        if memory_context:
+            print(f"[MEMORY] Found relevant context for {material} {ensemble}")
+
         for attempt in range(1, self.max_attempts + 1):
             # Generate or regenerate script
             if attempt == 1:
+                # Include memory context in first attempt
+                notes = visualization_notes
+                if memory_context:
+                    notes = f"{visualization_notes}\n\n{memory_context}" if visualization_notes else memory_context
+
                 gen_result = self.generator(
                     material=material,
                     kim_model=kim_model,
@@ -244,7 +338,7 @@ class IterativeLammpsGeneration(dspy.Module):
                     system_size=system_size,
                     thermo_freq=thermo_freq,
                     dump_freq=dump_freq,
-                    visualization_notes=visualization_notes
+                    visualization_notes=notes
                 )
             else:
                 # Include previous issues in visualization_notes for context
@@ -287,8 +381,9 @@ class IterativeLammpsGeneration(dspy.Module):
             all_issues.extend(review_result.issues)
             all_suggestions.extend(review_result.suggestions)
 
-            # If review passes, we're done
+            # If review passes, we're done - store success
             if review_result.is_valid or review_result.severity == "none":
+                self._store_success(material, kim_model, ensemble, temperature, attempt)
                 return GenerationResult(
                     script=current_script,
                     review_passed=True,
@@ -298,6 +393,9 @@ class IterativeLammpsGeneration(dspy.Module):
                     conversation=conversation,
                     confidence=0.9 if attempt == 1 else 0.8 - (attempt - 1) * 0.1
                 )
+
+            # Store this failure for future reference
+            self._store_failure(material, kim_model, ensemble, review_result.issues, attempt)
 
         # Max attempts reached without passing review
         return GenerationResult(

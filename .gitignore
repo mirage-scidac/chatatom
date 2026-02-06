@@ -198,3 +198,9 @@ __pycache__/
 #Misc
 .loglogin
 .vscode/
+
+# Data files (memory and sessions)
+data/*.json
+data/*.db
+data/*.db-journal
+!data/.gitkeep
