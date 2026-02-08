@@ -111,6 +111,7 @@ from agents import (
     IterativeLammpsGeneration, PlanVerifier, SmartOrchestrator,
     configure_dspy_lm
 )
+from memory import get_memory_backend
 from tools import run_lammps_simulation
 import kim_utils
 import uuid
@@ -935,13 +936,31 @@ def llm_stream_live():
             # Send initial status
             yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
 
-            # Detect execution intent from the original request if this is Phase 1
-            original_execution_intent = False
-            if not conversation_context:
-                user_command_lower = user_command.lower()
-                original_execution_intent = any(keyword in user_command_lower for keyword in [
-                    'simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'
-                ])
+            # Configure DSPy for intent classification
+            configure_dspy_lm()
+            smart_orchestrator = SmartOrchestrator()
+
+            # Use LLM to classify user intent
+            workflow_stage = "initial"
+            if conversation_context:
+                if "SCRIPT READY:" in conversation_context:
+                    workflow_stage = "script_ready"
+                else:
+                    workflow_stage = "parameters_proposed"
+
+            intent_result = smart_orchestrator.classify_intent(user_command, workflow_stage)
+            print(f"[INTENT] '{user_command}' -> {intent_result['intent']} (confidence: {intent_result['confidence']})")
+
+            # If script is ready and user wants to execute, skip re-generation
+            if workflow_stage == "script_ready" and intent_result["intent"] == "execute":
+                # Extract the pending script from context
+                pending_script = conversation_context.replace("SCRIPT READY:\n", "", 1)
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
+                yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': pending_script, 'ovito_script': None, 'user_command': user_command})}\n\n"
+                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                return
 
             # Extract element from user command and build registry context
             registry_context = kim_utils.build_registry_context_for_command(user_command)
@@ -994,29 +1013,67 @@ Process the user's feedback and provide final simulation parameters using the SI
                     yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
                     return
 
+            # Retrieve relevant lessons from memory before generation
+            lammps_memory_context = ""
+            viz_memory_context = ""
+            try:
+                memory = get_memory_backend()
+
+                # Extract material from analysis for memory search
+                material_for_search = ""
+                if 'Material:' in analysis:
+                    for line in analysis.split('\n'):
+                        if 'Material:' in line:
+                            material_for_search = line.split('Material:')[1].strip().split()[0]
+                            break
+
+                if material_for_search:
+                    material_query = f"{material_for_search} simulation"
+                else:
+                    material_query = user_command
+
+                lammps_lessons = memory.search(material_query, category="lammps_issue", limit=3)
+                viz_lessons = memory.search(user_command, category="visualization_issue", limit=3)
+
+                if lammps_lessons:
+                    lammps_memory_context = "LESSONS FROM PAST SIMULATIONS:\n" + "\n".join(
+                        f"- {m.content}" for m in lammps_lessons
+                    )
+                    print(f"[MEMORY] Found {len(lammps_lessons)} relevant LAMMPS lessons")
+
+                if viz_lessons:
+                    viz_memory_context = "VISUALIZATION LESSONS:\n" + "\n".join(
+                        f"- {m.content}" for m in viz_lessons
+                    )
+                    print(f"[MEMORY] Found {len(viz_lessons)} relevant visualization lessons")
+            except Exception as e:
+                print(f"[MEMORY] Memory retrieval failed: {e}")
+
             # Generate script
             yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
-            
+
             generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
+            if lammps_memory_context:
+                generator_prompt += f"\n\n{lammps_memory_context}"
             lammps_script_chunks = []
             script_generator = generator.execute_stream(generator_prompt)
             for chunk in script_generator:
                 lammps_script_chunks.append(chunk)
                 yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': chunk, 'message_type': 'script'})}\n\n"
-            
+
             lammps_script = ''.join(lammps_script_chunks)
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
 
             # Review script
             yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
-            
+
             reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
             review_generator = reviewer.execute_stream(reviewer_prompt)
             review_chunks = []
             for chunk in review_generator:
                 review_chunks.append(chunk)
                 yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': chunk, 'message_type': 'review'})}\n\n"
-            
+
             review = ''.join(review_chunks)
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
 
@@ -1037,6 +1094,10 @@ Process the user's feedback and provide final simulation parameters using the SI
                         simulation_context['material'] = material
                         break
 
+            # Inject visualization lessons into simulation context
+            if viz_memory_context:
+                simulation_context['viz_lessons'] = viz_memory_context
+
             # Use the analysis (not user_command) to detect visualization preferences
             # The analysis contains structured VISUALIZATION PREFERENCES section
             viz_request = analysis if 'VISUALIZATION' in analysis.upper() else user_command
@@ -1054,26 +1115,11 @@ Process the user's feedback and provide final simulation parameters using the SI
             yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
             yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
 
-            # Check if review passed and determine execution
+            # Check if review passed and determine execution using LLM intent
             if "REVIEW: PASS" in review:
-                user_command_lower = user_command.lower()
-                should_run = False
-                
-                should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform', 'go ahead', 'proceed', 'start'])
-                
-                if conversation_context and not should_run:
-                    should_run = any(keyword in user_command_lower for keyword in ['yes', 'ok', 'confirm', 'go', 'ahead'])
-                
-                if conversation_context and execution_intent and not should_run:
-                    is_parameter_change = any(phrase in user_command_lower for phrase in [
-                        'make it', 'change', 'set', 'use', 'atoms', 'temperature', 'pressure', 'time', 'duration'
-                    ])
-                    if is_parameter_change:
-                        should_run = True
-                
-                if not conversation_context and original_execution_intent and not should_run:
-                    should_run = True
-                
+                # Use the intent we already classified at the top
+                should_run = intent_result["intent"] in ("execute", "new_simulation")
+
                 if should_run:
                     # Signal to use streaming simulation with OVITO script
                     yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
@@ -1082,9 +1128,9 @@ Process the user's feedback and provide final simulation parameters using the SI
                     yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    info_message = "LAMMPS script generated and approved. Add 'run' or 'execute' to your command to run the simulation."
+                    info_message = "LAMMPS script generated and approved. Would you like to run the simulation?"
                     yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script})}\n\n"
+                    yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script, 'ovito_script': ovito_script})}\n\n"
                     yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
             else:
                 yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
@@ -1104,6 +1150,60 @@ Process the user's feedback and provide final simulation parameters using the SI
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': 'Cache-Control'
     })
+
+# ============================================================================
+# User Feedback API Endpoint
+# ============================================================================
+
+@app.route('/api/feedback', methods=['POST'])
+def submit_feedback():
+    """
+    Submit user feedback about a simulation result.
+
+    The LLM extracts a structured lesson from the feedback and stores
+    it in memory for future retrieval during similar simulations.
+
+    Request body:
+        {
+            "feedback": "atom deletion didn't work, Other atoms still visible",
+            "simulation_summary": "Cu melting 100ps, CNA coloring, filter crystalline",
+            "session_id": ""  (optional)
+        }
+
+    Response:
+        {
+            "category": "visualization_issue",
+            "lesson": "...",
+            "keywords": "...",
+            "stored": true
+        }
+    """
+    try:
+        data = request.get_json()
+        feedback = data.get('feedback', '').strip()
+        simulation_summary = data.get('simulation_summary', '').strip()
+
+        if not feedback:
+            return jsonify({"error": "feedback is required"}), 400
+
+        configure_dspy_lm()
+        orchestrator = SmartOrchestrator()
+        result = orchestrator.process_feedback(feedback, simulation_summary)
+
+        return jsonify({
+            "category": result["category"],
+            "lesson": result["lesson"],
+            "keywords": result["keywords"],
+            "stored": result["stored"]
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
 
 # ============================================================================
 # KIM Potentials Management API Endpoints

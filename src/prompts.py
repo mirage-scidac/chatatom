@@ -70,6 +70,10 @@ class GenerateLAMMPSScript(dspy.Signature):
     thermo_freq: int = dspy.InputField(desc="Thermodynamic output frequency in steps", default=100)
     dump_freq: int = dspy.InputField(desc="Trajectory dump frequency in steps", default=1000)
     visualization_notes: str = dspy.InputField(desc="Notes about visualization requirements", default="")
+    past_lessons: str = dspy.InputField(
+        desc="Lessons from previous similar simulations to avoid repeating mistakes",
+        default=""
+    )
 
     lammps_script: str = dspy.OutputField(desc="Complete LAMMPS input script")
     explanation: str = dspy.OutputField(desc="Brief explanation of key script features")
@@ -103,6 +107,44 @@ class SelectTools(dspy.Signature):
     selected_tools: List[str] = dspy.OutputField(desc="Tools to invoke in order")
     tool_arguments: List[str] = dspy.OutputField(desc="Arguments for each selected tool")
     reasoning: str = dspy.OutputField(desc="Explanation for tool selection")
+
+
+class ClassifyUserIntent(dspy.Signature):
+    """Classify the user's intent in the context of a molecular dynamics simulation workflow.
+
+    The workflow stages are:
+    - 'initial': User is making a new simulation request
+    - 'parameters_proposed': Simulation parameters have been proposed and await user feedback
+    - 'script_ready': A LAMMPS script has been generated and reviewed, ready for execution
+
+    Classify intent as one of:
+    - 'execute': User wants to run/execute the simulation (e.g. "run", "go ahead", "yes", "sure", "looks good", "this is fine")
+    - 'modify': User wants to change parameters (e.g. "change temperature to 500K", "make it bigger")
+    - 'cancel': User wants to stop/cancel (e.g. "no", "stop", "cancel", "nevermind")
+    - 'question': User is asking a question (e.g. "what does NVT mean?", "explain the script")
+    - 'new_simulation': User is requesting a completely new/different simulation
+    """
+    user_message: str = dspy.InputField(desc="The user's message")
+    workflow_stage: str = dspy.InputField(desc="Current workflow stage: 'initial', 'parameters_proposed', or 'script_ready'")
+
+    intent: str = dspy.OutputField(desc="One of: 'execute', 'modify', 'cancel', 'question', 'new_simulation'")
+    confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0")
+    extracted_modifications: str = dspy.OutputField(desc="If intent is 'modify', describe what changes are requested. Otherwise empty string.")
+
+
+class ExtractFeedback(dspy.Signature):
+    """Extract structured lessons from user feedback about simulation results.
+
+    Given user feedback about how a simulation turned out and a summary of
+    what was simulated, extract a concise lesson that can be stored and
+    retrieved to improve future simulations.
+    """
+    user_feedback: str = dspy.InputField(desc="User's feedback about the simulation result")
+    simulation_summary: str = dspy.InputField(desc="Summary: material, parameters, what was requested")
+
+    category: str = dspy.OutputField(desc="One of: 'lammps_issue', 'visualization_issue', 'success', 'preference'")
+    lesson: str = dspy.OutputField(desc="Concise lesson learned for future simulations")
+    keywords: str = dspy.OutputField(desc="Comma-separated keywords for retrieval: material, technique, modifier names")
 
 
 # =============================================================================

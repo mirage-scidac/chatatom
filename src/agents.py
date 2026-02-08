@@ -13,6 +13,8 @@ from prompts import (
     GenerateLAMMPSScript,
     ReviewLAMMPSScript,
     SelectTools,
+    ClassifyUserIntent,
+    ExtractFeedback,
 )
 from memory import get_memory_backend, MemoryEntry
 
@@ -324,11 +326,6 @@ class IterativeLammpsGeneration(dspy.Module):
         for attempt in range(1, self.max_attempts + 1):
             # Generate or regenerate script
             if attempt == 1:
-                # Include memory context in first attempt
-                notes = visualization_notes
-                if memory_context:
-                    notes = f"{visualization_notes}\n\n{memory_context}" if visualization_notes else memory_context
-
                 gen_result = self.generator(
                     material=material,
                     kim_model=kim_model,
@@ -338,11 +335,13 @@ class IterativeLammpsGeneration(dspy.Module):
                     system_size=system_size,
                     thermo_freq=thermo_freq,
                     dump_freq=dump_freq,
-                    visualization_notes=notes
+                    visualization_notes=visualization_notes,
+                    past_lessons=memory_context
                 )
             else:
-                # Include previous issues in visualization_notes for context
+                # Include previous issues in past_lessons for context
                 issues_context = f"Previous issues to fix: {'; '.join(all_issues[-3:])}"
+                combined_lessons = f"{memory_context}\n{issues_context}" if memory_context else issues_context
                 gen_result = self.generator(
                     material=material,
                     kim_model=kim_model,
@@ -352,7 +351,8 @@ class IterativeLammpsGeneration(dspy.Module):
                     system_size=system_size,
                     thermo_freq=thermo_freq,
                     dump_freq=dump_freq,
-                    visualization_notes=f"{visualization_notes}\n{issues_context}"
+                    visualization_notes=visualization_notes,
+                    past_lessons=combined_lessons
                 )
 
             current_script = gen_result.lammps_script
@@ -522,13 +522,16 @@ class SmartOrchestrator(dspy.Module):
     DSPy module for intelligent request analysis and tool selection.
 
     Analyzes user requests, extracts parameters, and determines
-    what tools/actions are needed.
+    what tools/actions are needed. Also classifies user intent
+    using LLM instead of string matching.
     """
 
     def __init__(self):
         super().__init__()
         self.analyzer = dspy.ChainOfThought(AnalyzeRequest)
         self.tool_selector = dspy.ChainOfThought(SelectTools)
+        self.intent_classifier = dspy.ChainOfThought(ClassifyUserIntent)
+        self.feedback_extractor = dspy.ChainOfThought(ExtractFeedback)
 
     def analyze_request(
         self,
@@ -574,3 +577,97 @@ class SmartOrchestrator(dspy.Module):
         )
 
         return result.selected_tools, result.tool_arguments, result.reasoning
+
+    def classify_intent(
+        self,
+        user_message: str,
+        workflow_stage: str = "initial"
+    ) -> Dict[str, Any]:
+        """
+        Classify user intent using LLM instead of string matching.
+
+        Args:
+            user_message: The user's message text
+            workflow_stage: Current stage - 'initial', 'parameters_proposed', or 'script_ready'
+
+        Returns:
+            Dict with 'intent', 'confidence', and 'modifications' keys
+        """
+        result = self.intent_classifier(
+            user_message=user_message,
+            workflow_stage=workflow_stage
+        )
+
+        # Normalize intent to expected values
+        intent = str(result.intent).strip().lower()
+        valid_intents = {'execute', 'modify', 'cancel', 'question', 'new_simulation'}
+        if intent not in valid_intents:
+            # Map common variants
+            if intent in ('run', 'confirm', 'yes', 'proceed', 'approve'):
+                intent = 'execute'
+            elif intent in ('change', 'update', 'adjust'):
+                intent = 'modify'
+            elif intent in ('stop', 'no', 'abort'):
+                intent = 'cancel'
+            elif intent in ('ask', 'explain', 'help'):
+                intent = 'question'
+            elif intent in ('new', 'different', 'simulate'):
+                intent = 'new_simulation'
+            else:
+                intent = 'question'  # Default to safest option
+
+        try:
+            confidence = float(result.confidence)
+        except (ValueError, TypeError):
+            confidence = 0.5
+
+        return {
+            "intent": intent,
+            "confidence": confidence,
+            "modifications": str(result.extracted_modifications).strip() if result.extracted_modifications else ""
+        }
+
+    def process_feedback(self, user_feedback: str, simulation_summary: str) -> Dict[str, Any]:
+        """
+        Use LLM to extract a structured lesson from user feedback, then store in memory.
+
+        Args:
+            user_feedback: The user's feedback about the simulation result
+            simulation_summary: Summary of the simulation that was run
+
+        Returns:
+            Dict with 'category', 'lesson', 'keywords', and 'stored' keys
+        """
+        result = self.feedback_extractor(
+            user_feedback=user_feedback,
+            simulation_summary=simulation_summary
+        )
+
+        category = str(result.category).strip()
+        lesson = str(result.lesson).strip()
+        keywords = str(result.keywords).strip()
+
+        # Store in memory
+        stored = False
+        try:
+            memory = get_memory_backend()
+            memory.add(
+                content=lesson,
+                category=category,
+                metadata={
+                    "keywords": keywords,
+                    "simulation": simulation_summary,
+                    "user_feedback": user_feedback
+                }
+            )
+            stored = True
+            print(f"[MEMORY] Stored feedback lesson: category={category}, lesson={lesson[:80]}...")
+        except Exception as e:
+            print(f"[MEMORY] Failed to store feedback: {e}")
+
+        return {
+            "category": category,
+            "lesson": lesson,
+            "keywords": keywords,
+            "stored": stored
+        }

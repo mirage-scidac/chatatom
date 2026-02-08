@@ -47,12 +47,17 @@ SIMULATION CONTEXT:
 - Temperature: {simulation_context.get('temperature', 'Unknown')} K
 - Crystal structure: {simulation_context.get('structure', 'Unknown')}
 """
-            
+
             # Check if CNA is pre-computed in LAMMPS
             if simulation_context.get('cna_precomputed', False):
                 context_str += "\n⚠️ IMPORTANT: CNA_PRECOMPUTED - LAMMPS already computed CNA values (available as 'c_cna' property)\n"
                 context_str += "You MUST use the pre-computed c_cna values instead of applying CommonNeighborAnalysisModifier.\n"
-        
+
+            # Include visualization lessons from memory
+            viz_lessons = simulation_context.get('viz_lessons', '')
+            if viz_lessons:
+                context_str += f"\n{viz_lessons}\n"
+
         prompt = f"""{context_str}
 
 USER VISUALIZATION REQUEST:

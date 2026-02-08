@@ -581,6 +581,9 @@
 
                 // Add completion message to chat
                 addConversationMessage('System', data.message, 'success');
+
+                // Show feedback prompt
+                showFeedbackPrompt(data.message || '');
             });
 
             socket.on('simulation_error', function (data) {
@@ -1182,7 +1185,10 @@
         let isStreaming = false;
         let conversationContext = '';  // Store context for phase 2 conversations
         let executionIntent = false;  // Track if original request implied execution
+        let pendingScript = null;  // Holds LAMMPS script when ready but not yet executed
+        let pendingOvitoScript = null;  // Holds OVITO script when ready but not yet executed
         let messageCounter = 0;  // Counter to ensure unique message IDs
+        let lastSimulationSummary = '';  // Track what was simulated for feedback
 
         // 3D Trajectory Viewer Variables
         let trajectoryFrames = [];
@@ -1825,6 +1831,100 @@
             document.getElementById('kim-search').addEventListener('input', (e) => filterKimPotentials(e.target.value));
         });
 
+        function showFeedbackPrompt(summary) {
+            lastSimulationSummary = summary || '';
+            const chatContainer = document.getElementById('chat-container');
+            const feedbackElement = document.createElement('div');
+            feedbackElement.classList.add('mb-3', 'p-3', 'rounded', 'bg-indigo-900', 'border-l-4', 'border-indigo-400');
+            feedbackElement.id = 'feedback-prompt';
+
+            feedbackElement.innerHTML = `
+                <div class="flex items-start">
+                    <span class="mr-2 text-lg">💬</span>
+                    <div class="flex-1">
+                        <strong class="text-white">Feedback:</strong>
+                        <div class="mt-1 text-gray-200 text-sm mb-2">How did the simulation turn out? Report any issues to help improve future runs.</div>
+                        <div class="flex gap-2">
+                            <input type="text" id="feedback-input"
+                                class="flex-grow bg-gray-800/50 text-white rounded p-2 border border-gray-600 focus:outline-none focus:border-indigo-400 text-sm"
+                                placeholder="e.g., atom deletion didn't work, visualization was wrong...">
+                            <button onclick="submitFeedback()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm">Submit</button>
+                            <button onclick="dismissFeedback()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded text-sm">Skip</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            chatContainer.appendChild(feedbackElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function dismissFeedback() {
+            const feedbackPrompt = document.getElementById('feedback-prompt');
+            if (feedbackPrompt) {
+                feedbackPrompt.remove();
+            }
+        }
+
+        async function submitFeedback() {
+            const feedbackInput = document.getElementById('feedback-input');
+            if (!feedbackInput) return;
+
+            const feedback = feedbackInput.value.trim();
+            if (!feedback) return;
+
+            // Replace prompt with a "sending..." message
+            const feedbackPrompt = document.getElementById('feedback-prompt');
+            if (feedbackPrompt) {
+                feedbackPrompt.innerHTML = `
+                    <div class="flex items-start">
+                        <span class="mr-2 text-lg">💬</span>
+                        <div class="flex-1">
+                            <strong class="text-white">Feedback:</strong>
+                            <div class="mt-1 text-gray-300 text-sm">Saving feedback...</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            try {
+                const response = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        feedback: feedback,
+                        simulation_summary: lastSimulationSummary
+                    })
+                });
+                const result = await response.json();
+
+                if (feedbackPrompt) {
+                    feedbackPrompt.innerHTML = `
+                        <div class="flex items-start">
+                            <span class="mr-2 text-lg">✅</span>
+                            <div class="flex-1">
+                                <strong class="text-white">Feedback saved</strong>
+                                <div class="mt-1 text-gray-300 text-sm">Category: ${result.category || 'unknown'} — Lesson recorded for future simulations.</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (err) {
+                console.error('Failed to submit feedback:', err);
+                if (feedbackPrompt) {
+                    feedbackPrompt.innerHTML = `
+                        <div class="flex items-start">
+                            <span class="mr-2 text-lg">⚠️</span>
+                            <div class="flex-1">
+                                <strong class="text-white">Feedback</strong>
+                                <div class="mt-1 text-gray-300 text-sm">Failed to save feedback. You can try again later.</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+        }
+
         async function sendMessage() {
             const userInput = document.getElementById('user-input');
             const message = userInput.value.trim();
@@ -1838,14 +1938,6 @@
             currentAgentMessages = {};
 
             try {
-                // Detect execution intent from the original request if this is a new conversation
-                if (!conversationContext) {
-                    const messageLower = message.toLowerCase();
-                    executionIntent = ['simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'].some(keyword =>
-                        messageLower.includes(keyword)
-                    );
-                }
-
                 // Build URL parameters
                 const params = new URLSearchParams({
                     command: message
@@ -1854,10 +1946,10 @@
                 // Add conversation context if we're in phase 2
                 if (conversationContext) {
                     params.append('context', conversationContext);
-                    // Pass execution intent to backend
-                    params.append('execution_intent', executionIntent.toString());
-                    // Clear context after use
-                    conversationContext = '';
+                    // Don't clear context yet - wait until execution starts
+                } else if (pendingScript) {
+                    // Script was ready but not executed - include it as context
+                    params.append('context', 'SCRIPT READY:\n' + pendingScript);
                 }
 
                 // Use EventSource for streaming with live WebSocket support
@@ -1887,21 +1979,27 @@
                                 break;
 
                             case 'start_streaming_simulation':
-                                console.log('🎬 SSE: Received start_streaming_simulation event');
-                                console.log('🔌 WebSocket status:', socket ? 'initialized' : 'not initialized');
-                                console.log('🔗 WebSocket connected:', socket && socket.connected);
-                                console.log('🎨 OVITO script:', data.ovito_script ? `Present (${data.ovito_script.length} chars)` : 'None');
+                                console.log('SSE: Received start_streaming_simulation event');
+
+                                // Track simulation summary for feedback
+                                lastSimulationSummary = message;
+
+                                // Capture ovito script before clearing state
+                                const ovitoScript = data.ovito_script || pendingOvitoScript;
+
+                                // Clear context now that we're executing
+                                conversationContext = '';
+                                pendingScript = null;
+                                pendingOvitoScript = null;
 
                                 // Start streaming simulation via WebSocket
                                 if (socket && socket.connected) {
-                                    console.log('📡 Emitting start_streaming_simulation to WebSocket server...');
                                     socket.emit('start_streaming_simulation', {
                                         script: data.script,
-                                        ovito_script: data.ovito_script  // Pass OVITO script to WebSocket handler
+                                        ovito_script: ovitoScript
                                     });
                                 } else {
-                                    console.warn('⚠️ WebSocket not available, falling back to batch simulation');
-                                    // Fallback to regular simulation
+                                    console.warn('WebSocket not available, falling back to batch simulation');
                                     addConversationMessage('System', 'WebSocket not connected, falling back to batch simulation', 'info');
                                 }
                                 break;
@@ -1911,6 +2009,7 @@
                                 if (data.thermo_data && Array.isArray(data.thermo_data)) {
                                     drawPlot(data.thermo_data);
                                 }
+                                showFeedbackPrompt(message);
                                 break;
 
                             case 'simulation_failed':
@@ -1918,7 +2017,10 @@
                                 break;
 
                             case 'script_ready':
-                                updateStatus('Script ready - add "run" to execute');
+                                updateStatus('Script ready');
+                                // Store the script so user can say "run" next
+                                pendingScript = data.script;
+                                pendingOvitoScript = data.ovito_script || null;
                                 break;
 
                             case 'needs_more_info':
