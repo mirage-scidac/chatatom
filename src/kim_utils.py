@@ -13,6 +13,11 @@ import requests
 import os
 from datetime import datetime
 import re
+import sys
+
+# Define absolute path to kim-api-collections-management
+# Assumes it is in the same directory as the python executable
+KIM_API_CMD = os.path.join(os.path.dirname(sys.executable), "kim-api-collections-management")
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +178,15 @@ def get_installed_kim_models() -> List[str]:
         List of installed model IDs
     """
     try:
+        if not os.path.exists(KIM_API_CMD):
+            logger.warning(f"KIM API command not found at {KIM_API_CMD}")
+            # Fallback to system path lookup if specific path fails
+            cmd = "kim-api-collections-management"
+        else:
+            cmd = KIM_API_CMD
+            
         result = subprocess.run(
-            ["kim-api-collections-management", "list"],
+            [cmd, "list"],
             capture_output=True,
             text=True,
             timeout=10
@@ -285,8 +297,13 @@ def install_and_verify_kim_model(model_id: str, timeout: int = 120) -> Tuple[boo
     try:
         # Install the model
         logger.info(f"Downloading and installing {model_id}...")
+        if not os.path.exists(KIM_API_CMD):
+            cmd = "kim-api-collections-management"
+        else:
+            cmd = KIM_API_CMD
+            
         result = subprocess.run(
-            ["kim-api-collections-management", "install", "user", model_id],
+            [cmd, "install", "user", model_id],
             capture_output=True,
             text=True,
             timeout=timeout
@@ -369,71 +386,105 @@ def install_user_selected_model(model_id: str) -> Tuple[bool, str]:
         return False, error_details
 
 
-def ensure_kim_model_available(element: str, model_id: Optional[str] = None) -> Tuple[bool, str, str]:
+def build_registry_context_for_command(user_command: str) -> str:
     """
-    Ensure a KIM model is available for the given element.
-    
-    DEPRECATED: Use install_user_selected_model() for the new two-step selection process.
-    
-    This is the legacy entry point that includes automatic fallback logic.
-    It will:
-    1. Use the provided model_id if given
-    2. Otherwise, find the best available model for the element
-    3. Install the model if not already installed
-    4. Verify the installation
-    
+    Build KIM registry context string for a user command.
+
+    Searches the user command for known element symbols and returns
+    a formatted string with available KIM models for that element,
+    suitable for including in LLM prompts.
+
     Args:
-        element: Chemical symbol of the element
-        model_id: Optional specific model ID to use
-        
+        user_command: Natural language command from user
+
     Returns:
-        Tuple of (success: bool, model_id: str, message: str)
+        Formatted registry context string, or empty string if no element found
     """
-    logger.info(f"Ensuring KIM model available for {element}")
-    
-    # If no model specified, find the best one
-    if model_id is None:
-        model_id = find_best_kim_model(element)
-        if model_id is None:
-            return False, "", f"No KIM models found for element {element}"
-    
-    # Check if model is already installed
-    if is_model_installed(model_id):
-        logger.info(f"Model {model_id} already available")
-        return True, model_id, "Model already installed"
-    
-    # Install and verify the model
-    success, message = install_and_verify_kim_model(model_id)
-    
-    if success:
-        return True, model_id, message
-    else:
-        # If installation failed, try to find an alternative from registry
-        logger.warning(f"Failed to install {model_id}, looking for alternatives...")
-        
-        registry_models = _get_models_from_registry(element)
-        for model_info in registry_models:
-            alt_model = model_info['id']
-            if alt_model != model_id:
-                logger.info(f"Trying alternative model: {alt_model}")
-                success, message = install_and_verify_kim_model(alt_model)
-                if success:
-                    return True, alt_model, f"Used alternative model: {message}"
-        
-        return False, model_id, f"All installation attempts failed: {message}"
+    registry_context = ""
+    lower_command = user_command.lower()
+
+    for element in ELEMENT_PROPERTIES.keys():
+        # Match chemical symbol as a standalone token to avoid false positives
+        # (e.g., 'ar' in 'Orchestrator')
+        import re
+        if re.search(rf"\b{element.lower()}\b", lower_command):
+            # Get models for this element from registry
+            potentials = read_registry()
+            element_models = [p for p in potentials if p['element'] == element]
+
+            if element_models:
+                registry_context = f"\n\nAVAILABLE KIM MODELS FOR {element} (from registry):\n"
+                downloaded_models = [m for m in element_models if m['downloaded']]
+                pending_models = [m for m in element_models if not m['downloaded']]
+
+                if downloaded_models:
+                    registry_context += "\nALREADY DOWNLOADED (Ready to use immediately):\n"
+                    for i, model in enumerate(downloaded_models, 1):
+                        registry_context += f"✅ {i}. {model['model_id']} ({model['type']})\n"
+                        registry_context += f"   → This model is installed and ready to go!\n"
+
+                if pending_models:
+                    registry_context += "\nAVAILABLE FOR DOWNLOAD:\n"
+                    for i, model in enumerate(pending_models, len(downloaded_models) + 1):
+                        registry_context += f"⬇️ {i}. {model['model_id']} ({model['type']})\n"
+            break
+
+    return registry_context
 
 
 # ============================================================================
 # Registry Management Functions
 # ============================================================================
 
+def _create_default_registry() -> bool:
+    """
+    Create the default registry file if it doesn't exist.
+    """
+    try:
+        content = """
+# KIM Potentials Registry
+
+This file tracks the status of KIM potentials used in the application.
+
+## Single Element Potentials
+
+| Element | Model ID | Type | Status | Last Checked | Description |
+| :---: | :--- | :---: | :---: | :---: | :--- |
+| Cu | EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006 | EAM | ⬇️ | - | Recommended for Copper |
+| Al | EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005 | EAM | ⬇️ | - | Recommended for Aluminum |
+| Ni | EAM_Dynamo_AcklandTichyVitek_1987_Ni__MO_977363131043_006 | EAM | ⬇️ | - | Recommended for Nickel |
+| Si | SW_StillingerWeber_1985_Si__MO_103435434588_006 | SW | ⬇️ | - | Recommended for Silicon |
+
+## Binary/Ternary Potentials
+
+| Elements | Model ID | Type | Status | Last Checked | Description |
+| :---: | :--- | :---: | :---: | :---: | :--- |
+| - | - | - | - | - | - |
+
+---
+**Last Updated:** 2025-12-08 09:00:00
+"""
+        with open(REGISTRY_FILE, 'w') as f:
+            f.write(content.strip())
+        logger.info(f"Created default registry file: {REGISTRY_FILE}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create default registry: {e}")
+        return False
+
+
 def read_registry() -> List[Dict[str, str]]:
+
     """
     Read the KIM potentials registry from the markdown file.
     
     Returns:
         List of dictionaries containing potential information
     """
+    if not os.path.exists(REGISTRY_FILE):
+        logger.info(f"Registry file {REGISTRY_FILE} not found, creating default...")
+        _create_default_registry()
+        
     if not os.path.exists(REGISTRY_FILE):
         logger.warning(f"Registry file {REGISTRY_FILE} not found")
         return []
@@ -512,6 +563,9 @@ def update_registry(model_id: str, downloaded: bool = True) -> bool:
     Returns:
         True if update was successful, False otherwise
     """
+    if not os.path.exists(REGISTRY_FILE):
+        _create_default_registry()
+
     if not os.path.exists(REGISTRY_FILE):
         logger.error(f"Registry file {REGISTRY_FILE} not found")
         return False
@@ -682,6 +736,9 @@ def add_potential_to_registry(element: str, model_id: str, model_type: str, desc
     Returns:
         True if successful, False otherwise
     """
+    if not os.path.exists(REGISTRY_FILE):
+        _create_default_registry()
+
     if not os.path.exists(REGISTRY_FILE):
         logger.error(f"Registry file {REGISTRY_FILE} not found")
         return False

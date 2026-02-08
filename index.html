@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,21 +13,112 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet" />
+    <script
+        src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css"
+        rel="stylesheet" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400..900&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
     <style>
+        :root {
+            --neon-blue: #60a5fa;
+            --neon-purple: #a78bfa;
+            --neon-pink: #f472b6;
+            --bg-dark: #0f172a;
+            --panel-bg: rgba(30, 41, 59, 0.7);
+            --border-color: rgba(148, 163, 184, 0.1);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            background-image:
+                radial-gradient(circle at 10% 20%, rgba(96, 165, 250, 0.1) 0%, transparent 20%),
+                radial-gradient(circle at 90% 80%, rgba(167, 139, 250, 0.1) 0%, transparent 20%);
+        }
+
+        .logo-text {
+            font-family: 'Orbitron', sans-serif;
+            background: linear-gradient(to right, var(--neon-blue), var(--neon-purple), var(--neon-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 4px rgba(139, 92, 246, 0.5));
+            letter-spacing: 2px;
+        }
+
+        /* Glassmorphism Panel */
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        /* Neon Button */
+        .btn-neon {
+            background: linear-gradient(135deg, var(--neon-blue), #3b82f6);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+        }
+
+        .btn-neon:hover {
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+            transform: translateY(-1px);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(30, 41, 59, 0.5);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+
         .typing-dots {
             display: inline-block;
         }
+
         .typing-dots::after {
             content: '...';
             animation: typing 1.5s infinite;
         }
+
         @keyframes typing {
-            0%, 20% { content: ''; }
-            40% { content: '.'; }
-            60% { content: '..'; }
-            80%, 100% { content: '...'; }
+
+            0%,
+            20% {
+                content: '';
+            }
+
+            40% {
+                content: '.';
+            }
+
+            60% {
+                content: '..';
+            }
+
+            80%,
+            100% {
+                content: '...';
+            }
         }
 
         /* Enhanced typography and readability */
@@ -43,7 +135,8 @@
             margin-bottom: 0;
         }
 
-        .agent-message ul, .agent-message ol {
+        .agent-message ul,
+        .agent-message ol {
             margin: 0.75rem 0;
             padding-left: 1.5rem;
         }
@@ -202,7 +295,7 @@
             margin-right: 0.5rem;
         }
 
-        .line-numbers-rows > span:before {
+        .line-numbers-rows>span:before {
             color: #6b7280;
         }
 
@@ -226,87 +319,119 @@
         }
     </style>
 </head>
+
 <body class="bg-gray-900 text-white h-screen overflow-hidden">
     <div class="container mx-auto p-4 h-full grid grid-rows-[auto_auto_1fr] gap-4">
-        <h1 class="text-3xl font-bold">ChatMD</h1>
-        
+        <h1 class="text-4xl font-bold logo-text mb-2">ChatMD</h1>
+
         <!-- Tab Navigation -->
-        <div class="flex gap-2 border-b border-gray-700">
-            <button id="chat-tab-btn" class="px-4 py-2 font-semibold border-b-2 border-blue-500 text-blue-500">
+        <div class="flex gap-2 border-b border-gray-700/50 mb-4">
+            <button id="chat-tab-btn"
+                class="px-6 py-3 font-semibold border-b-2 border-blue-500 text-blue-400 hover:text-blue-300 transition-colors">
                 Chat
             </button>
-            <button id="kim-tab-btn" class="px-4 py-2 font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200">
+            <button id="kim-tab-btn"
+                class="px-6 py-3 font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 transition-colors">
                 KIM Potentials
             </button>
         </div>
-        
+
         <!-- Chat Tab Content -->
         <div id="chat-tab-content" class="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
             <!-- Left column: Chat and Status -->
             <div class="flex flex-col gap-4 min-h-0">
                 <!-- Chat panel -->
-                <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr_auto] gap-2 flex-1 min-h-0">
-                    <h2 class="text-xl font-semibold">Chat</h2>
-                    <div id="chat-container" class="overflow-y-auto bg-gray-700 p-2 rounded min-h-0">
+                <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr_auto] gap-3 flex-1 min-h-0">
+                    <h2 class="text-xl font-orbitron font-semibold text-blue-400">Chat Interface</h2>
+                    <div id="chat-container"
+                        class="overflow-y-auto bg-black/40 p-4 rounded-lg min-h-0 border border-gray-700/30">
                         <!-- Chat messages will appear here -->
                     </div>
-                    <div class="flex">
-                        <input type="text" id="user-input" class="flex-grow bg-gray-600 text-white rounded-l-lg p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter your command...">
-                        <button id="send-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-r-lg">Send</button>
+                    <div class="flex gap-2">
+                        <input type="text" id="user-input"
+                            class="flex-grow bg-gray-800/50 text-white rounded-lg p-3 border border-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 placeholder-gray-500 transition-all font-mono"
+                            placeholder="Enter your command...">
+                        <button id="send-button"
+                            class="btn-neon text-white font-bold py-2 px-6 rounded-lg uppercase tracking-wider text-sm">Send</button>
                     </div>
                 </div>
-                
+
                 <!-- Status panel (only under chat) -->
-                <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
+                <div class="glass-panel p-4 rounded-xl">
                     <div class="flex items-center justify-between mb-2">
-                        <h2 class="text-xl font-semibold">Simulation Status</h2>
-                        <div id="connection-indicator" class="flex items-center text-sm">
-                            <div id="connection-dot" class="w-2 h-2 rounded-full bg-gray-500 mr-2"></div>
-                            <span id="connection-text">Connecting...</span>
+                        <h2 class="text-xl font-orbitron font-semibold text-blue-400">System Status</h2>
+                        <div id="connection-indicator"
+                            class="flex items-center text-sm bg-black/30 px-3 py-1 rounded-full border border-gray-700/50">
+                            <div id="connection-dot"
+                                class="w-2 h-2 rounded-full bg-gray-500 mr-2 shadow-[0_0_8px_rgba(107,114,128,0.5)]">
+                            </div>
+                            <span id="connection-text" class="font-mono">Connecting...</span>
                         </div>
                     </div>
-                    <div id="status-container" class="text-gray-300">
+                    <div id="status-container" class="text-gray-300 font-mono text-sm">
                         Ready to run simulations
                     </div>
                 </div>
             </div>
-            
+
             <!-- Right column: Thermodynamic plots and 3D visualization -->
             <div class="flex flex-col gap-4 min-h-0">
                 <!-- Thermodynamic plots -->
-                <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr] gap-2 flex-1 min-h-0">
-                    <h2 class="text-xl font-semibold">Thermodynamic Data</h2>
-                    <div id="plot-container" class="bg-gray-700 p-2 rounded overflow-y-auto min-h-0">
-                        <div id="plot-placeholder" class="text-gray-400 flex items-center justify-center h-full">
-                            Run a simulation to see thermodynamic data
+                <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr] gap-3 flex-1 min-h-0">
+                    <h2 class="text-xl font-orbitron font-semibold text-blue-400">Thermodynamics</h2>
+                    <div id="plot-container"
+                        class="bg-black/40 p-2 rounded-lg overflow-y-auto min-h-0 border border-gray-700/30">
+                        <div id="plot-placeholder"
+                            class="text-gray-500 flex flex-col items-center justify-center h-full gap-2 opacity-60">
+                            <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+                                    d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z">
+                                </path>
+                            </svg>
+                            <span class="font-mono text-sm">Waiting for simulation data...</span>
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- 3D Trajectory Visualization -->
-                <div class="bg-gray-800 p-4 rounded-lg shadow-lg grid grid-rows-[auto_1fr_auto] gap-2 flex-1 min-h-0">
-                    <h2 class="text-xl font-semibold">3D Trajectory Visualization</h2>
-                    <div id="viewer-container" class="bg-gray-700 p-2 rounded overflow-hidden min-h-0 relative">
-                        <div id="viewer-placeholder" class="text-gray-400 flex items-center justify-center h-full">
-                            Run a simulation to see 3D visualization
+                <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr_auto] gap-3 flex-1 min-h-0">
+                    <h2 class="text-xl font-orbitron font-semibold text-blue-400">3D Visualization</h2>
+                    <div id="viewer-container"
+                        class="bg-black/90 p-1 rounded-lg overflow-hidden min-h-0 relative border border-gray-700/30">
+                        <div id="viewer-placeholder"
+                            class="text-gray-500 flex flex-col items-center justify-center h-full gap-2 opacity-60">
+                            <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+                                    d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z">
+                                </path>
+                            </svg>
+                            <span class="font-mono text-sm">No visualization loaded</span>
                         </div>
                         <img id="trajectory-viewer" class="w-full h-full object-contain hidden" />
-                        <div id="loading-indicator" class="absolute inset-0 bg-gray-700 bg-opacity-75 flex items-center justify-center hidden">
+                        <div id="loading-indicator"
+                            class="absolute inset-0 bg-gray-700 bg-opacity-75 flex items-center justify-center hidden">
                             <div class="text-white">
-                                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
+                                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2">
+                                </div>
                                 Rendering frame...
                             </div>
                         </div>
                     </div>
                     <div id="frame-controls" class="flex items-center justify-between bg-gray-600 p-2 rounded">
                         <div class="flex items-center gap-2">
-                            <button id="play-pause-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded disabled:opacity-50" disabled>
+                            <button id="play-pause-btn"
+                                class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded disabled:opacity-50"
+                                disabled>
                                 ▶️ Play
                             </button>
-                            <button id="prev-frame-btn" class="bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded disabled:opacity-50" disabled>
+                            <button id="prev-frame-btn"
+                                class="bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded disabled:opacity-50"
+                                disabled>
                                 ⏮️
                             </button>
-                            <button id="next-frame-btn" class="bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded disabled:opacity-50" disabled>
+                            <button id="next-frame-btn"
+                                class="bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded disabled:opacity-50"
+                                disabled>
                                 ⏭️
                             </button>
                         </div>
@@ -329,7 +454,7 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- KIM Potentials Tab Content -->
         <div id="kim-tab-content" class="hidden min-h-0">
             <div class="bg-gray-800 p-6 rounded-lg shadow-lg h-full flex flex-col">
@@ -339,17 +464,20 @@
                         <button id="refresh-kim-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">
                             🔄 Refresh
                         </button>
-                        <button id="download-all-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">
+                        <button id="download-all-btn"
+                            class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">
                             ⬇️ Download All Recommended
                         </button>
                     </div>
                 </div>
-                
+
                 <!-- Search Bar -->
                 <div class="mb-4">
-                    <input type="text" id="kim-search" class="w-full bg-gray-700 text-white rounded p-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Search by element or model ID...">
+                    <input type="text" id="kim-search"
+                        class="w-full bg-gray-700 text-white rounded p-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Search by element or model ID...">
                 </div>
-                
+
                 <!-- Registry Statistics -->
                 <div id="kim-stats" class="grid grid-cols-4 gap-4 mb-4">
                     <div class="bg-gray-700 p-3 rounded text-center">
@@ -369,7 +497,7 @@
                         <div class="text-sm text-gray-400">Elements</div>
                     </div>
                 </div>
-                
+
                 <!-- Potentials Table -->
                 <div class="flex-1 overflow-auto bg-gray-700 rounded">
                     <table class="w-full text-left">
@@ -391,7 +519,7 @@
                         </tbody>
                     </table>
                 </div>
-                
+
                 <!-- Download Progress -->
                 <div id="download-progress" class="hidden mt-4 bg-gray-700 p-4 rounded">
                     <div class="flex items-center justify-between mb-2">
@@ -399,7 +527,8 @@
                         <span class="text-sm text-gray-400" id="download-model-id"></span>
                     </div>
                     <div class="w-full bg-gray-600 rounded-full h-2">
-                        <div id="download-progress-bar" class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        <div id="download-progress-bar" class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                            style="width: 0%"></div>
                     </div>
                 </div>
             </div>
@@ -412,85 +541,88 @@
         let streamingData = [];
         let streamingGroups = [];
         let isStreamingSimulation = false;
-        
+
         // Initialize Socket.IO connection
         function initializeSocket() {
             socket = io();
-            
-            socket.on('connect', function() {
+
+            socket.on('connect', function () {
                 console.log('✅ WebSocket: Connected to server via WebSocket');
                 updateStatus('🔗 WebSocket connected');
                 updateConnectionStatus('connected');
             });
-            
-            socket.on('disconnect', function() {
+
+            socket.on('disconnect', function () {
                 console.log('❌ WebSocket: Disconnected from server');
                 updateStatus('🔌 WebSocket disconnected');
                 updateConnectionStatus('disconnected');
             });
-            
-            socket.on('simulation_started', function(data) {
+
+            socket.on('simulation_started', function (data) {
                 console.log('🚀 WebSocket: Streaming simulation started:', data);
                 updateStatus('🚀 Streaming simulation started...');
                 isStreamingSimulation = true;
                 streamingData = [];
                 initializeStreamingPlots();
             });
-            
-            socket.on('thermo_data_point', function(dataPoint) {
+
+            socket.on('thermo_data_point', function (dataPoint) {
                 console.log('📊 WebSocket: New thermo data point received:', dataPoint);
                 console.log(`📈 Data flow: Point ${streamingData.length + 1}, Step: ${dataPoint.step || 'unknown'}`);
                 streamingData.push(dataPoint);
                 updateStreamingPlots(dataPoint);
             });
-            
-            socket.on('simulation_complete', function(data) {
+
+            socket.on('simulation_complete', function (data) {
                 console.log('✅ WebSocket: Streaming simulation completed:', data);
                 console.log(`📊 Final stats: ${data.total_points} total data points received`);
                 updateStatus(`✅ Streaming simulation completed! Total points: ${data.total_points}`);
                 isStreamingSimulation = false;
-                
+
                 // Add completion message to chat
                 addConversationMessage('System', data.message, 'success');
+
+                // Show feedback prompt
+                showFeedbackPrompt(data.message || '');
             });
-            
-            socket.on('simulation_error', function(data) {
+
+            socket.on('simulation_error', function (data) {
                 console.error('❌ WebSocket: Streaming simulation error:', data);
                 updateStatus('❌ Streaming simulation failed');
                 isStreamingSimulation = false;
-                
+
                 // Add error message to chat
                 addConversationMessage('System', data.message, 'error');
             });
-            
-            socket.on('error', function(data) {
+
+            socket.on('error', function (data) {
                 console.error('Socket error:', data);
                 addConversationMessage('System', data.message, 'error');
             });
         }
-        
+
         // Initialize streaming plots with empty data
         function initializeStreamingPlots() {
             // Clear existing plots
             clearPlots();
-            
+
             // Hide placeholder if it exists
             const placeholder = document.getElementById('plot-placeholder');
             if (placeholder) {
                 placeholder.style.display = 'none';
             }
-            
+
             // Initialize with empty groups - will be populated when first data arrives
             streamingGroups = [];
-            
+
             updateStatus('Live plots initialized - waiting for data...');
         }
-        
+
         // Create an empty streaming chart
         function createStreamingChart(group, index) {
             const canvas = createPlotCanvas(group, index);
             const ctx = canvas.getContext('2d');
-            
+
             // Create datasets for this group
             const datasets = [];
             const scales = {
@@ -509,11 +641,11 @@
                     }
                 }
             };
-            
+
             group.properties.forEach((property, propIndex) => {
                 const color = group.colors[propIndex] || 'rgb(255, 255, 255)';
                 const yAxisID = propIndex === 0 ? 'y' : 'y1';
-                
+
                 datasets.push({
                     label: property.charAt(0).toUpperCase() + property.slice(1),
                     data: [],
@@ -522,7 +654,7 @@
                     yAxisID: yAxisID,
                     tension: 0.1
                 });
-                
+
                 // Create y-axis configuration
                 scales[yAxisID] = {
                     type: 'linear',
@@ -542,7 +674,7 @@
                     }
                 };
             });
-            
+
             // Create the chart
             const chart = new Chart(ctx, {
                 type: 'line',
@@ -571,39 +703,39 @@
                     scales: scales
                 }
             });
-            
+
             thermoCharts.push(chart);
         }
-        
+
         // Update streaming plots with new data point
         function updateStreamingPlots(dataPoint) {
             if (!isStreamingSimulation) return;
-            
+
             // If this is the first data point, initialize the groups using the same logic as batch mode
             if (streamingData.length === 1 && streamingGroups.length === 0) {
                 // Use the same grouping logic as batch mode
                 const availableProps = identifyAvailableProperties([dataPoint]);
                 streamingGroups = groupAvailableProperties(availableProps);
-                
+
                 // Create charts for each group
                 streamingGroups.forEach((group, index) => {
                     createStreamingChart(group, index);
                 });
-                
+
                 console.log('Streaming plots initialized with groups:', streamingGroups);
             }
-            
+
             if (thermoCharts.length === 0) return;
-            
+
             const step = dataPoint.step || streamingData.length;
-            
+
             streamingGroups.forEach((group, groupIndex) => {
                 const chart = thermoCharts[groupIndex];
                 if (!chart) return;
-                
+
                 // Add new step to labels
                 chart.data.labels.push(step);
-                
+
                 // Update each dataset in this group
                 group.properties.forEach((property, propIndex) => {
                     const dataset = chart.data.datasets[propIndex];
@@ -614,7 +746,7 @@
                         dataset.data.push(value);
                     }
                 });
-                
+
                 // Limit data points to prevent memory issues (keep last 1000 points)
                 const maxPoints = 1000;
                 if (chart.data.labels.length > maxPoints) {
@@ -623,15 +755,15 @@
                         dataset.data.shift();
                     });
                 }
-                
+
                 // Update the chart
                 chart.update('none'); // 'none' mode for fastest updates
             });
-            
+
             // Update status with current data point count
             updateStatus(`Live simulation: ${streamingData.length} data points received`);
         }
-        
+
         // Define thermodynamic property groups
         const propertyGroups = {
             energy: {
@@ -661,7 +793,7 @@
         };
 
         document.getElementById('send-button').addEventListener('click', sendMessage);
-        document.getElementById('user-input').addEventListener('keypress', function(e) {
+        document.getElementById('user-input').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {
                 sendMessage();
             }
@@ -671,7 +803,7 @@
             const chatContainer = document.getElementById('chat-container');
             const messageElement = document.createElement('div');
             messageElement.classList.add('mb-3', 'p-2', 'rounded');
-            
+
             // Check if this is a user message
             if (sender === 'You') {
                 messageElement.classList.add('bg-purple-800', 'border-l-4', 'border-purple-400');
@@ -689,7 +821,7 @@
                 messageElement.classList.add('mb-2');
                 messageElement.innerHTML = `<p><strong>${sender}:</strong> ${message}</p>`;
             }
-            
+
             chatContainer.appendChild(messageElement);
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
@@ -698,12 +830,12 @@
             const chatContainer = document.getElementById('chat-container');
             const messageElement = document.createElement('div');
             messageElement.classList.add('mb-3', 'p-2', 'rounded');
-            
+
             // Color coding for different agents
             let colorClass = '';
             let agentIcon = '';
-            
-            switch(agent) {
+
+            switch (agent) {
                 case 'Orchestrator':
                     colorClass = 'bg-blue-800 border-l-4 border-blue-400';
                     agentIcon = '🎯';
@@ -736,9 +868,9 @@
                     colorClass = 'bg-gray-700';
                     agentIcon = '💬';
             }
-            
+
             messageElement.classList.add(...colorClass.split(' '));
-            
+
             // Format content based on type
             let formattedContent = content;
             if (type === 'script') {
@@ -747,7 +879,7 @@
                 // Parse Markdown to HTML
                 formattedContent = marked.parse(content);
             }
-            
+
             messageElement.innerHTML = `
                 <div class="flex items-start">
                     <span class="mr-2 text-lg">${agentIcon}</span>
@@ -757,7 +889,7 @@
                     </div>
                 </div>
             `;
-            
+
             chatContainer.appendChild(messageElement);
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
@@ -770,8 +902,8 @@
         function updateConnectionStatus(status) {
             const dot = document.getElementById('connection-dot');
             const text = document.getElementById('connection-text');
-            
-            switch(status) {
+
+            switch (status) {
                 case 'connected':
                     dot.className = 'w-2 h-2 rounded-full bg-green-500 mr-2';
                     text.textContent = 'Connected';
@@ -796,7 +928,7 @@
                 }
             });
             thermoCharts = [];
-            
+
             // Clear plot container
             const plotContainer = document.getElementById('plot-container');
             plotContainer.innerHTML = '';
@@ -804,10 +936,10 @@
 
         function identifyAvailableProperties(thermoData) {
             if (!thermoData || thermoData.length === 0) return [];
-            
+
             const sampleData = thermoData[0];
             const availableProps = [];
-            
+
             // Map common property names to standardized names
             const propertyMap = {
                 'temp': 'Temp',
@@ -830,7 +962,7 @@
                 'pxz': 'Pxz',
                 'pyz': 'Pyz'
             };
-            
+
             // Check which properties are available in the data
             for (const [key, standardName] of Object.entries(propertyMap)) {
                 if (key in sampleData && sampleData[key] !== undefined && sampleData[key] !== null) {
@@ -839,37 +971,37 @@
                     }
                 }
             }
-            
+
             return availableProps;
         }
 
         function groupAvailableProperties(availableProps) {
             const groups = [];
-            
+
             // Check each property group and see what's available
             for (const [groupKey, groupConfig] of Object.entries(propertyGroups)) {
-                const availableInGroup = availableProps.filter(prop => 
+                const availableInGroup = availableProps.filter(prop =>
                     groupConfig.properties.includes(prop)
                 );
-                
+
                 if (availableInGroup.length > 0) {
                     // Split into chunks of max 2 properties per plot
                     for (let i = 0; i < availableInGroup.length; i += 2) {
                         const chunk = availableInGroup.slice(i, i + 2);
                         groups.push({
-                            name: availableInGroup.length > 2 ? 
-                                `${groupConfig.name} (${Math.floor(i/2) + 1})` : 
+                            name: availableInGroup.length > 2 ?
+                                `${groupConfig.name} (${Math.floor(i / 2) + 1})` :
                                 groupConfig.name,
                             properties: chunk,
                             colors: groupConfig.colors.slice(i, i + 2),
-                            units: Array.isArray(groupConfig.units) ? 
-                                groupConfig.units.slice(i, i + 2) : 
+                            units: Array.isArray(groupConfig.units) ?
+                                groupConfig.units.slice(i, i + 2) :
                                 [groupConfig.units, groupConfig.units]
                         });
                     }
                 }
             }
-            
+
             return groups;
         }
 
@@ -889,9 +1021,9 @@
                 'Pxz': ['pxz'],
                 'Pyz': ['pyz']
             };
-            
+
             const possibleKeys = propertyMap[propertyName] || [propertyName.toLowerCase()];
-            
+
             return thermoData.map(dataPoint => {
                 for (const key of possibleKeys) {
                     if (key in dataPoint && dataPoint[key] !== undefined && dataPoint[key] !== null) {
@@ -904,31 +1036,31 @@
 
         function createPlotCanvas(group, index) {
             const plotContainer = document.getElementById('plot-container');
-            
+
             // Create plot wrapper
             const plotWrapper = document.createElement('div');
             plotWrapper.className = 'mb-4 bg-gray-800 p-3 rounded';
             plotWrapper.style.height = '300px';
-            
+
             // Create canvas
             const canvas = document.createElement('canvas');
             canvas.id = `chart-${index}`;
             canvas.style.height = '100%';
             canvas.style.width = '100%';
-            
+
             plotWrapper.appendChild(canvas);
             plotContainer.appendChild(plotWrapper);
-            
+
             return canvas;
         }
 
         function drawGroupedPlot(thermoData, group, index) {
             const canvas = createPlotCanvas(group, index);
             const ctx = canvas.getContext('2d');
-            
+
             // Extract time steps
             const steps = thermoData.map(dataPoint => dataPoint.step || 0);
-            
+
             // Create datasets for this group
             const datasets = [];
             const scales = {
@@ -947,12 +1079,12 @@
                     }
                 }
             };
-            
+
             group.properties.forEach((property, propIndex) => {
                 const data = extractPropertyData(thermoData, property);
                 const color = group.colors[propIndex] || 'rgb(255, 255, 255)';
                 const yAxisID = propIndex === 0 ? 'y' : 'y1';
-                
+
                 datasets.push({
                     label: property,
                     data: data,
@@ -961,7 +1093,7 @@
                     yAxisID: yAxisID,
                     tension: 0.1
                 });
-                
+
                 // Create y-axis configuration
                 scales[yAxisID] = {
                     type: 'linear',
@@ -981,7 +1113,7 @@
                     }
                 };
             });
-            
+
             // Create the chart
             const chart = new Chart(ctx, {
                 type: 'line',
@@ -1007,7 +1139,7 @@
                     scales: scales
                 }
             });
-            
+
             thermoCharts.push(chart);
         }
 
@@ -1053,7 +1185,10 @@
         let isStreaming = false;
         let conversationContext = '';  // Store context for phase 2 conversations
         let executionIntent = false;  // Track if original request implied execution
+        let pendingScript = null;  // Holds LAMMPS script when ready but not yet executed
+        let pendingOvitoScript = null;  // Holds OVITO script when ready but not yet executed
         let messageCounter = 0;  // Counter to ensure unique message IDs
+        let lastSimulationSummary = '';  // Track what was simulated for feedback
 
         // 3D Trajectory Viewer Variables
         let trajectoryFrames = [];
@@ -1083,14 +1218,14 @@
 
         function handleTrajectoryFrame(frameData) {
             console.log('📸 Received trajectory frame:', frameData.frame_number);
-            
+
             // IMPORTANT: Enforce 100-frame limit on frontend as safety check
             const MAX_FRAMES = 100;
             if (trajectoryFrames.length >= MAX_FRAMES) {
                 console.warn(`⚠️ Frame limit reached (${MAX_FRAMES} frames). Ignoring additional frames.`);
                 return;
             }
-            
+
             // Add frame to collection
             trajectoryFrames.push({
                 image: frameData.image_data,  // Base64 encoded image
@@ -1100,7 +1235,7 @@
 
             // Update UI
             updateFrameCounter();
-            
+
             // Show the first frame immediately
             if (trajectoryFrames.length === 1) {
                 showTrajectoryViewer();
@@ -1113,7 +1248,7 @@
                 currentFrameIndex = trajectoryFrames.length - 1;
                 displayFrame(currentFrameIndex);
             }
-            
+
             // Log when approaching limit
             if (trajectoryFrames.length === MAX_FRAMES) {
                 console.log(`✅ Reached maximum frame limit (${MAX_FRAMES} frames)`);
@@ -1123,10 +1258,10 @@
         function handleTrajectoryComplete(data) {
             console.log('✅ Trajectory rendering complete:', data);
             updateStatus(`Trajectory visualization complete: ${trajectoryFrames.length} frames`);
-            
+
             // Enable all controls
             enableTrajectoryControls();
-            
+
             // Auto-play if we have frames
             if (trajectoryFrames.length > 1) {
                 setTimeout(() => {
@@ -1138,7 +1273,7 @@
         function showTrajectoryViewer() {
             const placeholder = document.getElementById('viewer-placeholder');
             const viewer = document.getElementById('trajectory-viewer');
-            
+
             placeholder.style.display = 'none';
             viewer.classList.remove('hidden');
         }
@@ -1146,10 +1281,10 @@
         function hideTrajectoryViewer() {
             const placeholder = document.getElementById('viewer-placeholder');
             const viewer = document.getElementById('trajectory-viewer');
-            
+
             placeholder.style.display = 'flex';
             viewer.classList.add('hidden');
-            
+
             // Reset state
             trajectoryFrames = [];
             currentFrameIndex = 0;
@@ -1158,17 +1293,17 @@
                 clearInterval(playbackInterval);
                 playbackInterval = null;
             }
-            
+
             disableTrajectoryControls();
             updateFrameCounter();
         }
 
         function displayFrame(frameIndex) {
             if (frameIndex < 0 || frameIndex >= trajectoryFrames.length) return;
-            
+
             const viewer = document.getElementById('trajectory-viewer');
             const frame = trajectoryFrames[frameIndex];
-            
+
             viewer.src = `data:image/png;base64,${frame.image}`;
             currentFrameIndex = frameIndex;
             updateFrameCounter();
@@ -1177,7 +1312,7 @@
         function updateFrameCounter() {
             const frameNumber = document.getElementById('frame-number');
             const totalFrames = document.getElementById('total-frames');
-            
+
             frameNumber.textContent = trajectoryFrames.length > 0 ? currentFrameIndex + 1 : 0;
             totalFrames.textContent = trajectoryFrames.length;
         }
@@ -1186,7 +1321,7 @@
             const playPauseBtn = document.getElementById('play-pause-btn');
             const prevFrameBtn = document.getElementById('prev-frame-btn');
             const nextFrameBtn = document.getElementById('next-frame-btn');
-            
+
             playPauseBtn.disabled = false;
             prevFrameBtn.disabled = false;
             nextFrameBtn.disabled = false;
@@ -1196,7 +1331,7 @@
             const playPauseBtn = document.getElementById('play-pause-btn');
             const prevFrameBtn = document.getElementById('prev-frame-btn');
             const nextFrameBtn = document.getElementById('next-frame-btn');
-            
+
             playPauseBtn.disabled = true;
             prevFrameBtn.disabled = true;
             nextFrameBtn.disabled = true;
@@ -1213,13 +1348,13 @@
 
         function startPlayback() {
             if (trajectoryFrames.length <= 1) return;
-            
+
             isPlaying = true;
             const playPauseBtn = document.getElementById('play-pause-btn');
             playPauseBtn.textContent = '⏸️ Pause';
-            
+
             const frameDelay = 1000 / playbackSpeed; // Base delay of 1 second per frame
-            
+
             playbackInterval = setInterval(() => {
                 currentFrameIndex = (currentFrameIndex + 1) % trajectoryFrames.length;
                 displayFrame(currentFrameIndex);
@@ -1230,7 +1365,7 @@
             isPlaying = false;
             const playPauseBtn = document.getElementById('play-pause-btn');
             playPauseBtn.textContent = '▶️ Play';
-            
+
             if (playbackInterval) {
                 clearInterval(playbackInterval);
                 playbackInterval = null;
@@ -1239,7 +1374,7 @@
 
         function previousFrame() {
             if (trajectoryFrames.length === 0) return;
-            
+
             stopPlayback();
             currentFrameIndex = (currentFrameIndex - 1 + trajectoryFrames.length) % trajectoryFrames.length;
             displayFrame(currentFrameIndex);
@@ -1247,7 +1382,7 @@
 
         function nextFrame() {
             if (trajectoryFrames.length === 0) return;
-            
+
             stopPlayback();
             currentFrameIndex = (currentFrameIndex + 1) % trajectoryFrames.length;
             displayFrame(currentFrameIndex);
@@ -1256,7 +1391,7 @@
         function updatePlaybackSpeed() {
             const speedSelect = document.getElementById('playback-speed');
             playbackSpeed = parseFloat(speedSelect.value);
-            
+
             // If currently playing, restart with new speed
             if (isPlaying) {
                 stopPlayback();
@@ -1279,11 +1414,11 @@
             const typingElement = document.createElement('div');
             typingElement.classList.add('mb-3', 'p-2', 'rounded');
             typingElement.id = `typing-${agent}`;
-            
+
             let colorClass = '';
             let agentIcon = '';
-            
-            switch(agent) {
+
+            switch (agent) {
                 case 'Orchestrator':
                     colorClass = 'bg-blue-800 border-l-4 border-blue-400';
                     agentIcon = '🎯';
@@ -1301,7 +1436,7 @@
                     agentIcon = 'ℹ️';
                     break;
             }
-            
+
             typingElement.classList.add(...colorClass.split(' '));
             typingElement.innerHTML = `
                 <div class="flex items-start">
@@ -1314,7 +1449,7 @@
                     </div>
                 </div>
             `;
-            
+
             chatContainer.appendChild(typingElement);
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
@@ -1330,7 +1465,7 @@
         function createCodeBlock(code, title = 'Generated Code', language = 'python') {
             const codeBlockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
             const escapedCode = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            
+
             return `
                 <div class="code-block-container">
                     <div class="code-block-header">
@@ -1354,13 +1489,13 @@
         function copyCodeToClipboard(codeBlockId, button) {
             const codeElement = document.getElementById(codeBlockId);
             const code = codeElement.textContent;
-            
+
             navigator.clipboard.writeText(code).then(() => {
                 // Visual feedback
                 const originalHTML = button.innerHTML;
                 button.classList.add('copied');
                 button.innerHTML = '<span>✓</span><span>Copied!</span>';
-                
+
                 setTimeout(() => {
                     button.classList.remove('copied');
                     button.innerHTML = originalHTML;
@@ -1376,27 +1511,27 @@
             if (content === undefined || content === null) {
                 content = '';
             }
-            
+
             // Use agent name as key for current streaming session
             const sessionKey = `${agent}-${messageType || 'default'}`;
-            
+
             // Check if we already have a message for this agent in this session
             let messageElement = document.getElementById(`current-${sessionKey}`);
             let messageId = `current-${sessionKey}`;
-            
+
             if (!messageElement) {
                 // Create new message element
                 messageCounter++;
-                
+
                 const chatContainer = document.getElementById('chat-container');
                 messageElement = document.createElement('div');
                 messageElement.classList.add('mb-3', 'p-2', 'rounded');
                 messageElement.id = messageId;
-                
+
                 let colorClass = '';
                 let agentIcon = '';
-                
-                switch(agent) {
+
+                switch (agent) {
                     case 'Orchestrator':
                         colorClass = 'bg-blue-800 border-l-4 border-blue-400';
                         agentIcon = '🎯';
@@ -1425,7 +1560,7 @@
                         colorClass = 'bg-gray-700';
                         agentIcon = '💬';
                 }
-                
+
                 messageElement.classList.add(...colorClass.split(' '));
                 messageElement.innerHTML = `
                     <div class="flex items-start">
@@ -1436,19 +1571,19 @@
                         </div>
                     </div>
                 `;
-                
+
                 chatContainer.appendChild(messageElement);
-                
+
                 // Initialize the content accumulator
                 if (!currentAgentMessages[sessionKey]) {
                     currentAgentMessages[sessionKey] = '';
                 }
             }
-            
+
             // Append content to existing message
             currentAgentMessages[sessionKey] += content;
             const contentElement = document.getElementById(`content-${messageId}`);
-            
+
             if (contentElement) {
                 // Format content based on type
                 let formattedContent = currentAgentMessages[sessionKey] || '';
@@ -1456,7 +1591,7 @@
                     // Determine script type and title
                     let title = 'Generated Script';
                     let language = 'python';
-                    
+
                     if (formattedContent.includes('from ovito') || formattedContent.includes('import ovito')) {
                         title = 'OVITO Visualization Script';
                         language = 'python';
@@ -1464,7 +1599,7 @@
                         title = 'LAMMPS Simulation Script';
                         language = 'lammps';
                     }
-                    
+
                     formattedContent = createCodeBlock(formattedContent, title, language);
                 } else {
                     // Parse Markdown to HTML
@@ -1472,13 +1607,13 @@
                 }
 
                 contentElement.innerHTML = formattedContent;
-                
+
                 // Apply syntax highlighting to any new code blocks
                 if (messageType === 'script' && typeof Prism !== 'undefined') {
                     Prism.highlightAllUnder(contentElement);
                 }
             }
-            
+
             // Auto-scroll
             const chatContainer = document.getElementById('chat-container');
             chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -1487,14 +1622,14 @@
         // KIM Potentials Tab Variables
         let kimPotentials = [];
         let filteredPotentials = [];
-        
+
         // Tab Switching Functions
         function switchToTab(tabName) {
             const chatTab = document.getElementById('chat-tab-content');
             const kimTab = document.getElementById('kim-tab-content');
             const chatTabBtn = document.getElementById('chat-tab-btn');
             const kimTabBtn = document.getElementById('kim-tab-btn');
-            
+
             if (tabName === 'chat') {
                 chatTab.classList.remove('hidden');
                 kimTab.classList.add('hidden');
@@ -1509,18 +1644,18 @@
                 kimTabBtn.classList.remove('border-transparent', 'text-gray-400');
                 chatTabBtn.classList.remove('border-blue-500', 'text-blue-500');
                 chatTabBtn.classList.add('border-transparent', 'text-gray-400');
-                
+
                 // Load KIM potentials when switching to tab
                 loadKimPotentials();
             }
         }
-        
+
         // KIM Potentials Functions
         async function loadKimPotentials() {
             try {
                 const response = await fetch('/api/kim-potentials/list');
                 const data = await response.json();
-                
+
                 if (data.success) {
                     kimPotentials = data.potentials;
                     filteredPotentials = kimPotentials;
@@ -1535,27 +1670,27 @@
                 showKimError('Error loading potentials');
             }
         }
-        
+
         function updateKimStats(stats) {
             document.getElementById('total-potentials').textContent = stats.total || 0;
             document.getElementById('downloaded-potentials').textContent = stats.downloaded || 0;
             document.getElementById('pending-potentials').textContent = stats.pending || 0;
             document.getElementById('unique-elements').textContent = stats.unique_elements || 0;
         }
-        
+
         function renderKimTable() {
             const tbody = document.getElementById('kim-table-body');
-            
+
             if (filteredPotentials.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-gray-400">No potentials found</td></tr>';
                 return;
             }
-            
+
             tbody.innerHTML = filteredPotentials.map(potential => {
                 const statusIcon = potential.downloaded ? '✅' : '⬇️';
                 const statusClass = potential.downloaded ? 'text-green-400' : 'text-yellow-400';
                 const downloadDate = potential.download_date || '-';
-                
+
                 return `
                     <tr class="border-b border-gray-600 hover:bg-gray-600">
                         <td class="p-3">${potential.element}</td>
@@ -1565,91 +1700,91 @@
                         <td class="p-3 text-sm">${downloadDate}</td>
                         <td class="p-3 text-sm text-gray-300">${potential.description}</td>
                         <td class="p-3">
-                            ${!potential.downloaded ? 
-                                `<button onclick="downloadKimPotential('${potential.model_id}')" 
+                            ${!potential.downloaded ?
+                        `<button onclick="downloadKimPotential('${potential.model_id}')" 
                                     class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm">
                                     Download
-                                </button>` : 
-                                `<span class="text-green-400 text-sm">Installed</span>`
-                            }
+                                </button>` :
+                        `<span class="text-green-400 text-sm">Installed</span>`
+                    }
                         </td>
                     </tr>
                 `;
             }).join('');
         }
-        
+
         function filterKimPotentials(searchTerm) {
             const term = searchTerm.toLowerCase();
-            filteredPotentials = kimPotentials.filter(p => 
+            filteredPotentials = kimPotentials.filter(p =>
                 p.element.toLowerCase().includes(term) ||
                 p.model_id.toLowerCase().includes(term) ||
                 p.description.toLowerCase().includes(term)
             );
             renderKimTable();
         }
-        
+
         function downloadKimPotential(modelId) {
             if (!socket || !socket.connected) {
                 alert('WebSocket not connected. Please refresh the page.');
                 return;
             }
-            
+
             showDownloadProgress(modelId);
             socket.emit('download_kim_potential', { model_id: modelId });
         }
-        
+
         function downloadAllRecommended() {
             if (!socket || !socket.connected) {
                 alert('WebSocket not connected. Please refresh the page.');
                 return;
             }
-            
+
             showDownloadProgress('Initializing...');
             socket.emit('initialize_recommended_potentials', {});
         }
-        
+
         function showDownloadProgress(modelId) {
             const progressDiv = document.getElementById('download-progress');
             const statusSpan = document.getElementById('download-status');
             const modelIdSpan = document.getElementById('download-model-id');
             const progressBar = document.getElementById('download-progress-bar');
-            
+
             progressDiv.classList.remove('hidden');
             statusSpan.textContent = 'Downloading...';
             modelIdSpan.textContent = modelId;
             progressBar.style.width = '50%';
         }
-        
+
         function hideDownloadProgress() {
             const progressDiv = document.getElementById('download-progress');
             progressDiv.classList.add('hidden');
         }
-        
+
         function updateDownloadProgress(status, modelId, progress) {
             const statusSpan = document.getElementById('download-status');
             const modelIdSpan = document.getElementById('download-model-id');
             const progressBar = document.getElementById('download-progress-bar');
-            
+
             statusSpan.textContent = status;
             if (modelId) modelIdSpan.textContent = modelId;
             if (progress !== undefined) progressBar.style.width = progress + '%';
         }
-        
+
         function showKimError(message) {
             const tbody = document.getElementById('kim-table-body');
             tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-red-400">${message}</td></tr>`;
         }
-        
+
         // Initialize KIM WebSocket listeners
         function initializeKimWebSocket() {
             if (!socket) return;
-            
-            socket.on('kim_download_started', function(data) {
+
+            socket.on('kim_download_started', function (data) {
                 console.log('KIM download started:', data);
                 showDownloadProgress(data.model_id);
             });
-            
-            socket.on('kim_download_complete', function(data) {
+
+            socket.on('kim_download_complete', function (data) {
                 console.log('KIM download complete:', data);
                 updateDownloadProgress('Download complete!', data.model_id, 100);
                 setTimeout(() => {
@@ -1657,19 +1792,19 @@
                     loadKimPotentials(); // Reload to update status
                 }, 2000);
             });
-            
-            socket.on('kim_download_error', function(data) {
+
+            socket.on('kim_download_error', function (data) {
                 console.error('KIM download error:', data);
                 updateDownloadProgress('Error: ' + data.error, data.model_id, 0);
                 setTimeout(hideDownloadProgress, 3000);
             });
-            
-            socket.on('kim_init_progress', function(data) {
+
+            socket.on('kim_init_progress', function (data) {
                 console.log('KIM init progress:', data);
                 updateDownloadProgress(data.status, data.current_model, data.progress);
             });
-            
-            socket.on('kim_init_complete', function(data) {
+
+            socket.on('kim_init_complete', function (data) {
                 console.log('KIM init complete:', data);
                 updateDownloadProgress('Initialization complete!', '', 100);
                 setTimeout(() => {
@@ -1678,23 +1813,117 @@
                 }, 2000);
             });
         }
-        
+
         // Initialize the application when page loads
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', function () {
             initializeSocket();
             initializeTrajectoryViewer();
             initializeKimWebSocket();
             updateStatus('Initializing connection...');
-            
+
             // Tab switching event listeners
             document.getElementById('chat-tab-btn').addEventListener('click', () => switchToTab('chat'));
             document.getElementById('kim-tab-btn').addEventListener('click', () => switchToTab('kim'));
-            
+
             // KIM tab event listeners
             document.getElementById('refresh-kim-btn').addEventListener('click', loadKimPotentials);
             document.getElementById('download-all-btn').addEventListener('click', downloadAllRecommended);
             document.getElementById('kim-search').addEventListener('input', (e) => filterKimPotentials(e.target.value));
         });
+
+        function showFeedbackPrompt(summary) {
+            lastSimulationSummary = summary || '';
+            const chatContainer = document.getElementById('chat-container');
+            const feedbackElement = document.createElement('div');
+            feedbackElement.classList.add('mb-3', 'p-3', 'rounded', 'bg-indigo-900', 'border-l-4', 'border-indigo-400');
+            feedbackElement.id = 'feedback-prompt';
+
+            feedbackElement.innerHTML = `
+                <div class="flex items-start">
+                    <span class="mr-2 text-lg">💬</span>
+                    <div class="flex-1">
+                        <strong class="text-white">Feedback:</strong>
+                        <div class="mt-1 text-gray-200 text-sm mb-2">How did the simulation turn out? Report any issues to help improve future runs.</div>
+                        <div class="flex gap-2">
+                            <input type="text" id="feedback-input"
+                                class="flex-grow bg-gray-800/50 text-white rounded p-2 border border-gray-600 focus:outline-none focus:border-indigo-400 text-sm"
+                                placeholder="e.g., atom deletion didn't work, visualization was wrong...">
+                            <button onclick="submitFeedback()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm">Submit</button>
+                            <button onclick="dismissFeedback()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded text-sm">Skip</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            chatContainer.appendChild(feedbackElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function dismissFeedback() {
+            const feedbackPrompt = document.getElementById('feedback-prompt');
+            if (feedbackPrompt) {
+                feedbackPrompt.remove();
+            }
+        }
+
+        async function submitFeedback() {
+            const feedbackInput = document.getElementById('feedback-input');
+            if (!feedbackInput) return;
+
+            const feedback = feedbackInput.value.trim();
+            if (!feedback) return;
+
+            // Replace prompt with a "sending..." message
+            const feedbackPrompt = document.getElementById('feedback-prompt');
+            if (feedbackPrompt) {
+                feedbackPrompt.innerHTML = `
+                    <div class="flex items-start">
+                        <span class="mr-2 text-lg">💬</span>
+                        <div class="flex-1">
+                            <strong class="text-white">Feedback:</strong>
+                            <div class="mt-1 text-gray-300 text-sm">Saving feedback...</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            try {
+                const response = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        feedback: feedback,
+                        simulation_summary: lastSimulationSummary
+                    })
+                });
+                const result = await response.json();
+
+                if (feedbackPrompt) {
+                    feedbackPrompt.innerHTML = `
+                        <div class="flex items-start">
+                            <span class="mr-2 text-lg">✅</span>
+                            <div class="flex-1">
+                                <strong class="text-white">Feedback saved</strong>
+                                <div class="mt-1 text-gray-300 text-sm">Category: ${result.category || 'unknown'} — Lesson recorded for future simulations.</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (err) {
+                console.error('Failed to submit feedback:', err);
+                if (feedbackPrompt) {
+                    feedbackPrompt.innerHTML = `
+                        <div class="flex items-start">
+                            <span class="mr-2 text-lg">⚠️</span>
+                            <div class="flex-1">
+                                <strong class="text-white">Feedback</strong>
+                                <div class="mt-1 text-gray-300 text-sm">Failed to save feedback. You can try again later.</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+        }
 
         async function sendMessage() {
             const userInput = document.getElementById('user-input');
@@ -1709,95 +1938,97 @@
             currentAgentMessages = {};
 
             try {
-                // Detect execution intent from the original request if this is a new conversation
-                if (!conversationContext) {
-                    const messageLower = message.toLowerCase();
-                    executionIntent = ['simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'].some(keyword => 
-                        messageLower.includes(keyword)
-                    );
-                }
-                
                 // Build URL parameters
                 const params = new URLSearchParams({
                     command: message
                 });
-                
+
                 // Add conversation context if we're in phase 2
                 if (conversationContext) {
                     params.append('context', conversationContext);
-                    // Pass execution intent to backend
-                    params.append('execution_intent', executionIntent.toString());
-                    // Clear context after use
-                    conversationContext = '';
+                    // Don't clear context yet - wait until execution starts
+                } else if (pendingScript) {
+                    // Script was ready but not executed - include it as context
+                    params.append('context', 'SCRIPT READY:\n' + pendingScript);
                 }
-                
+
                 // Use EventSource for streaming with live WebSocket support
                 const eventSource = new EventSource('/api/llm-stream-live?' + params);
 
-                eventSource.onmessage = function(event) {
+                eventSource.onmessage = function (event) {
                     try {
                         const data = JSON.parse(event.data);
-                        
-                        switch(data.type) {
+
+                        switch (data.type) {
                             case 'status':
                                 updateStatus(data.message);
                                 break;
-                                
+
                             case 'agent_start':
                                 removeTypingIndicator(data.agent);
                                 addTypingIndicator(data.agent);
                                 break;
-                                
+
                             case 'agent_content':
                                 removeTypingIndicator(data.agent);
                                 addStreamingMessage(data.agent, data.content, data.message_type);
                                 break;
-                                
+
                             case 'agent_complete':
                                 removeTypingIndicator(data.agent);
                                 break;
-                                
+
                             case 'start_streaming_simulation':
-                                console.log('🎬 SSE: Received start_streaming_simulation event');
-                                console.log('🔌 WebSocket status:', socket ? 'initialized' : 'not initialized');
-                                console.log('🔗 WebSocket connected:', socket && socket.connected);
-                                console.log('🎨 OVITO script:', data.ovito_script ? `Present (${data.ovito_script.length} chars)` : 'None');
-                                
+                                console.log('SSE: Received start_streaming_simulation event');
+
+                                // Track simulation summary for feedback
+                                lastSimulationSummary = message;
+
+                                // Capture ovito script before clearing state
+                                const ovitoScript = data.ovito_script || pendingOvitoScript;
+
+                                // Clear context now that we're executing
+                                conversationContext = '';
+                                pendingScript = null;
+                                pendingOvitoScript = null;
+
                                 // Start streaming simulation via WebSocket
                                 if (socket && socket.connected) {
-                                    console.log('📡 Emitting start_streaming_simulation to WebSocket server...');
-                                    socket.emit('start_streaming_simulation', { 
+                                    socket.emit('start_streaming_simulation', {
                                         script: data.script,
-                                        ovito_script: data.ovito_script  // Pass OVITO script to WebSocket handler
+                                        ovito_script: ovitoScript
                                     });
                                 } else {
-                                    console.warn('⚠️ WebSocket not available, falling back to batch simulation');
-                                    // Fallback to regular simulation
+                                    console.warn('WebSocket not available, falling back to batch simulation');
                                     addConversationMessage('System', 'WebSocket not connected, falling back to batch simulation', 'info');
                                 }
                                 break;
-                                
+
                             case 'simulation_complete':
                                 updateStatus('Simulation completed successfully');
                                 if (data.thermo_data && Array.isArray(data.thermo_data)) {
                                     drawPlot(data.thermo_data);
                                 }
+                                showFeedbackPrompt(message);
                                 break;
-                                
+
                             case 'simulation_failed':
                                 updateStatus('Simulation failed');
                                 break;
-                                
+
                             case 'script_ready':
-                                updateStatus('Script ready - add "run" to execute');
+                                updateStatus('Script ready');
+                                // Store the script so user can say "run" next
+                                pendingScript = data.script;
+                                pendingOvitoScript = data.ovito_script || null;
                                 break;
-                                
+
                             case 'needs_more_info':
                                 updateStatus('Waiting for additional information');
                                 isStreaming = false;
                                 eventSource.close();
                                 break;
-                                
+
                             case 'awaiting_confirmation':
                                 updateStatus('Awaiting parameter confirmation');
                                 // Store the analysis for phase 2
@@ -1805,17 +2036,17 @@
                                 isStreaming = false;
                                 eventSource.close();
                                 break;
-                                
+
                             case 'review_failed':
                                 updateStatus('Script review failed');
                                 break;
-                                
+
                             case 'workflow_complete':
                                 updateStatus('Ready to run simulations');
                                 isStreaming = false;
                                 eventSource.close();
                                 break;
-                                
+
                             case 'error':
                                 addMessage('Error', data.message);
                                 updateStatus('Error occurred');
@@ -1828,7 +2059,7 @@
                     }
                 };
 
-                eventSource.onerror = function(event) {
+                eventSource.onerror = function (event) {
                     console.error('EventSource failed:', event);
                     addMessage('Error', 'Connection to server lost. Please try again.');
                     updateStatus('Error occurred');
@@ -1845,4 +2076,5 @@
         }
     </script>
 </body>
+
 </html>
