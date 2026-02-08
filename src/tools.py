@@ -233,28 +233,38 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
         return
     
     print(f"[DUMP MONITOR] Dump file exists, starting timestep identification")
-    
+
     # Read file to identify timesteps (lightweight - no parsing)
+    # We wait for the NEXT frame header before queueing the PREVIOUS frame
+    # to ensure the frame data is complete
     current_timestep = None
-    
+    pending_frame = None  # Frame waiting to be queued (needs completion confirmation)
+
     with open(actual_dump_file, 'r') as f:
         while not simulation_done.is_set() or f.tell() < os.path.getsize(actual_dump_file):
             line = f.readline()
-            
+
             if not line:
                 time.sleep(0.05)  # Wait for more data
                 continue
-            
+
             line = line.strip()
-            
+
             # Look for timestep markers
             if line == "ITEM: TIMESTEP":
+                # If we have a pending frame, queue it now (the new TIMESTEP means previous frame is complete)
+                if pending_frame is not None:
+                    frame_queue.put(pending_frame)
+                    print(f"[DUMP MONITOR] Queued frame {pending_frame['frame_number']} (timestep {pending_frame['timestep']})")
+                    frame_counter += 1
+                    pending_frame = None
+
                 # Next line contains the timestep
                 timestep_line = f.readline()
                 if timestep_line:
                     try:
                         current_timestep = int(timestep_line.strip())
-                        
+
                         # Decide whether to queue this frame
                         should_extract = False
                         if use_smart_sampling:
@@ -266,16 +276,14 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
                             # Sequential sampling: extract up to max_frames
                             if frame_counter < max_frames:
                                 should_extract = True
-                        
+
                         if should_extract:
-                            # Queue file path + timestep for rendering
-                            frame_queue.put({
+                            # Don't queue immediately - wait for next TIMESTEP to confirm frame is complete
+                            pending_frame = {
                                 'dump_file': actual_dump_file,
                                 'frame_number': frame_counter,
                                 'timestep': current_timestep
-                            })
-                            print(f"[DUMP MONITOR] Queued frame {frame_counter} (timestep {current_timestep})")
-                            frame_counter += 1
+                            }
                             
                             # Check completion conditions
                             if use_smart_sampling:
@@ -288,7 +296,14 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
                                     break
                     except ValueError:
                         pass
-    
+
+    # Queue the last pending frame if simulation ended (give it a moment to finish writing)
+    if pending_frame is not None:
+        time.sleep(0.2)  # Brief delay to ensure last frame data is written
+        frame_queue.put(pending_frame)
+        print(f"[DUMP MONITOR] Queued final frame {pending_frame['frame_number']} (timestep {pending_frame['timestep']})")
+        frame_counter += 1
+
     if use_smart_sampling:
         print(f"[DUMP MONITOR] Completed. Queued {frame_counter} frames from {len(extracted_timesteps)} target timesteps")
     else:
@@ -408,14 +423,7 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
     if render_config is None:
         render_config = {}
     
-    print(f"[TOOLS DEBUG] render_config type: {type(render_config)}")
-    print(f"[TOOLS DEBUG] render_config keys: {render_config.keys() if isinstance(render_config, dict) else 'N/A'}")
     ovito_script = render_config.get('ovito_script', None)
-    print(f"[TOOLS DEBUG] Extracted ovito_script from render_config: {ovito_script is not None} ({len(ovito_script) if ovito_script else 0} chars)")
-    if ovito_script:
-        print(f"[TOOLS DEBUG] Script preview: {ovito_script[:200]}...")
-    else:
-        print(f"[TOOLS DEBUG] ovito_script is None or empty")
     quality = render_config.get('quality', 'medium')
     camera_angle = render_config.get('camera_angle', 'default')
     max_queue_size = render_config.get('max_queue_size', 10)
@@ -432,7 +440,6 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         script_path = os.path.join(run_folder, "input.lammps")
         
         # Start rendering worker with direct parameters
-        print(f"[TOOLS DEBUG] Starting rendering worker with ovito_script: {ovito_script is not None}")
         render_thread = threading.Thread(
             target=rendering_worker,
             args=(frame_queue, ovito_script, quality, camera_angle, 

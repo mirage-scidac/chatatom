@@ -21,20 +21,16 @@ def render_frame_to_image_custom(
 ) -> Optional[str]:
     """
     Render molecular dynamics frames using dynamically generated OVITO scripts.
-    
+
     This function executes LLM-generated OVITO Python scripts to provide flexible,
     customizable visualization based on user requests.
-    
-    Data source can be:
-    - OVITO DataCollection (legacy support)
-    - File path to LAMMPS dump file (preferred - loads all properties including c_cna)
-    
+
     IMPORTANT: This function is designed to NEVER raise exceptions that could
     stop the simulation. All errors are caught and logged, with graceful fallback
     to basic visualization or returning None.
-    
+
     Args:
-        data_source: Either OVITO DataCollection or file path to LAMMPS dump file
+        data_source: File path to LAMMPS dump file
         ovito_script: Optional OVITO Python script string for custom visualization
         quality: Render quality - 'low', 'medium', or 'high' (default: 'medium')
         camera_angle: Camera position - 'default', 'top', or 'side' (default: 'default')
@@ -46,7 +42,7 @@ def render_frame_to_image_custom(
     print(f"[RENDER DEBUG] Called with ovito_script: {ovito_script is not None} ({len(ovito_script) if ovito_script else 0} chars)")
     
     try:
-        from ovito.pipeline import Pipeline, StaticSource
+        from ovito.pipeline import Pipeline
         from ovito.io import import_file
         from ovito.vis import Viewport, TachyonRenderer
         from ovito.modifiers import ColorCodingModifier
@@ -60,35 +56,34 @@ def render_frame_to_image_custom(
         # Create pipeline based on data source type
         target_frame_index = 0
         
-        if isinstance(data_source, str):
-            # File path - use OVITO's native file reader (loads ALL properties including c_cna)
-            print(f"[RENDER] Loading dump file: {data_source}")
-            pipeline = import_file(data_source)
-            
-            # If specific timestep requested, find that frame
-            if frame_timestep is not None:
-                num_frames = pipeline.source.num_frames
-                print(f"[RENDER] Searching for timestep {frame_timestep} in {num_frames} frames")
-                
-                # Find the frame with the matching timestep
-                frame_found = False
-                for frame_index in range(num_frames):
-                    data = pipeline.compute(frame_index)
-                    current_timestep = data.attributes.get('Timestep', None)
-                    
-                    if current_timestep == frame_timestep:
-                        print(f"[RENDER] Found timestep {frame_timestep} at frame index {frame_index}")
-                        target_frame_index = frame_index
-                        frame_found = True
-                        break
-                
-                if not frame_found:
-                    print(f"[RENDER] Warning: Timestep {frame_timestep} not found, using frame 0")
-                    target_frame_index = 0
-        else:
-            # DataCollection - legacy support
-            print("[RENDER] Using DataCollection (legacy mode)")
-            pipeline = Pipeline(source=StaticSource(data=data_source))
+        if not isinstance(data_source, str):
+            print("[RENDER] Error: data_source must be a file path string")
+            return None
+
+        # File path - use OVITO's native file reader (loads ALL properties including c_cna)
+        print(f"[RENDER] Loading dump file: {data_source}")
+        pipeline = import_file(data_source)
+
+        # If specific timestep requested, find that frame
+        if frame_timestep is not None:
+            num_frames = pipeline.source.num_frames
+            print(f"[RENDER] Searching for timestep {frame_timestep} in {num_frames} frames")
+
+            # Find the frame with the matching timestep
+            frame_found = False
+            for frame_index in range(num_frames):
+                data = pipeline.compute(frame_index)
+                current_timestep = data.attributes.get('Timestep', None)
+
+                if current_timestep == frame_timestep:
+                    print(f"[RENDER] Found timestep {frame_timestep} at frame index {frame_index}")
+                    target_frame_index = frame_index
+                    frame_found = True
+                    break
+
+            if not frame_found:
+                print(f"[RENDER] Warning: Timestep {frame_timestep} not found, using frame 0")
+                target_frame_index = 0
         
         # Start each render from a clean modifier stack to avoid per-frame accumulation
         pipeline.modifiers.clear()
