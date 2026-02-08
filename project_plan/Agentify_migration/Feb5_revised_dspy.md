@@ -660,6 +660,126 @@ SESSION_EXPIRY_DAYS = 30  # Auto-delete sessions older than this
 
 ---
 
+## Phase 6: LLM-Based Intent Detection (Priority: HIGH)
+
+### Problem
+
+The current implementation uses brittle string parsing for intent detection:
+- Keywords like "run", "execute", "yes", "ok" are matched via substring
+- Natural confirmations like "continue", "fine", "sure", "go ahead" fail
+- "run" after script is ready causes a hang (frontend clears context too early)
+- Negations like "don't run" incorrectly match "run"
+
+### Solution: Use LLM for Intent Classification
+
+**Principle: Use LLM approaches whenever possible. Minimize string parsing and conditional logic.**
+
+#### Step 6.1: Add Intent Classification DSPy Signature (`src/prompts.py`)
+
+```python
+class ClassifyUserIntent(dspy.Signature):
+    """Classify the user's intent in the context of a simulation workflow."""
+
+    user_message: str = dspy.InputField(desc="The user's message")
+    workflow_stage: str = dspy.InputField(desc="Current stage: 'initial', 'parameters_proposed', 'script_ready'")
+
+    intent: str = dspy.OutputField(desc="One of: 'execute', 'modify', 'cancel', 'question', 'confirm'")
+    confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0")
+    extracted_modifications: str = dspy.OutputField(desc="If intent is 'modify', what changes are requested. Otherwise empty.")
+```
+
+#### Step 6.2: Add Intent Classifier to SmartOrchestrator (`src/agents.py`)
+
+```python
+class SmartOrchestrator(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.analyzer = dspy.ChainOfThought(AnalyzeRequest)
+        self.tool_selector = dspy.ChainOfThought(SelectTools)
+        self.intent_classifier = dspy.ChainOfThought(ClassifyUserIntent)  # NEW
+
+    def classify_intent(self, user_message: str, workflow_stage: str) -> dict:
+        """Classify user intent using LLM instead of string matching."""
+        result = self.intent_classifier(
+            user_message=user_message,
+            workflow_stage=workflow_stage
+        )
+        return {
+            "intent": result.intent,
+            "confidence": result.confidence,
+            "modifications": result.extracted_modifications
+        }
+```
+
+#### Step 6.3: Update `/api/llm-stream-live` in `app.py`
+
+**Remove** string-based intent detection (lines 1062-1076).
+
+**Replace with** LLM-based classification:
+
+```python
+if "REVIEW: PASS" in review:
+    workflow_stage = "script_ready" if conversation_context else "initial"
+    intent_result = orchestrator.classify_intent(user_command, workflow_stage)
+
+    if intent_result["intent"] in ["execute", "confirm"]:
+        yield f"data: {json.dumps({'type': 'start_streaming_simulation', ...})}\n\n"
+    elif intent_result["intent"] == "modify":
+        yield f"data: {json.dumps({'type': 'awaiting_modifications', ...})}\n\n"
+    elif intent_result["intent"] == "cancel":
+        yield f"data: {json.dumps({'type': 'workflow_cancelled'})}\n\n"
+    else:
+        yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script})}\n\n"
+```
+
+#### Step 6.4: Fix Frontend Context Preservation (`index.html`)
+
+**Problem:** Context is cleared after Phase 2, so "run" command loses context.
+
+**Fix:**
+1. Add `pendingScript` state variable to hold script when ready
+2. Only clear context AFTER successful execution, not before
+3. Include pending script in context when user sends follow-up
+
+```javascript
+let pendingScript = null;
+
+// In 'script_ready' handler - DON'T clear context
+case 'script_ready':
+    pendingScript = data.script;
+    // Keep conversationContext intact
+    break;
+
+// In 'start_streaming_simulation' handler - NOW clear context
+case 'start_streaming_simulation':
+    conversationContext = '';
+    pendingScript = null;
+    break;
+
+// In sendMessage() - include pending script if available
+if (pendingScript && !conversationContext) {
+    params.append('context', `SCRIPT READY:\n${pendingScript}`);
+}
+```
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/prompts.py` | Add `ClassifyUserIntent` DSPy signature |
+| `src/agents.py` | Add `classify_intent()` method to `SmartOrchestrator` |
+| `src/app.py` | Replace string matching with LLM intent classification |
+| `index.html` | Fix context preservation, add `pendingScript` state |
+
+### Testing
+
+1. Natural confirmations: "sure", "yes please", "go ahead", "this looks good"
+2. Negations: "no", "stop", "don't run", "cancel"
+3. Modifications: "change to 500K", "make it longer"
+4. "run" after script ready (should not hang)
+
+---
+
 ## Future Enhancements (TODO)
 
 | Feature | Priority | Description |
