@@ -1,29 +1,29 @@
 """
 Test script for dynamic OVITO visualization system.
 
-This script tests the dynamic script generation approach for
+This script tests the DSPy-based script generation approach for
 visualizing "only crystalline atoms" and other complex requests.
 
-Tests the new architecture where OrchestratorAgent handles
-visualization parsing.
+Tests the architecture where SmartOrchestrator handles visualization
+detection and OVITOScriptGeneration handles script creation.
 """
 
-from agents import OrchestratorAgent
-from ovito_script_generator import OVITOScriptGenerator
+from agents import SmartOrchestrator, IterativeOVITOGeneration, configure_dspy_lm
 from ovito_executor import DynamicOVITOExecutor
 
 
 def test_script_generation():
-    """Test OVITO script generation for various requests."""
-    
+    """Test iterative OVITO script generation with review for various requests."""
+
     print("=" * 60)
-    print("Testing Dynamic OVITO Script Generation")
+    print("Testing Iterative OVITO Script Generation (DSPy)")
     print("=" * 60)
-    
+
     # Initialize components
-    generator = OVITOScriptGenerator()
+    configure_dspy_lm()
+    generator = IterativeOVITOGeneration(max_attempts=3)
     executor = DynamicOVITOExecutor()
-    
+
     # Test cases
     test_requests = [
         "Show only crystalline atoms",
@@ -31,102 +31,96 @@ def test_script_generation():
         "Show only FCC atoms colored by structure type",
         "Visualize surface atoms",
     ]
-    
+
     simulation_context = {
         'material': 'Cu',
         'natoms': 10000,
         'temperature': 300,
         'structure': 'FCC'
     }
-    
+
     for i, request in enumerate(test_requests, 1):
         print(f"\n{i}. Testing request: '{request}'")
         print("-" * 60)
-        
+
         try:
-            # Generate script
-            script = generator.generate_ovito_script(request, simulation_context)
-            
-            print("Generated script:")
-            print(script)
-            print()
-            
-            # Validate script
-            try:
-                executor.validate_and_sanitize(script)
-                print("✅ Script validation: PASSED")
-            except Exception as e:
-                print(f"❌ Script validation: FAILED - {e}")
-        
+            # Generate script via iterative DSPy module
+            result = generator.forward(request, simulation_context)
+
+            print(f"Review passed: {result.review_passed}")
+            print(f"Attempts: {result.attempts}")
+            if result.issues:
+                print(f"Issues: {result.issues}")
+
+            if result.script:
+                print("Generated script:")
+                print(result.script)
+                print()
+
+                # Validate script
+                try:
+                    executor.validate_and_sanitize(result.script)
+                    print("✅ Script validation: PASSED")
+                except Exception as e:
+                    print(f"❌ Script validation: FAILED - {e}")
+            else:
+                print("❌ No script generated (all attempts failed review)")
+
         except Exception as e:
             print(f"❌ Script generation failed: {e}")
-    
+
     print("\n" + "=" * 60)
 
 
-def test_orchestrator_agent():
-    """Test the OrchestratorAgent with visualization parsing."""
-    
+def test_visualization_detection():
+    """Test the SmartOrchestrator visualization detection."""
+
     print("\n" + "=" * 60)
-    print("Testing OrchestratorAgent (New Architecture)")
+    print("Testing SmartOrchestrator Visualization Detection")
     print("=" * 60)
-    
-    orchestrator = OrchestratorAgent()
-    
+
+    configure_dspy_lm()
+    orchestrator = SmartOrchestrator()
+
     test_requests = [
-        "Show only crystalline atoms",
-        "Color by temperature",
+        ("Show only crystalline atoms", True),
+        ("Color by temperature", True),
+        ("Run a simulation of copper", False),
     ]
-    
-    simulation_context = {
-        'material': 'Al',
-        'natoms': 5000,
-        'temperature': 500,
-        'structure': 'FCC'
-    }
-    
-    for i, request in enumerate(test_requests, 1):
+
+    for i, (request, expected) in enumerate(test_requests, 1):
         print(f"\n{i}. Testing request: '{request}'")
         print("-" * 60)
-        
-        # Test script mode using OrchestratorAgent
-        result = orchestrator.parse_visualization_request(
-            request,
-            simulation_context
-        )
-        
-        print(f"Mode: {result['mode']}")
-        print(f"Rationale: {result['rationale']}")
-        
-        if result.get('warnings'):
-            print(f"Warnings: {result['warnings']}")
-        
-        if result.get('script'):
-            print("\nGenerated script:")
-            print(result['script'][:200] + "..." if len(result['script']) > 200 else result['script'])
-            print("✅ Script mode: SUCCESS")
+
+        result = orchestrator.detect_visualization(request)
+
+        print(f"Detected custom viz: {result}")
+        print(f"Expected: {expected}")
+
+        if result == expected:
+            print("✅ PASS")
         else:
-            print("❌ Script mode: FAILED")
-    
+            print("❌ FAIL")
+
     print("\n" + "=" * 60)
 
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("DYNAMIC OVITO VISUALIZATION SYSTEM TEST")
+    print("DYNAMIC OVITO VISUALIZATION SYSTEM TEST (DSPy)")
     print("=" * 60)
-    
+
     try:
         # Test 1: Script generation
         test_script_generation()
-        
-        # Test 2: OrchestratorAgent (new architecture)
-        test_orchestrator_agent()
-        
+
+        # Test 2: Visualization detection
+        test_visualization_detection()
+
         print("\n" + "=" * 60)
         print("✅ ALL TESTS COMPLETED")
         print("=" * 60)
-        
+
     except Exception as e:
         print(f"\n❌ TEST SUITE FAILED: {e}")
         import traceback

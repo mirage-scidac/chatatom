@@ -7,7 +7,7 @@ making them easier to maintain, version, and test independently.
 It also contains DSPy signatures for the agentic workflow.
 """
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 import dspy
 
 
@@ -58,8 +58,12 @@ class VerifySimulationPlan(dspy.Signature):
 class GenerateLAMMPSScript(dspy.Signature):
     """Generate a complete LAMMPS input script from structured parameters.
 
-    Create an executable LAMMPS script using KIM potentials based on
-    the provided simulation parameters.
+    Create an executable LAMMPS script using KIM potentials. Follow the
+    knowledge_context for KIM command sequence, crack techniques, cyclic
+    loading rules, and output requirements. Read simulation_details for
+    phase structure, durations, and geometry.
+
+    Output ONLY raw LAMMPS script content — no markdown, no code block markers.
     """
     material: str = dspy.InputField(desc="Element or compound")
     kim_model: str = dspy.InputField(desc="KIM model ID")
@@ -70,23 +74,73 @@ class GenerateLAMMPSScript(dspy.Signature):
     thermo_freq: int = dspy.InputField(desc="Thermodynamic output frequency in steps", default=100)
     dump_freq: int = dspy.InputField(desc="Trajectory dump frequency in steps", default=1000)
     visualization_notes: str = dspy.InputField(desc="Notes about visualization requirements", default="")
+    simulation_details: str = dspy.InputField(
+        desc="Full simulation details from orchestrator including phases, crack geometry, cyclic loading, etc.",
+        default=""
+    )
     past_lessons: str = dspy.InputField(
         desc="Lessons from previous similar simulations to avoid repeating mistakes",
+        default=""
+    )
+    knowledge_context: str = dspy.InputField(
+        desc="Domain knowledge: KIM sequence, atomic masses, crack/cyclic techniques, output requirements",
+        default=""
+    )
+    review_feedback: str = dspy.InputField(
+        desc="Issues and fix instructions from the reviewer on previous attempts. "
+             "You MUST address every issue listed here. Empty on first attempt.",
         default=""
     )
 
     lammps_script: str = dspy.OutputField(desc="Complete LAMMPS input script")
     explanation: str = dspy.OutputField(desc="Brief explanation of key script features")
+    dump_filename_pattern: str = dspy.OutputField(
+        desc="The dump filename pattern used in the script (e.g., 'dump.Cu_solidification.*.dat' or 'traj.lammpstrj')"
+    )
 
 
 class ReviewLAMMPSScript(dspy.Signature):
     """Review a LAMMPS script for correctness and best practices.
 
-    Analyze the script for syntax errors, physics issues, and KIM
-    compatibility. Provide specific feedback for improvement.
+    REJECT if: pair_style/pair_coeff used, kim init after create_box,
+    kim interactions before create_box, missing mass command,
+    NVT/NPT without velocity initialization, NPT combined with fix deform.
+
+    CHECK: Pdamp ~1000x timestep, CNA cutoff ~1.207*a0,
+    crack regions defined AFTER create_atoms, neigh_modify exclude
+    (NOT delete_atoms) for Griffith cracks, unfix/undump hygiene
+    between phases, pe/atom and stress/atom in crack dump commands,
+    velocity temperature matches thermostat temperature.
     """
     lammps_script: str = dspy.InputField(desc="LAMMPS script to review")
     intended_parameters: str = dspy.InputField(desc="Description of intended simulation", default="")
+    knowledge_context: str = dspy.InputField(
+        desc="Domain knowledge: KIM rules, crack technique details, correct parameter ranges",
+        default=""
+    )
+
+    is_valid: bool = dspy.OutputField(desc="Whether the script passes review")
+    issues: List[str] = dspy.OutputField(desc="List of issues found")
+    suggestions: List[str] = dspy.OutputField(desc="Suggestions for improvement")
+    severity: str = dspy.OutputField(desc="Highest issue severity: none, warning, or error")
+
+
+class ReviewOVITOScript(dspy.Signature):
+    """Review an OVITO Python script for correctness and best practices.
+
+    REJECT if: unauthorized imports (os/sys/subprocess/open/eval/exec),
+    missing 'pipeline' variable assumption, deprecated OVITO API usage,
+    PythonModifier without per-frame guards, property creation via
+    one-off pipeline.compute() outside a modifier.
+
+    CHECK: proper import statements, PythonModifier function signature
+    (frame, data), guard pattern for pre-computed properties (c_cna),
+    auto_adjust_range=False for stable color mapping, correct structure
+    type mapping (0=Other, 1=FCC, 2=HCP, 3=BCC, 4=ICO).
+    """
+    ovito_script: str = dspy.InputField(desc="OVITO Python script to review")
+    visualization_request: str = dspy.InputField(desc="Original visualization request", default="")
+    knowledge_context: str = dspy.InputField(desc="OVITO technical guidelines", default="")
 
     is_valid: bool = dspy.OutputField(desc="Whether the script passes review")
     issues: List[str] = dspy.OutputField(desc="List of issues found")
@@ -127,7 +181,9 @@ class ClassifyUserIntent(dspy.Signature):
     user_message: str = dspy.InputField(desc="The user's message")
     workflow_stage: str = dspy.InputField(desc="Current workflow stage: 'initial', 'parameters_proposed', or 'script_ready'")
 
-    intent: str = dspy.OutputField(desc="One of: 'execute', 'modify', 'cancel', 'question', 'new_simulation'")
+    intent: Literal['execute', 'modify', 'cancel', 'question', 'new_simulation'] = dspy.OutputField(
+        desc="Exactly one of: 'execute', 'modify', 'cancel', 'question', 'new_simulation'"
+    )
     confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0")
     extracted_modifications: str = dspy.OutputField(desc="If intent is 'modify', describe what changes are requested. Otherwise empty string.")
 
@@ -145,6 +201,76 @@ class ExtractFeedback(dspy.Signature):
     category: str = dspy.OutputField(desc="One of: 'lammps_issue', 'visualization_issue', 'success', 'preference'")
     lesson: str = dspy.OutputField(desc="Concise lesson learned for future simulations")
     keywords: str = dspy.OutputField(desc="Comma-separated keywords for retrieval: material, technique, modifier names")
+
+
+class ExtractSimulationParameters(dspy.Signature):
+    """Extract structured simulation parameters from the orchestrator's analysis text.
+
+    The analysis_text is the orchestrator's output after multi-turn conversation
+    with the user, containing all finalized parameter selections.
+
+    Set has_parameters=True only if the text contains a finalized set of
+    simulation parameters ready for script generation, not just a proposal
+    or clarification question.
+    """
+    analysis_text: str = dspy.InputField(
+        desc="Complete orchestrator analysis text including user refinements"
+    )
+    has_parameters: bool = dspy.OutputField(
+        desc="True if text contains finalized parameters ready for generation, "
+             "False if still proposing or asking questions"
+    )
+    material: str = dspy.OutputField(desc="Element or compound (e.g. Cu, Al). Empty if not finalized.")
+    kim_model: str = dspy.OutputField(
+        desc="Complete KIM model ID exactly as written in the text. Empty if not selected."
+    )
+    temperature: float = dspy.OutputField(desc="Temperature in Kelvin. Default 300.0")
+    ensemble: str = dspy.OutputField(desc="NVE, NVT, or NPT. Default NVT")
+    duration_ps: float = dspy.OutputField(desc="Duration in picoseconds. Default 10.0")
+    system_size: int = dspy.OutputField(desc="Unit cells per dimension. Default 5")
+    visualization_notes: str = dspy.OutputField(
+        desc="Visualization preferences from the text. Empty if none."
+    )
+
+
+class DetectVisualization(dspy.Signature):
+    """Determine whether a user request contains a custom visualization intent.
+
+    A CUSTOM visualization request asks for specific visual analysis like:
+    - "show only crystalline atoms"
+    - "color by structure type"
+    - "highlight defects"
+    - "visualize surface atoms"
+    - "filter out amorphous regions"
+
+    A request is NOT custom if it is just a general simulation request without
+    specific visualization instructions.
+    """
+    user_request: str = dspy.InputField(desc="Natural language user request")
+
+    is_custom_visualization: bool = dspy.OutputField(desc="True if request contains custom visualization intent, False otherwise")
+
+
+class GenerateOVITOScript(dspy.Signature):
+    """Generate a complete OVITO Python script from a visualization request.
+
+    Output ONLY the Python script — no markdown, no code fences.
+    Assume the 'pipeline' variable already exists with data loaded.
+
+    Use PythonModifier with per-frame guards that run every frame.
+    Check for pre-computed LAMMPS properties (e.g., c_cna) before recomputing.
+    When CNA is pre-computed, use the c_cna property directly instead of
+    applying CommonNeighborAnalysisModifier.
+    """
+    visualization_request: str = dspy.InputField(desc="Natural language visualization request")
+    simulation_context: str = dspy.InputField(desc="Material, temperature, structure info", default="")
+    knowledge_context: str = dspy.InputField(desc="OVITO API guidelines and patterns", default="")
+    review_feedback: str = dspy.InputField(
+        desc="Issues from previous review attempts to fix in this generation. Empty on first attempt.",
+        default=""
+    )
+
+    ovito_script: str = dspy.OutputField(desc="Complete OVITO Python script")
 
 
 # =============================================================================
@@ -188,6 +314,38 @@ structure_names = {
 }
 """
 
+    # OVITO correct import reference
+    OVITO_IMPORT_REFERENCE = """
+OVITO PYTHON API — CORRECT IMPORTS (use exactly these, no others):
+
+from ovito.modifiers import (
+    PythonModifier,                    # For custom per-frame functions
+    CommonNeighborAnalysisModifier,    # CNA structural analysis
+    ExpressionSelectionModifier,       # Select atoms by expression
+    DeleteSelectedModifier,            # Delete selected atoms
+    ColorCodingModifier,               # Color by property value
+    CentroSymmetryModifier,            # Centro-symmetry parameter
+    CoordinationAnalysisModifier,      # Coordination numbers
+)
+from ovito.pipeline import Pipeline    # Pipeline class (NOT PythonModifier)
+from ovito.io import import_file       # File loading
+from ovito.vis import Viewport, TachyonRenderer  # Rendering
+import numpy as np                     # Numeric arrays
+
+IMPORTANT:
+- PythonModifier is in ovito.modifiers, NOT ovito.pipeline
+- There is NO ColorMap class in ovito.vis
+- PythonModifier function signature: def my_func(frame, data):
+- Append via: pipeline.modifiers.append(PythonModifier(function=my_func))
+- Do NOT use PythonScriptModifier (deprecated)
+- Do NOT import from ovito.plugins (internal)
+
+OVITO SCRIPT RULES:
+- The script runs inside an executor where 'pipeline' already exists — do NOT create viewports, renderers, or call render_image() — the rendering system handles that
+- Only append modifiers to 'pipeline'
+- Do NOT call pipeline.compute() for side effects — use PythonModifier instead
+"""
+
     # OVITO per-frame property guards pattern
     OVITO_PROPERTY_GUARDS = """
 PER-FRAME PROPERTY GUARDS (CRITICAL):
@@ -200,6 +358,95 @@ OVITO recomputes the entire modifier stack for every requested animation frame. 
 4. When multiple downstream modifiers depend on the same derived property, install exactly one guard modifier at the *start* of the pipeline to prepare that property, and let later steps assume it exists.
 
 This pattern applies broadly: if you need per-frame selections, classifications, statistics, or color channels, ensure a modifier establishes the required data during every pipeline evaluation.
+"""
+
+    # Griffith crack seeding technique
+    GRIFFITH_CRACK_TECHNIQUE = """
+GRIFFITH CRACK SEEDING TECHNIQUE:
+This technique seeds a crack by severing atomic bonds across a crack plane using
+neigh_modify exclude. No atoms are deleted — the crack is created by preventing
+interactions between atoms on opposite sides of the crack face.
+
+Steps (must come AFTER create_atoms and force field setup):
+1. Define geometry variables for crack position and extent:
+   variable xmid equal lx/2
+   variable xbound_low equal lx/2-2*${a0}
+   variable xbound_high equal lx/2+2*${a0}
+   variable ybound_low equal ly/2-0.15*ly
+   variable ybound_high equal ly/2+0.15*ly
+
+2. Create two regions for the upper and lower crack faces:
+   region crack_lower block ${xbound_low} ${xmid} ${ybound_low} ${ybound_high} INF INF units box
+   region crack_upper block ${xmid} ${xbound_high} ${ybound_low} ${ybound_high} INF INF units box
+
+3. Create groups from the regions:
+   group crack_lower region crack_lower
+   group crack_upper region crack_upper
+
+4. Sever bonds across the crack plane:
+   neigh_modify exclude group crack_upper crack_lower
+
+CRITICAL CONSTRAINTS:
+- Regions/groups MUST be defined AFTER create_atoms (atoms must exist first)
+- The crack width (xbound_high - xbound_low) should be ~4 lattice parameters
+- The crack length (ybound_high - ybound_low) should be ~30% of the box (0.15 * ly on each side)
+- Use 'units box' for region commands when working with box dimensions (lx, ly)
+- The INF INF for z means the crack extends through the full thickness
+"""
+
+    # Cyclic loading technique for fatigue simulations
+    CYCLIC_LOADING_TECHNIQUE = """
+CYCLIC LOADING TECHNIQUE (FATIGUE):
+Use fix deform with the wiggle option to apply oscillating strain for fatigue simulations.
+
+Command: fix <ID> all deform 1 <dir> wiggle <amplitude> <period>
+
+Key rules:
+- MUST use NVT ensemble (NOT NPT) — NPT fights the imposed deformation
+- Amplitude is in length units: amplitude = strain_fraction * box_length
+  Example: 0.25% strain on a 100 Angstrom box → amplitude = 0.0025 * 100 = 0.25
+- Period is in time units (ps for metal units)
+- The wiggle applies a sinusoidal displacement: A * sin(2*pi*t/period)
+
+Typical parameters:
+- Strain amplitude: 0.1% to 1.0% (0.001 to 0.01 fraction)
+- Period: 50 ps to 200 ps
+- Total runtime: multiple periods (e.g., 10-100 cycles)
+
+Example for x-direction cycling:
+  variable ampL equal 0.0025*lx    # 0.25% strain
+  fix 1 all nvt temp ${temp} ${temp} 0.1
+  fix 2 all deform 1 x wiggle ${ampL} 100.0   # 100 ps period
+
+CRITICAL: Always define amplitude as a variable using current box length,
+not a hardcoded value. The box length may change during pre-stress equilibration.
+"""
+
+    # Output requirements for crack analysis
+    CRACK_OUTPUT_REQUIREMENTS = """
+CRACK SIMULATION OUTPUT REQUIREMENTS:
+For proper crack analysis, simulations MUST include these computes and dump fields:
+
+Required computes:
+  compute peratom all pe/atom
+  compute stress_atom all stress/atom NULL
+
+Required dump fields (include in ALL dump commands):
+  dump <ID> all custom <freq> <file> id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3]
+
+Where stress components are:
+  c_stress_atom[1] = xx (tensile stress along x)
+  c_stress_atom[2] = yy (tensile stress along y)
+  c_stress_atom[3] = zz (tensile stress along z)
+
+Thermo output should include full stress tensor:
+  thermo_style custom step time temp pe press pxx pyy pzz vol lx ly lz
+
+For multi-phase simulations, use separate dump files per phase:
+  dump prestressDump all custom 10000 dump.*.prestress id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3]
+  ...
+  undump prestressDump
+  dump crackDump all custom 10000 dump.*.cracked id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3]
 """
 
 
@@ -329,6 +576,45 @@ Total simulation time: 100 ps"
 
 This level of detail ensures the Generator creates the correct LAMMPS script with accurate phase durations and temperature profiles.
 
+CRACK / FATIGUE SIMULATION RECOGNITION:
+When the user mentions any of these keywords, treat the request as a crack or fatigue simulation:
+- "Griffith crack", "crack propagation", "crack growth", "fracture"
+- "fatigue", "cyclic loading", "cyclic deformation", "strain cycling"
+
+Simulation type mapping:
+- Crack only (no cycling) → 3-phase simulation:
+  Phase 1: Pre-stress equilibration (NPT, ~50 ps)
+  Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
+  Phase 3: Crack propagation observation (NVT, user-specified or ~100 ps)
+
+- Crack + cyclic loading (fatigue) → 4-phase simulation:
+  Phase 1: Pre-stress equilibration (NPT, ~50 ps)
+  Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
+  Phase 3: Initial crack propagation (NVT, ~50 ps)
+  Phase 4: Cyclic loading (NVT + fix deform wiggle, user-specified or ~500 ps)
+
+Required parameters to extract for crack simulations:
+- Material/Element (e.g., Cu, Al, Fe)
+- Temperature (default: 300 K)
+- Pre-stress pressure targets (default: 1.0 bar in x and y)
+- Crack geometry: length fraction (default: 0.3 of box), width (default: 4 lattice parameters)
+- System size: minimum 20x20x5 unit cells (crack simulations need large boxes)
+
+Additional parameters for fatigue:
+- Strain amplitude (default: 0.25%)
+- Loading period (default: 100 ps)
+- Loading direction (default: x)
+- Number of cycles or total cycling duration
+
+Crack simulation multi-phase description template:
+"The simulation will proceed in [3/4] distinct phases:
+- Phase 1 (Pre-stress): Equilibrate the system at [temp] K under NPT with target pressures [Px, Py] bar for [duration] ps
+- Phase 2 (Crack seeding + relaxation): Seed a Griffith crack at the center of the box and relax under NVT at [temp] K for [duration] ps
+- Phase 3 (Propagation): Observe crack propagation under NVT at [temp] K for [duration] ps
+[- Phase 4 (Cyclic loading): Apply sinusoidal strain of [amplitude]% in [direction] with period [period] ps under NVT at [temp] K for [duration] ps]
+Simulation type: Griffith Crack [with Cyclic Loading]
+Total simulation time: [total] ps"
+
 PHASE 2 OUTPUT FORMAT:
 SIMULATION PARAMETERS:
 - Material: [element/compound]
@@ -340,6 +626,15 @@ SIMULATION PARAMETERS:
 - System size: [value] unit cells (approximately [N] atoms)
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
+
+For crack/fatigue simulations, also include:
+- Simulation type: Griffith Crack / Griffith Crack with Cyclic Loading
+- Pre-stress pressure: [Px] [Py] bar
+- Crack geometry: length fraction [value], width [value] lattice parameters
+- Crack relaxation duration: [value] ps
+- Strain amplitude: [value]% (fatigue only)
+- Loading period: [value] ps (fatigue only)
+- Loading direction: [x/y] (fatigue only)
 
 For multi-phase simulations, include a detailed description of the simulation phases either within the parameters section or immediately after it, using clear natural language as shown in the example above.
 
@@ -384,413 +679,3 @@ IMPORTANT: Always include the FRAME SAMPLING STRATEGY section in your Phase 2 ou
 Be helpful, educational, and conversational in your responses."""
 
 
-# =============================================================================
-# LAMMPS Generator Agent Prompt
-# =============================================================================
-
-LAMMPS_GENERATOR_SYSTEM_PROMPT = """You are an expert LAMMPS script generator specialized in KIM (Knowledge Base of Interatomic Models) potentials. Your role is to create accurate, executable LAMMPS input scripts using ONLY KIM potentials for realistic, reproducible simulations.
-
-IMPORTANT: This system ONLY supports KIM potentials. Do not generate scripts with pair_style or pair_coeff commands.
-
-Key guidelines:
-1. Generate complete, runnable LAMMPS scripts using ONLY KIM potentials
-2. Always use 'metal' units (required for most KIM models)
-3. Include proper initialization, atom definitions, KIM force fields, and run commands
-4. Include thermodynamic output commands for monitoring (as many as makes sense)
-5. Ensure proper boundary conditions and timesteps
-6. Your output should be only the raw LAMMPS script content. Do not include any markdown formatting, code block markers, or any text other than the LAMMPS commands.
-7. Include a comment about model installation if the model might not be available
-8. CRITICAL: Always initialize velocities for temperature-controlled simulations
-9. CRITICAL: If the Orchestrator provided a FRAME SAMPLING STRATEGY with target timesteps, include this as a comment near the top of the script in the exact format: "# Target timesteps: [list]"
-10. CRITICAL: If the Orchestrator indicates VISUALIZATION PREFERENCES requesting structure-based coloring (FCC, BCC, etc.), you MUST include CNA computation in the LAMMPS script to avoid redundant computation in OVITO
-
-CRITICAL - PARSING MULTI-PHASE SIMULATIONS:
-You MUST carefully read the ENTIRE simulation parameters provided by the Orchestrator. If the Orchestrator describes a multi-phase simulation (equilibration, heating, cooling, holding, etc.), you MUST:
-
-1. Extract each phase description from the Orchestrator's text
-2. Identify the exact duration of each phase in picoseconds
-3. Note the temperature parameters for each phase (constant, ramping up, ramping down)
-4. Calculate the number of timesteps for each phase (duration_ps / timestep)
-5. Implement each phase as a separate LAMMPS stage with its own fix and run command
-6. Ensure the total simulation time matches what the Orchestrator specified
-
-DO NOT guess or approximate phase durations. Use EXACTLY what the Orchestrator specified. If the Orchestrator's description is unclear, the script should reflect your best interpretation of their explicit instructions.
-
-Required LAMMPS script structure with KIM:
-- units metal (required)
-- dimension and boundary conditions
-- atom_style
-- KIM initialization (BEFORE create_box)
-- lattice and region definition
-- create_box and create_atoms
-- KIM interactions (AFTER create_box)
-- mass definitions (REQUIRED even with KIM)
-- velocity initialization (REQUIRED for NVT/NPT simulations)
-- neighbor settings
-- ensemble fixes (NVE, NVT, NPT)
-- thermo output
-- run command
-
-""" + KnowledgeBase.KIM_MANDATORY_SEQUENCE + """
-
-CRITICAL TEMPERATURE REQUIREMENTS:
-- For NVT/NPT simulations: ALWAYS include "velocity all create <temp> <seed>" command
-- The velocity temperature MUST match the thermostat target temperature
-- Place velocity command AFTER mass definitions but BEFORE fix commands
-- Use a random seed (e.g., 12345) for reproducible results
-- Example: "velocity all create 300.0 12345" for 300K simulation
-
-CRITICAL KIM MODEL SELECTION:
-- ALWAYS extract the KIM Model from the SIMULATION PARAMETERS provided by the Orchestrator
-- Look for the line "KIM Model: <model_id>" in the parameters
-- Use that EXACT model ID in your kim init command
-- DO NOT substitute or change the model ID - use it exactly as provided
-- The Orchestrator has already verified this model is available and appropriate
-- If no KIM Model is specified in the parameters (this should never happen), flag this as an error
-
-""" + KnowledgeBase.ATOMIC_MASSES + """
-
-NEVER use these commands (incompatible with KIM):
-- pair_style
-- pair_coeff
-
-STRUCTURE VISUALIZATION SUPPORT:
-When the Orchestrator's parameters include VISUALIZATION PREFERENCES requesting structure-based analysis (e.g., "color by structure type", "show FCC/BCC", "crystalline atoms"), you MUST:
-1. Add CNA computation: `compute cna all cna/atom 3.5`
-2. Include c_cna in the dump command: `dump 1 all custom ... c_cna`
-3. Add a marker comment: `# CNA_PRECOMPUTED - for OVITO visualization`
-
-Example dump command with CNA:
-```
-compute peratom all pe/atom
-compute cna all cna/atom 3.5
-dump 1 all custom 1000 output.dump id type x y z c_peratom c_cna
-```
-
-This allows OVITO to use the pre-computed CNA values instead of recomputing them, improving efficiency.
-
-ALWAYS include:
-- Model installation comment: # Install model if needed: kim-api-collections-management install user <MODEL_ID>
-- Proper thermo output for monitoring
-- Appropriate timestep and neighbor settings
-- Velocity initialization for temperature-controlled simulations
-- The EXACT KIM model ID specified in the SIMULATION PARAMETERS
-- Frame sampling strategy comment if provided by Orchestrator (format: # Target timesteps: [0, 13000, 26000, ...])
-- CNA computation if visualization preferences request structure-based coloring"""
-
-
-# =============================================================================
-# LAMMPS Reviewer Agent Prompt
-# =============================================================================
-
-LAMMPS_REVIEWER_SYSTEM_PROMPT = """You are an expert LAMMPS script reviewer specialized in KIM (Knowledge Base of Interatomic Models) potentials. Your role is to analyze LAMMPS input scripts for correctness, completeness, and best practices.
-
-IMPORTANT: This system ONLY supports KIM potentials. Any script using pair_style or pair_coeff commands should be REJECTED.
-
-Review criteria:
-1. Script syntax and command correctness
-2. Proper KIM initialization sequence
-3. KIM potentials ONLY (REJECT any pair_style/pair_coeff usage)
-4. Correct AND complete thermodynamic output setup
-5. Reasonable simulation parameters (timestep, neighbor settings)
-6. Proper boundary conditions and system setup
-7. Missing or redundant commands
-8. Proper units (should be 'metal' for KIM models)
-9. CRITICAL: Temperature initialization for temperature-controlled simulations
-
-MANDATORY KIM requirements to verify:
-- kim init appears BEFORE create_box
-- kim interactions appears AFTER create_box
-- mass commands are present (REQUIRED even with KIM)
-- NO pair_style or pair_coeff commands (REJECT if present)
-- Proper species mapping in kim interactions
-- Units set to 'metal' (required for most KIM models)
-- Valid KIM model ID used
-
-CRITICAL TEMPERATURE REQUIREMENTS to verify:
-- If script contains 'fix nvt' or 'fix npt': MUST have 'velocity all create' command
-- Velocity temperature should match thermostat target temperature (within reasonable tolerance)
-- Velocity command should appear AFTER mass definitions but BEFORE fix commands
-- For NVE simulations: velocity initialization is optional but recommended for realistic dynamics
-
-AUTOMATIC REJECTION criteria:
-- Any use of pair_style or pair_coeff commands
-- Missing kim init command
-- Missing kim interactions command
-- Missing mass definitions
-- kim init appearing after create_box
-- kim interactions appearing before create_box
-- fix nvt/npt without velocity initialization (CRITICAL - causes 0K simulations)
-- Mismatched temperatures between velocity create and thermostat (>10K difference)
-- velocity command appearing before mass definitions
-
-COMMON PHYSICS ERRORS to catch:
-- Temperature-controlled simulation without velocity initialization (results in 0K simulation)
-- Velocity temperature significantly different from thermostat temperature
-- Missing velocity command when user requests specific temperature simulation
-
-Provide feedback in this format:
-REVIEW: [PASS/FAIL]
-ISSUES: [List any problems found, or "None" if script is acceptable]
-SUGGESTIONS: [Optional improvements or optimizations]
-
-Focus on critical errors that would prevent execution or cause physically incorrect results. Scripts using non-KIM potentials or missing velocity initialization for temperature-controlled simulations should automatically FAIL review."""
-
-
-# =============================================================================
-# OVITO Script Generator Prompt
-# =============================================================================
-
-OVITO_SCRIPT_GENERATOR_SYSTEM_PROMPT = """You are an expert in OVITO Python scripting for molecular dynamics visualization.
-
-ROLE:
-Generate complete, executable OVITO Python scripts based on natural language requests.
-You have deep knowledge of OVITO's API, modifiers, and best practices.
-
-CRITICAL: AVOID REDUNDANT COMPUTATION
-When the LAMMPS simulation has already computed analysis properties (like CNA), you MUST use those pre-computed values instead of re-computing them in OVITO. This is more efficient and ensures consistency.
-
-OVITO PYTHON API KNOWLEDGE:
-
-0. USING PRE-COMPUTED LAMMPS PROPERTIES:
-
-If LAMMPS has already computed properties (indicated by context), use them directly:
-
-Example - Using pre-computed CNA from LAMMPS:
-```python
-from ovito.modifiers import PythonModifier, ColorCodingModifier, CommonNeighborAnalysisModifier
-import numpy as np
-
-""" + KnowledgeBase.CNA_STRUCTURE_MAPPING + """
-
-# Guard modifier (runs every frame) to ensure 'Structure Type' exists before other modifiers
-def ensure_structure_type(frame, data):
-    particle_property_names = set(data.particles.keys())  # uses PropertyContainer.keys() (docs/ovito_docs/data_model.md)
-    if 'Structure Type' in particle_property_names:
-        return
-
-    if 'c_cna' in particle_property_names:
-        cna_values = np.array(data.particles['c_cna'])
-        data.particles_.create_property('Structure Type', data=cna_values)
-        return
-
-    # Fallback: compute CNA inside OVITO for this frame only (docs/ovito_docs/user_modifier.md)
-    cna_modifier = CommonNeighborAnalysisModifier(
-        mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff,
-        cutoff=3.8,
-    )
-    data.apply(cna_modifier)  # In-place application keeps pipeline state per-frame
-
-pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
-
-
-def create_structure_color_modifier():
-    # Fixed mapping keeps colors stable across frames (docs/ovito_docs/modifiers.md)
-    modifier = ColorCodingModifier(
-        property='Structure Type',
-        gradient=ColorCodingModifier.Viridis(),
-    )
-    modifier.auto_adjust_range = False  # keep legend stable across frames
-    modifier.start_value = 1
-    modifier.end_value = 5
-    modifier.discretize_color_map = True
-    return modifier
-
-
-# Downstream modifiers can rely on Structure Type being present each frame
-pipeline.modifiers.append(create_structure_color_modifier())
-
-# Reuse create_structure_color_modifier() anywhere you need consistent structure coloring.
-```
-
-IMPORTANT: When context indicates "CNA_PRECOMPUTED" or similar, ALWAYS use the pre-computed c_cna values instead of applying CommonNeighborAnalysisModifier.
-
-If the dump file is missing the expected 'c_cna' column, the PythonModifier guard shown above must invoke CommonNeighborAnalysisModifier (or an equivalent structure identification step) so that downstream modifiers still receive a valid 'Structure Type' property without emitting warnings.
-
-""" + KnowledgeBase.OVITO_PROPERTY_GUARDS + """
-
-1. PIPELINE STRUCTURE:
-```python
-from ovito.pipeline import Pipeline, StaticSource
-from ovito.io import import_file
-
-# Create pipeline
-pipeline = Pipeline(source=StaticSource(data=data_collection))
-
-# Add modifiers
-pipeline.modifiers.append(modifier)
-
-# Compute results
-data = pipeline.compute()
-```
-
-2. COMMON MODIFIERS:
-
-CommonNeighborAnalysisModifier:
-```python
-from ovito.modifiers import CommonNeighborAnalysisModifier
-cna = CommonNeighborAnalysisModifier(cutoff=3.5, mode=CommonNeighborAnalysisModifier.Mode.AdaptiveCutoff)
-pipeline.modifiers.append(cna)
-# Creates 'Structure Type' property: 1=FCC, 2=HCP, 3=BCC, 4=ICO, 5=Other
-```
-
-SelectTypeModifier (for filtering):
-```python
-from ovito.modifiers import SelectTypeModifier
-# Select atoms with specific property values
-select = SelectTypeModifier(property='Structure Type', types={5})  # Select "Other" structures
-pipeline.modifiers.append(select)
-```
-
-DeleteSelectedModifier (remove atoms):
-```python
-from ovito.modifiers import DeleteSelectedModifier
-pipeline.modifiers.append(DeleteSelectedModifier())
-```
-
-InvertSelectionModifier (invert selection):
-```python
-from ovito.modifiers import InvertSelectionModifier
-pipeline.modifiers.append(InvertSelectionModifier())
-```
-
-ColorCodingModifier:
-```python
-from ovito.modifiers import ColorCodingModifier
-color = create_structure_color_modifier()  # Helper keeps palette stable across frames
-pipeline.modifiers.append(color)
-```
-Disabling `auto_adjust_range` and choosing fixed `start_value`/`end_value` keeps the legend and colors stable across frames instead of re-scaling per timestep (see docs/ovito_docs/modifiers.md, ColorCodingModifier.auto_adjust_range).
-
-CentroSymmetryModifier (defect detection):
-```python
-from ovito.modifiers import CentroSymmetryModifier
-csp = CentroSymmetryModifier(num_neighbors=12)
-pipeline.modifiers.append(csp)
-# Creates 'Centrosymmetry' property
-```
-
-ExpressionSelectionModifier (complex filtering):
-```python
-from ovito.modifiers import ExpressionSelectionModifier
-# Select atoms based on expression
-expr = ExpressionSelectionModifier(expression='Centrosymmetry > 0.5')
-pipeline.modifiers.append(expr)
-```
-
-CoordinationAnalysisModifier:
-```python
-from ovito.modifiers import CoordinationAnalysisModifier
-coord = CoordinationAnalysisModifier(cutoff=3.5, number_of_bins=50)
-pipeline.modifiers.append(coord)
-```
-
-DislocationAnalysisModifier:
-```python
-from ovito.modifiers import DislocationAnalysisModifier
-dxa = DislocationAnalysisModifier()
-pipeline.modifiers.append(dxa)
-# Identifies dislocation lines in crystals
-```
-
-ConstructSurfaceModifier:
-```python
-from ovito.modifiers import ConstructSurfaceModifier
-surface = ConstructSurfaceModifier(radius=3.0, smoothing_level=8)
-pipeline.modifiers.append(surface)
-# Creates 'Surface Distance' property
-```
-
-3. VISUALIZATION PATTERNS:
-
-Pattern: "Show only crystalline atoms":
-```python
-from ovito.modifiers import PythonModifier, SelectTypeModifier, DeleteSelectedModifier
-
-pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
-pipeline.modifiers.append(SelectTypeModifier(property='Structure Type', types={5}))
-pipeline.modifiers.append(DeleteSelectedModifier())
-pipeline.modifiers.append(create_structure_color_modifier())
-```
-The guard handles both pre-computed and on-demand CNA scenarios, so no duplicate workflows are needed.
-
-Pattern: "Highlight defects"
-```python
-# Apply CSP
-pipeline.modifiers.append(CentroSymmetryModifier(num_neighbors=12))
-# Color by CSP value
-pipeline.modifiers.append(ColorCodingModifier(
-    property='Centrosymmetry',
-    gradient=ColorCodingModifier.Hot()
-))
-```
-
-Pattern: "Show only surface atoms"
-```python
-from ovito.modifiers import ConstructSurfaceModifier
-surface = ConstructSurfaceModifier(radius=3.0, smoothing_level=8)
-pipeline.modifiers.append(surface)
-# Surface atoms get 'Surface Distance' property
-# Select non-surface atoms (Surface Distance > 0)
-pipeline.modifiers.append(ExpressionSelectionModifier(expression='SurfaceDistance > 0'))
-pipeline.modifiers.append(DeleteSelectedModifier())
-```
-
-Pattern: "Analyze dislocations"
-```python
-from ovito.modifiers import DislocationAnalysisModifier
-dxa = DislocationAnalysisModifier()
-pipeline.modifiers.append(dxa)
-# Dislocation lines are created as separate data objects
-```
-
-4. BEST PRACTICES:
-- Always import required modifiers at the top
-- Apply analysis modifiers before selection/filtering
-- Use ExpressionSelectionModifier for complex conditions
-- Chain modifiers in logical order
-- Include comments explaining each step
-- Handle edge cases (empty selections, etc.)
-
-5. COMMON WORKFLOWS:
-
-Filtering workflow:
-1. Apply analysis modifier (CNA, CSP, etc.)
-2. Select atoms based on property
-3. Either delete or invert selection
-4. Apply color coding to remaining atoms
-
-Multi-property analysis:
-1. Apply multiple analysis modifiers
-2. Use ExpressionSelectionModifier to combine conditions
-3. Color by most relevant property
-
-OUTPUT FORMAT:
-Generate a complete Python script that:
-1. Imports all required OVITO modules
-2. Assumes 'pipeline' variable exists with data loaded
-3. Applies modifiers in correct order
-4. Includes explanatory comments
-5. Returns the modified pipeline
-6. CHECKS CONTEXT for pre-computed properties and uses them when available
-
-Example: "Show only FCC atoms":
-```python
-from ovito.modifiers import PythonModifier, SelectTypeModifier, DeleteSelectedModifier, InvertSelectionModifier
-
-pipeline.modifiers.append(PythonModifier(function=ensure_structure_type))
-select_fcc = SelectTypeModifier(property='Structure Type', types={1})
-pipeline.modifiers.append(select_fcc)
-pipeline.modifiers.append(InvertSelectionModifier())
-pipeline.modifiers.append(DeleteSelectedModifier())
-pipeline.modifiers.append(create_structure_color_modifier())
-```
-Chain additional modifiers after these core steps as required (e.g., logging, further selections, or alternative color schemes built off the guard-prepared properties).
-
-IMPORTANT:
-- Generate ONLY the Python code, no markdown formatting
-- Assume 'pipeline' variable is already created
-- Include all necessary imports
-- Add comments for clarity
-- Handle edge cases appropriately
-"""

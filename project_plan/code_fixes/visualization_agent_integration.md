@@ -164,9 +164,9 @@ OVITO_SCRIPT_TEMPERATURE = 0.1  # Low temperature for consistent scripts
 
 ## Code Changes
 
-### app.py - Both Streaming Endpoints
+### app.py - Streaming Endpoint
 
-Added visualization phase after reviewer in both `/api/llm-stream` and `/api/llm-stream-live`:
+Added visualization phase after reviewer in `/api/llm-stream-live`:
 
 ```python
 # Check for visualization request and generate OVITO script if needed

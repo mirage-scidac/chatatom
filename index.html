@@ -542,6 +542,11 @@
         let streamingGroups = [];
         let isStreamingSimulation = false;
 
+        // Chart update throttling (max ~5 redraws/sec)
+        let lastChartUpdateTime = 0;
+        const CHART_UPDATE_INTERVAL_MS = 200;
+        let chartUpdatePending = false;
+
         // Initialize Socket.IO connection
         function initializeSocket() {
             socket = io();
@@ -755,10 +760,22 @@
                         dataset.data.shift();
                     });
                 }
-
-                // Update the chart
-                chart.update('none'); // 'none' mode for fastest updates
             });
+
+            // Throttled chart redraw (data is already pushed above)
+            const now = Date.now();
+            if (now - lastChartUpdateTime >= CHART_UPDATE_INTERVAL_MS) {
+                thermoCharts.forEach(chart => { if (chart) chart.update('none'); });
+                lastChartUpdateTime = now;
+                chartUpdatePending = false;
+            } else if (!chartUpdatePending) {
+                chartUpdatePending = true;
+                setTimeout(() => {
+                    thermoCharts.forEach(chart => { if (chart) chart.update('none'); });
+                    lastChartUpdateTime = Date.now();
+                    chartUpdatePending = false;
+                }, CHART_UPDATE_INTERVAL_MS);
+            }
 
             // Update status with current data point count
             updateStatus(`Live simulation: ${streamingData.length} data points received`);
@@ -1187,7 +1204,9 @@
         let executionIntent = false;  // Track if original request implied execution
         let pendingScript = null;  // Holds LAMMPS script when ready but not yet executed
         let pendingOvitoScript = null;  // Holds OVITO script when ready but not yet executed
+        let pendingDumpPattern = '';  // Holds dump filename pattern for per-timestep detection
         let messageCounter = 0;  // Counter to ensure unique message IDs
+        let streamingSessionId = 0;  // Incremented each sendMessage to avoid stale DOM collisions
         let lastSimulationSummary = '';  // Track what was simulated for feedback
 
         // 3D Trajectory Viewer Variables
@@ -1506,18 +1525,24 @@
             });
         }
 
-        function addStreamingMessage(agent, content, messageType) {
+        function addStreamingMessage(agent, content, messageType, attempt) {
             // Ensure content is defined and not null
             if (content === undefined || content === null) {
                 content = '';
             }
 
-            // Use agent name as key for current streaming session
-            const sessionKey = `${agent}-${messageType || 'default'}`;
+            // Use agent name + attempt as key so each attempt gets a separate bubble
+            const attemptSuffix = attempt ? `-attempt${attempt}` : '';
+            const sessionKey = `${agent}-${messageType || 'default'}${attemptSuffix}`;
+            const messageId = `msg-${streamingSessionId}-${sessionKey}`;
+
+            // Initialize the content accumulator if needed
+            if (!currentAgentMessages[sessionKey]) {
+                currentAgentMessages[sessionKey] = '';
+            }
 
             // Check if we already have a message for this agent in this session
-            let messageElement = document.getElementById(`current-${sessionKey}`);
-            let messageId = `current-${sessionKey}`;
+            let messageElement = document.getElementById(messageId);
 
             if (!messageElement) {
                 // Create new message element
@@ -1544,6 +1569,10 @@
                         colorClass = 'bg-yellow-800 border-l-4 border-yellow-400';
                         agentIcon = '🔍';
                         break;
+                    case 'Visualization':
+                        colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                        agentIcon = '🎨';
+                        break;
                     case 'System':
                         if (messageType === 'error') {
                             colorClass = 'bg-red-800 border-l-4 border-red-400';
@@ -1561,23 +1590,24 @@
                         agentIcon = '💬';
                 }
 
+                // Build label with optional attempt number
+                let label = agent;
+                if (attempt) {
+                    label += ` (attempt ${attempt})`;
+                }
+
                 messageElement.classList.add(...colorClass.split(' '));
                 messageElement.innerHTML = `
                     <div class="flex items-start">
                         <span class="mr-2 text-lg">${agentIcon}</span>
                         <div class="flex-1">
-                            <strong class="text-white">${agent}:</strong>
+                            <strong class="text-white">${label}:</strong>
                             <div class="mt-1 text-gray-100 agent-message" id="content-${messageId}"></div>
                         </div>
                     </div>
                 `;
 
                 chatContainer.appendChild(messageElement);
-
-                // Initialize the content accumulator
-                if (!currentAgentMessages[sessionKey]) {
-                    currentAgentMessages[sessionKey] = '';
-                }
             }
 
             // Append content to existing message
@@ -1587,16 +1617,16 @@
             if (contentElement) {
                 // Format content based on type
                 let formattedContent = currentAgentMessages[sessionKey] || '';
-                if (messageType === 'script') {
+                if (messageType === 'script' || messageType === 'script_trace') {
                     // Determine script type and title
-                    let title = 'Generated Script';
+                    let title = messageType === 'script_trace' ? 'Generated Script (Intermediate)' : 'Generated Script';
                     let language = 'python';
 
                     if (formattedContent.includes('from ovito') || formattedContent.includes('import ovito')) {
                         title = 'OVITO Visualization Script';
                         language = 'python';
                     } else if (formattedContent.includes('kim init') || formattedContent.includes('pair_style kim')) {
-                        title = 'LAMMPS Simulation Script';
+                        title = messageType === 'script_trace' ? 'LAMMPS Script (Intermediate)' : 'LAMMPS Simulation Script';
                         language = 'lammps';
                     }
 
@@ -1609,7 +1639,7 @@
                 contentElement.innerHTML = formattedContent;
 
                 // Apply syntax highlighting to any new code blocks
-                if (messageType === 'script' && typeof Prism !== 'undefined') {
+                if ((messageType === 'script' || messageType === 'script_trace') && typeof Prism !== 'undefined') {
                     Prism.highlightAllUnder(contentElement);
                 }
             }
@@ -1925,17 +1955,88 @@
             }
         }
 
+        function showScriptReviewPrompt() {
+            const chatContainer = document.getElementById('chat-container');
+            const promptElement = document.createElement('div');
+            promptElement.classList.add('mb-3', 'p-3', 'rounded', 'bg-teal-900', 'border-l-4', 'border-teal-400');
+            promptElement.id = 'script-review-prompt';
+
+            const lammpsLines = pendingScript ? pendingScript.split('\n').length : 0;
+            const ovitoLines = pendingOvitoScript ? pendingOvitoScript.split('\n').length : 0;
+            let scriptSummary = `LAMMPS script: ${lammpsLines} lines`;
+            if (pendingOvitoScript) {
+                scriptSummary += ` | OVITO script: ${ovitoLines} lines`;
+            }
+
+            promptElement.innerHTML = `
+                <div class="flex items-start">
+                    <span class="mr-2 text-lg">🔬</span>
+                    <div class="flex-1">
+                        <strong class="text-white">Scripts Ready for Review</strong>
+                        <div class="mt-1 text-gray-200 text-sm mb-2">
+                            ${scriptSummary}<br>
+                            Review the scripts above. Click <strong>Approve & Run</strong> to start the simulation, or type corrections in the chat to modify.
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="approveAndRun()" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-1.5 rounded text-sm font-medium">Approve & Run</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            chatContainer.appendChild(promptElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function approveAndRun() {
+            // Remove the review prompt
+            const prompt = document.getElementById('script-review-prompt');
+            if (prompt) prompt.remove();
+
+            if (!pendingScript) {
+                addMessage('Error', 'No pending script to run.');
+                return;
+            }
+
+            // Track simulation summary for feedback
+            lastSimulationSummary = pendingScript.substring(0, 200);
+
+            // Start streaming simulation via WebSocket
+            if (socket && socket.connected) {
+                socket.emit('start_streaming_simulation', {
+                    script: pendingScript,
+                    ovito_script: pendingOvitoScript,
+                    dump_filename_pattern: pendingDumpPattern
+                });
+                addStreamingMessage('System', 'Starting live streaming simulation...', 'info');
+                updateStatus('Simulation running...');
+            } else {
+                addMessage('Error', 'WebSocket not connected. Cannot start simulation.');
+            }
+
+            // Clear pending state
+            conversationContext = '';
+            pendingScript = null;
+            pendingOvitoScript = null;
+            pendingDumpPattern = '';
+        }
+
         async function sendMessage() {
             const userInput = document.getElementById('user-input');
             const message = userInput.value.trim();
 
             if (message === '' || isStreaming) return;
 
+            // Dismiss script review prompt if present (user is typing corrections)
+            const reviewPrompt = document.getElementById('script-review-prompt');
+            if (reviewPrompt) reviewPrompt.remove();
+
             addMessage('You', message);
             userInput.value = '';
             updateStatus('Processing request...');
             isStreaming = true;
             currentAgentMessages = {};
+            streamingSessionId++;
 
             try {
                 // Build URL parameters
@@ -1950,6 +2051,9 @@
                 } else if (pendingScript) {
                     // Script was ready but not executed - include it as context
                     params.append('context', 'SCRIPT READY:\n' + pendingScript);
+                    if (pendingOvitoScript) {
+                        params.append('ovito_script', pendingOvitoScript);
+                    }
                 }
 
                 // Use EventSource for streaming with live WebSocket support
@@ -1971,7 +2075,7 @@
 
                             case 'agent_content':
                                 removeTypingIndicator(data.agent);
-                                addStreamingMessage(data.agent, data.content, data.message_type);
+                                addStreamingMessage(data.agent, data.content, data.message_type, data.attempt);
                                 break;
 
                             case 'agent_complete':
@@ -1984,19 +2088,22 @@
                                 // Track simulation summary for feedback
                                 lastSimulationSummary = message;
 
-                                // Capture ovito script before clearing state
+                                // Capture ovito script and dump pattern before clearing state
                                 const ovitoScript = data.ovito_script || pendingOvitoScript;
+                                const dumpPattern = data.dump_filename_pattern || pendingDumpPattern;
 
                                 // Clear context now that we're executing
                                 conversationContext = '';
                                 pendingScript = null;
                                 pendingOvitoScript = null;
+                                pendingDumpPattern = '';
 
                                 // Start streaming simulation via WebSocket
                                 if (socket && socket.connected) {
                                     socket.emit('start_streaming_simulation', {
                                         script: data.script,
-                                        ovito_script: ovitoScript
+                                        ovito_script: ovitoScript,
+                                        dump_filename_pattern: dumpPattern
                                     });
                                 } else {
                                     console.warn('WebSocket not available, falling back to batch simulation');
@@ -2021,10 +2128,22 @@
                                 // Store the script so user can say "run" next
                                 pendingScript = data.script;
                                 pendingOvitoScript = data.ovito_script || null;
+                                pendingDumpPattern = data.dump_filename_pattern || '';
+                                conversationContext = '';  // Clear so pendingScript takes priority on next sendMessage()
+                                break;
+
+                            case 'scripts_ready_for_review':
+                                updateStatus('Scripts ready for review');
+                                pendingScript = data.lammps_script;
+                                pendingOvitoScript = data.ovito_script || null;
+                                pendingDumpPattern = data.dump_filename_pattern || '';
+                                conversationContext = '';
+                                showScriptReviewPrompt();
                                 break;
 
                             case 'needs_more_info':
                                 updateStatus('Waiting for additional information');
+                                conversationContext = data.analysis || '';
                                 isStreaming = false;
                                 eventSource.close();
                                 break;
@@ -2032,7 +2151,7 @@
                             case 'awaiting_confirmation':
                                 updateStatus('Awaiting parameter confirmation');
                                 // Store the analysis for phase 2
-                                conversationContext = data.analysis;
+                                conversationContext = data.analysis || '';
                                 isStreaming = false;
                                 eventSource.close();
                                 break;

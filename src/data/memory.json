@@ -1,0 +1,183 @@
+{
+  "memories": [
+    {
+      "id": "77f72d11",
+      "content": "Script for Cu (EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006) failed: ERROR: Variable THERMO_FREQ is used in 'thermo ${THERMO_FREQ}' before it is defined. The first 'thermo' command referencing this variable will fail.; WARNING: CNA cutoff of 3.086 Angstroms is likely too small for FCC Cu. The standard CNA cutoff for FCC is ~1.207*a0 = 1.207*3.615 = 4.365 Angstroms (midway between 2nd and 3rd nearest neighbors). The current value (midway between 1st and 2nd NN) may misidentify atomic structures.",
+      "category": "failure",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "attempt": 1,
+        "issues": [
+          "ERROR: Variable THERMO_FREQ is used in 'thermo ${THERMO_FREQ}' before it is defined. The first 'thermo' command referencing this variable will fail.",
+          "WARNING: CNA cutoff of 3.086 Angstroms is likely too small for FCC Cu. The standard CNA cutoff for FCC is ~1.207*a0 = 1.207*3.615 = 4.365 Angstroms (midway between 2nd and 3rd nearest neighbors). The current value (midway between 1st and 2nd NN) may misidentify atomic structures.",
+          "WARNING: Intended parameters specify '300.0K' but the simulation is a multi-phase heating/cooling cycle spanning 100K to 2500K. The intended description may not accurately reflect the simulation."
+        ]
+      },
+      "created_at": "2026-02-23T15:55:02.319044"
+    },
+    {
+      "id": "211bfd6f",
+      "content": "Script for Cu (EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006) failed: ERROR: Variables ${thermo_freq} and ${dump_freq} are used in 'thermo' and 'dump' commands but are never defined in the script. LAMMPS will fail with an undefined variable error.; WARNING: Intended parameters specify 'Cu at 300.0K, NPT, 100.0ps' but the script performs a multi-phase seeded crystallization simulation with temperatures ranging from 100 K to 2500 K. The temperature profile does not match the intended 300 K isothermal simulation.",
+      "category": "failure",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "attempt": 2,
+        "issues": [
+          "ERROR: Variables ${thermo_freq} and ${dump_freq} are used in 'thermo' and 'dump' commands but are never defined in the script. LAMMPS will fail with an undefined variable error.",
+          "WARNING: Intended parameters specify 'Cu at 300.0K, NPT, 100.0ps' but the script performs a multi-phase seeded crystallization simulation with temperatures ranging from 100 K to 2500 K. The temperature profile does not match the intended 300 K isothermal simulation.",
+          "WARNING: The dump command runs continuously across all phases without undump/redump. While functional, separate dump files per phase would be cleaner for post-processing a multi-phase simulation."
+        ]
+      },
+      "created_at": "2026-02-23T15:56:45.073748"
+    },
+    {
+      "id": "62a1569d",
+      "content": "Successful Cu NPT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T16:09:09.591573"
+    },
+    {
+      "id": "dcc317fb",
+      "content": "OVITO script failed: 'from ovito.vis import ColorMap' \u2014 ColorMap is not a standard class in ovito.vis and will cause an ImportError at runtime.; 'from ovito.plugins.StdMod import ColorCodingModifier as _CCM' \u2014 This import path is non-standard/deprecated and the imported _CCM is never used.",
+      "category": "visualization_issue",
+      "metadata": {
+        "request": "Multi-phase simulation with frozen seed. 5 phases: (1) Equilibration at 300K for 10ps, (2) Heating 300K\u21922000K over 20ps, (3) Melt soak at 2000K for 20ps, (4) Cooling 2000K\u2192300K over 30ps, (5) Solidifi",
+        "attempt": 1,
+        "issues": [
+          "'from ovito.vis import ColorMap' \u2014 ColorMap is not a standard class in ovito.vis and will cause an ImportError at runtime.",
+          "'from ovito.plugins.StdMod import ColorCodingModifier as _CCM' \u2014 This import path is non-standard/deprecated and the imported _CCM is never used.",
+          "The ColorMap() constructor and its insert() method are not part of the documented OVITO Python API. The custom gradient creation will fail at runtime."
+        ]
+      },
+      "created_at": "2026-02-23T16:10:07.445007"
+    },
+    {
+      "id": "60a3be10",
+      "content": "Successful OVITO script for: Multi-phase simulation with frozen seed. 5 phases: (1) Equilibration at 300K for 10ps, (2) Heating 3",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Multi-phase simulation with frozen seed. 5 phases: (1) Equilibration at 300K for 10ps, (2) Heating 300K\u21922000K over 20ps, (3) Melt soak at 2000K for 20ps, (4) Cooling 2000K\u2192300K over 30ps, (5) Solidifi",
+        "attempts_needed": 2
+      },
+      "created_at": "2026-02-23T16:11:24.072364"
+    },
+    {
+      "id": "d44f3400",
+      "content": "Successful Cu NPT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T16:50:57.445294"
+    },
+    {
+      "id": "13b95d80",
+      "content": "Successful OVITO script for: Color by structure type using CommonNeighborAnalysisModifier. Hide disordered/liquid atoms (Structur",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Color by structure type using CommonNeighborAnalysisModifier. Hide disordered/liquid atoms (StructureType == 0) using ExpressionSelectionModifier and DeleteSelectedModifier, leaving only crystalline a",
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T16:51:50.780505"
+    },
+    {
+      "id": "290a6664",
+      "content": "Successful Cu NPT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T17:04:02.593079"
+    },
+    {
+      "id": "b8a3ee2e",
+      "content": "Successful OVITO script for: Show only crystalline atoms, colored by structure type. Multi-phase temperature profile: Phase 1 (0-",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Show only crystalline atoms, colored by structure type. Multi-phase temperature profile: Phase 1 (0-10ps) hold 300K, Phase 2 (10-30ps) ramp 300K\u21922000K, Phase 3 (30-50ps) hold 2000K, Phase 4 (50-80ps) ",
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T17:05:05.384304"
+    },
+    {
+      "id": "48d28c7d",
+      "content": "Successful Cu NPT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T17:30:20.894583"
+    },
+    {
+      "id": "53d8f72e",
+      "content": "OVITO script failed: ERROR: `auto_adjust_range=False` is passed to `CommonNeighborAnalysisModifier`, but this parameter does not exist on that modifier \u2014 it belongs to `ColorCodingModifier`. This will raise a TypeError at runtime when the OVITO CNA branch is executed.; ERROR: Structure type mapping is incorrect for OVITO's CommonNeighborAnalysisModifier. OVITO CNA uses 5=Other (not 0=Other). The script maps 0\u2192Other and uses `ExpressionSelectionModifier(expression='StructureType == 0')`, which will fail to select/delete amorphous atoms when OVITO CNA computes the property (type 5 atoms will not be removed).",
+      "category": "visualization_issue",
+      "metadata": {
+        "request": "Multi-phase simulation: Phase 1 (0-10 ps): Hold at 300 K NPT equilibration. Phase 2 (10-40 ps): Ramp 300 K \u2192 1600 K NPT heating. Phase 3 (40-60 ps): Hold at 1600 K NPT melt hold. Phase 4 (60-100 ps): ",
+        "attempt": 1,
+        "issues": [
+          "ERROR: `auto_adjust_range=False` is passed to `CommonNeighborAnalysisModifier`, but this parameter does not exist on that modifier \u2014 it belongs to `ColorCodingModifier`. This will raise a TypeError at runtime when the OVITO CNA branch is executed.",
+          "ERROR: Structure type mapping is incorrect for OVITO's CommonNeighborAnalysisModifier. OVITO CNA uses 5=Other (not 0=Other). The script maps 0\u2192Other and uses `ExpressionSelectionModifier(expression='StructureType == 0')`, which will fail to select/delete amorphous atoms when OVITO CNA computes the property (type 5 atoms will not be removed).",
+          "ERROR: The `ExpressionSelectionModifier` expression `'StructureType == 0'` is only correct for the LAMMPS c_cna branch (where 0=Other). For the OVITO CNA branch it should be `'StructureType == 5'`. The two branches produce incompatible type indices with no reconciliation step."
+        ]
+      },
+      "created_at": "2026-02-23T17:32:36.923646"
+    },
+    {
+      "id": "a3fdf5a8",
+      "content": "Successful OVITO script for: Multi-phase simulation: Phase 1 (0-10 ps): Hold at 300 K NPT equilibration. Phase 2 (10-40 ps): Ramp",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Multi-phase simulation: Phase 1 (0-10 ps): Hold at 300 K NPT equilibration. Phase 2 (10-40 ps): Ramp 300 K \u2192 1600 K NPT heating. Phase 3 (40-60 ps): Hold at 1600 K NPT melt hold. Phase 4 (60-100 ps): ",
+        "attempts_needed": 2
+      },
+      "created_at": "2026-02-23T17:34:24.610501"
+    },
+    {
+      "id": "9687a3ce",
+      "content": "Successful Cu NPT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T18:03:20.376823"
+    },
+    {
+      "id": "030b9513",
+      "content": "Successful OVITO script for: Color by structure type using CommonNeighborAnalysisModifier (CNA). Show only crystalline atoms by h",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Color by structure type using CommonNeighborAnalysisModifier (CNA). Show only crystalline atoms by hiding disordered/liquid atoms (StructureType == 0). Use ExpressionSelectionModifier to select disord",
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T18:04:31.385955"
+    }
+  ]
+}
