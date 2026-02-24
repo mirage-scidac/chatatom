@@ -48,6 +48,8 @@ class GenerationResult:
     conversation: List[Dict[str, str]]
     confidence: float
     dump_filename_pattern: str = ""
+    total_steps: int = 0
+    dump_freq_val: int = 1000
 
 
 class IterativeLammpsGeneration(dspy.Module):
@@ -186,6 +188,7 @@ class IterativeLammpsGeneration(dspy.Module):
         generator_knowledge = "\n".join([
             KnowledgeBase.KIM_MANDATORY_SEQUENCE,
             KnowledgeBase.ATOMIC_MASSES,
+            KnowledgeBase.CNA_CUTOFF_FORMULA,
             KnowledgeBase.GRIFFITH_CRACK_TECHNIQUE,
             KnowledgeBase.CYCLIC_LOADING_TECHNIQUE,
             KnowledgeBase.CRACK_OUTPUT_REQUIREMENTS,
@@ -193,6 +196,7 @@ class IterativeLammpsGeneration(dspy.Module):
 
         reviewer_knowledge = "\n".join([
             KnowledgeBase.KIM_MANDATORY_SEQUENCE,
+            KnowledgeBase.CNA_CUTOFF_FORMULA,
             KnowledgeBase.GRIFFITH_CRACK_TECHNIQUE,
             KnowledgeBase.CYCLIC_LOADING_TECHNIQUE,
             KnowledgeBase.CRACK_OUTPUT_REQUIREMENTS,
@@ -248,6 +252,14 @@ class IterativeLammpsGeneration(dspy.Module):
 
             current_script = gen_result.lammps_script
             dump_filename_pattern = getattr(gen_result, 'dump_filename_pattern', '') or ''
+            try:
+                total_steps = int(getattr(gen_result, 'total_steps', 0) or 0)
+            except (ValueError, TypeError):
+                total_steps = 0
+            try:
+                dump_freq_val = int(getattr(gen_result, 'dump_freq_val', 1000))
+            except (ValueError, TypeError):
+                dump_freq_val = 1000
             conversation.append({
                 "role": "generator",
                 "attempt": attempt,
@@ -302,6 +314,8 @@ class IterativeLammpsGeneration(dspy.Module):
                     conversation=conversation,
                     confidence=0.9 if attempt == 1 else 0.8 - (attempt - 1) * 0.1,
                     dump_filename_pattern=dump_filename_pattern,
+                    total_steps=total_steps,
+                    dump_freq_val=dump_freq_val,
                 )
 
             # Store this failure for future reference
@@ -317,6 +331,8 @@ class IterativeLammpsGeneration(dspy.Module):
             conversation=conversation,
             confidence=0.3,
             dump_filename_pattern=dump_filename_pattern,
+            total_steps=total_steps,
+            dump_freq_val=dump_freq_val,
         )
 
 
@@ -433,6 +449,10 @@ class SmartOrchestrator(dspy.Module):
         if ensemble not in ('NVE', 'NVT', 'NPT'):
             ensemble = 'NVT'
 
+        camera_angle = str(result.camera_angle).strip().lower() if result.camera_angle else "default"
+        if camera_angle not in ('top', 'side', 'default'):
+            camera_angle = 'default'
+
         return {
             "has_parameters": bool(result.has_parameters),
             "material": str(result.material).strip() if result.material else "",
@@ -442,6 +462,7 @@ class SmartOrchestrator(dspy.Module):
             "duration_ps": duration_ps,
             "system_size": system_size,
             "visualization_notes": str(result.visualization_notes).strip() if result.visualization_notes else "",
+            "camera_angle": camera_angle,
         }
 
     def select_tools(

@@ -166,6 +166,8 @@ def handle_streaming_simulation(data):
         lammps_script = data.get('script')
         ovito_script = data.get('ovito_script')  # Get pre-generated OVITO script
         dump_filename_pattern = data.get('dump_filename_pattern', '')
+        target_timesteps_from_frontend = data.get('target_timesteps', None)
+        camera_angle = data.get('camera_angle', 'default')
 
         if not lammps_script:
             emit('error', {'message': 'No LAMMPS script provided'})
@@ -195,26 +197,13 @@ def handle_streaming_simulation(data):
         
         def run_simulation():
             try:
-                import re
-                
-                # Extract frame sampling strategy from LAMMPS script comments
-                target_timesteps = None
-                for line in lammps_script.split('\n'):
-                    if 'Target timesteps:' in line or 'target timesteps:' in line.lower():
-                        # Extract the list of timesteps from the comment
-                        # Format: # Target timesteps: [0, 13000, 26000, ...]
-                        match = re.search(r'\[([\d,\s]+)\]', line)
-                        if match:
-                            timesteps_str = match.group(1)
-                            target_timesteps = [int(x.strip()) for x in timesteps_str.split(',')]
-                            print(f"[APP] Extracted target timesteps from script: {target_timesteps}")
-                            break
-                
-                # Simple render config with pre-generated OVITO script
+                # Use target timesteps from frontend (computed from LLM total_steps)
+                target_timesteps = target_timesteps_from_frontend
                 render_config = {
                     'ovito_script': ovito_script,  # OVITO script string or None (already generated)
                     'target_timesteps': target_timesteps,
                     'dump_filename_pattern': dump_filename_pattern,
+                    'camera_angle': camera_angle,
                 }
                 
                 print(f"[APP] Render config: {'Custom script (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default visualization'}")
@@ -247,13 +236,15 @@ def handle_streaming_simulation(data):
     except Exception as e:
         emit('error', {'message': f'Error starting simulation: {str(e)}'})
 
-@app.route('/api/llm-stream-live', methods=['GET'])
+@app.route('/api/llm-stream-live', methods=['POST'])
 def llm_stream_live():
-    """Enhanced streaming endpoint that uses WebSocket for simulation data"""
-    user_command = request.args.get('command')
-    conversation_context = request.args.get('context', '')
-    execution_intent = request.args.get('execution_intent', 'false').lower() == 'true'
-    ovito_script_param = request.args.get('ovito_script', None)
+    """Enhanced streaming endpoint with multi-turn conversation history"""
+    body = request.get_json(force=True, silent=True) or {}
+    user_command = body.get('command')
+    history = body.get('history', [])
+    execution_intent = body.get('execution_intent', False)
+    ovito_script_param = body.get('ovito_script', None)
+    pending_script_param = body.get('pending_script', None)
 
     if not user_command:
         return jsonify({"error": "Command not provided"}), 400
@@ -267,24 +258,21 @@ def llm_stream_live():
             configure_dspy_lm()
             smart_orchestrator = SmartOrchestrator()
 
-            # Use LLM to classify user intent
+            # Determine workflow stage from explicit fields
             workflow_stage = "initial"
-            if conversation_context:
-                if "SCRIPT READY:" in conversation_context:
-                    workflow_stage = "script_ready"
-                else:
-                    workflow_stage = "parameters_proposed"
+            if pending_script_param:
+                workflow_stage = "script_ready"
+            elif history:
+                workflow_stage = "parameters_proposed"
 
             intent_result = smart_orchestrator.classify_intent(user_command, workflow_stage)
             print(f"[INTENT] '{user_command}' -> {intent_result['intent']} (confidence: {intent_result['confidence']})")
 
             # If script is ready and user wants to execute, skip re-generation
             if workflow_stage == "script_ready" and intent_result["intent"] == "execute":
-                # Extract the pending script from context
-                pending_script = conversation_context.replace("SCRIPT READY:\n", "", 1)
                 yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
                 yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
-                yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': pending_script, 'ovito_script': ovito_script_param, 'user_command': user_command})}\n\n"
+                yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': pending_script_param, 'ovito_script': ovito_script_param, 'user_command': user_command})}\n\n"
                 yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                 yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
                 return
@@ -292,96 +280,56 @@ def llm_stream_live():
             # Extract element from user command and build registry context
             registry_context = kim_utils.build_registry_context_for_command(user_command)
 
-            # Phase 1 or 2 logic (same as existing endpoint)
-            if conversation_context:
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-                
-                orchestrator_prompt = f"""Previous analysis and proposal:
-{conversation_context}
+            # Build multi-turn messages array
+            messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
 
-User response: {user_command}
+            # Add trimmed conversation history (only previous turns)
+            trimmed_history = history[-(config.MAX_CONVERSATION_TURNS * 2):]
+            for msg in trimmed_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
 
-{registry_context}
+            # Add current user message with registry context appended
+            current_message = user_command
+            if registry_context:
+                current_message += f"\n\n{registry_context}"
+            messages.append({"role": "user", "content": current_message})
 
-Process the user's feedback. If you have all required parameters (including a user-selected KIM model), provide final simulation parameters using the SIMULATION PARAMETERS format. If you still need information (such as KIM model selection), continue the conversation naturally and present options to the user."""
+            # Stream LLM response (unified path for initial and follow-up turns)
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
 
-                finalization_chunks = []
-                try:
-                    completion = client.chat.completions.create(
-                        model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
-                        messages=[
-                            {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-                            {"role": "user", "content": orchestrator_prompt}
-                        ],
-                        temperature=config.ORCHESTRATOR_TEMPERATURE,
-                        stream=True,
-                    )
-                    for chunk in completion:
-                        if chunk.choices[0].delta.content is not None:
-                            text = chunk.choices[0].delta.content
-                            finalization_chunks.append(text)
-                            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': text, 'message_type': 'finalization'})}\n\n"
-                except Exception as e:
-                    # Fallback to non-streaming
-                    completion = client.chat.completions.create(
-                        model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
-                        messages=[
-                            {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-                            {"role": "user", "content": orchestrator_prompt}
-                        ],
-                        temperature=config.ORCHESTRATOR_TEMPERATURE,
-                    )
-                    content = completion.choices[0].message.content
-                    finalization_chunks.append(content)
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': content, 'message_type': 'finalization'})}\n\n"
+            response_chunks = []
+            try:
+                completion = client.chat.completions.create(
+                    model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
+                    messages=messages,
+                    temperature=config.ORCHESTRATOR_TEMPERATURE,
+                    stream=True,
+                )
+                for chunk in completion:
+                    if chunk.choices[0].delta.content is not None:
+                        text = chunk.choices[0].delta.content
+                        response_chunks.append(text)
+                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': text, 'message_type': 'analysis'})}\n\n"
+            except Exception as e:
+                # Fallback to non-streaming
+                completion = client.chat.completions.create(
+                    model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
+                    messages=messages,
+                    temperature=config.ORCHESTRATOR_TEMPERATURE,
+                )
+                content = completion.choices[0].message.content
+                response_chunks.append(content)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': content, 'message_type': 'analysis'})}\n\n"
 
-                finalization = ''.join(finalization_chunks)
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
-
-                analysis = finalization
-            else:
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-
-                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}{registry_context}"
-                analysis_chunks = []
-                try:
-                    completion = client.chat.completions.create(
-                        model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
-                        messages=[
-                            {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-                            {"role": "user", "content": orchestrator_prompt}
-                        ],
-                        temperature=config.ORCHESTRATOR_TEMPERATURE,
-                        stream=True,
-                    )
-                    for chunk in completion:
-                        if chunk.choices[0].delta.content is not None:
-                            text = chunk.choices[0].delta.content
-                            analysis_chunks.append(text)
-                            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': text, 'message_type': 'analysis'})}\n\n"
-                except Exception as e:
-                    # Fallback to non-streaming
-                    completion = client.chat.completions.create(
-                        model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
-                        messages=[
-                            {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-                            {"role": "user", "content": orchestrator_prompt}
-                        ],
-                        temperature=config.ORCHESTRATOR_TEMPERATURE,
-                    )
-                    content = completion.choices[0].message.content
-                    analysis_chunks.append(content)
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': content, 'message_type': 'analysis'})}\n\n"
-
-                analysis = ''.join(analysis_chunks)
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+            analysis = ''.join(response_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
 
             # --- Structured parameter extraction via DSPy ---
             yield f"data: {json.dumps({'type': 'status', 'message': 'Extracting parameters...'})}\n\n"
             params = smart_orchestrator.extract_parameters(analysis)
 
             if not params["has_parameters"]:
-                event_type = 'needs_more_info' if conversation_context else 'awaiting_confirmation'
+                event_type = 'needs_more_info' if history else 'awaiting_confirmation'
                 yield f"data: {json.dumps({'type': event_type, 'analysis': analysis})}\n\n"
                 yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
                 return
@@ -394,10 +342,11 @@ Process the user's feedback. If you have all required parameters (including a us
             duration_ps = params["duration_ps"]
             system_size = params["system_size"]
             viz_notes = params["visualization_notes"]
+            camera_angle = params.get("camera_angle", "default")
 
             print(f"[PARAMS] Extracted: material={material_for_gen}, kim={kim_model}, "
                   f"T={temperature}K, ensemble={ensemble}, duration={duration_ps}ps, "
-                  f"size={system_size}")
+                  f"size={system_size}, camera_angle={camera_angle}")
 
             # Retrieve relevant lessons from memory before generation
             lammps_memory_context = ""
@@ -629,9 +578,23 @@ Process the user's feedback. If you have all required parameters (including a us
                     yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
                     yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
 
-                # Emit scripts_ready_for_review checkpoint instead of auto-executing
+                # Compute target_timesteps from LLM-provided total_steps
                 dump_filename_pattern = getattr(result, 'dump_filename_pattern', '') or ''
-                yield f"data: {json.dumps({'type': 'scripts_ready_for_review', 'lammps_script': lammps_script, 'ovito_script': ovito_script, 'dump_filename_pattern': dump_filename_pattern})}\n\n"
+                llm_total_steps = getattr(result, 'total_steps', 0) or 0
+                dump_freq_val = getattr(result, 'dump_freq_val', 1000) or 1000
+                target_timesteps = None
+                if llm_total_steps > 0:
+                    n_frames = min(config.MAX_TRAJECTORY_FRAMES, max(1, llm_total_steps // dump_freq_val))
+                    if n_frames > 1:
+                        step_size = llm_total_steps / (n_frames - 1)
+                        raw = [int(round(i * step_size / dump_freq_val) * dump_freq_val) for i in range(n_frames)]
+                        target_timesteps = sorted(set(raw))
+                    elif n_frames == 1:
+                        target_timesteps = [0]
+                    print(f"[APP] Computed target_timesteps from LLM total_steps={llm_total_steps}: {len(target_timesteps or [])} frames")
+
+                # Emit scripts_ready_for_review checkpoint instead of auto-executing
+                yield f"data: {json.dumps({'type': 'scripts_ready_for_review', 'lammps_script': lammps_script, 'ovito_script': ovito_script, 'dump_filename_pattern': dump_filename_pattern, 'target_timesteps': target_timesteps, 'camera_angle': camera_angle})}\n\n"
             else:
                 # Review failed - no OVITO, emit structured failure
                 yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script, 'issues': result.issues, 'suggestions': result.suggestions})}\n\n"

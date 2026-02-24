@@ -18,7 +18,6 @@ import threading
 import time
 import kim_utils
 import run_manager
-from visualization_rendering import render_frame_to_image_custom
 from queue import Queue
 
 
@@ -283,56 +282,6 @@ def extract_timestep_from_filename(filepath: str, pattern: str = "") -> int:
     return -1
 
 
-def extract_dump_pattern_from_script(script_string: str) -> Optional[str]:
-    """Extract dump filename pattern from LAMMPS script.
-
-    Parses: dump ID group style FREQ filename args...
-    Returns the filename (e.g. 'dump.Cu_solidification.*.dat' or 'traj.lammpstrj')
-    """
-    for line in script_string.split('\n'):
-        stripped = line.strip()
-        if stripped.startswith('#'):
-            continue
-        if stripped.startswith('dump ') and 'custom' in stripped:
-            parts = stripped.split()
-            if len(parts) >= 6:
-                return parts[5]  # filename pattern
-    return None
-
-
-def estimate_frame_stride(script_string: str, max_frames: int) -> int:
-    """Estimate stride for evenly-spaced frame sampling.
-
-    Parses `run` commands and `dump` frequency from the LAMMPS script
-    to estimate total frames, then returns stride = max(1, total // max_frames).
-    """
-    total_steps = 0
-    dump_freq = 1000
-
-    for line in script_string.split('\n'):
-        stripped = line.strip()
-        if stripped.startswith('#'):
-            continue
-        if stripped.startswith('run '):
-            try:
-                total_steps += int(stripped.split()[1])
-            except (IndexError, ValueError):
-                pass
-        # Match: dump ID group style FREQ file ...
-        if stripped.startswith('dump ') and 'custom' in stripped:
-            try:
-                parts = stripped.split()
-                dump_freq = int(parts[4])
-            except (IndexError, ValueError):
-                pass
-
-    if total_steps > 0:
-        estimated_frames = total_steps // dump_freq
-        stride = max(1, estimated_frames // max_frames)
-        print(f"[STRIDE] Estimated {estimated_frames} frames (run={total_steps}, dump_freq={dump_freq}), stride={stride} for max {max_frames}")
-        return stride
-    return 1  # default: take every frame
-
 
 def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threading.Event,
                       data_callback: Optional[Callable] = None, max_frames: int = 100,
@@ -549,6 +498,16 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
         print(f"[DUMP MONITOR] Completed. Total frames queued: {frame_counter}")
 
 
+def apply_basic_visualization(pipeline) -> None:
+    """Apply basic particle type coloring as default visualization."""
+    from ovito.modifiers import ColorCodingModifier
+    color_modifier = ColorCodingModifier(
+        property='Particle Type',
+        gradient=ColorCodingModifier.Hot()
+    )
+    pipeline.modifiers.append(color_modifier)
+
+
 def rendering_worker(frame_queue: Queue, ovito_script: Optional[str],
                     quality: str, camera_angle: str,
                     frame_images: List[Dict], simulation_done: threading.Event,
@@ -574,8 +533,6 @@ def rendering_worker(frame_queue: Queue, ovito_script: Optional[str],
     from ovito.io import import_file
     from ovito.vis import Viewport, TachyonRenderer
     from ovito_executor import DynamicOVITOExecutor
-    from visualization_rendering import apply_basic_visualization
-
     cached_pipeline = None
     cached_file = None
     known_frames = 0
@@ -648,6 +605,12 @@ def rendering_worker(frame_queue: Queue, ovito_script: Optional[str],
                     apply_basic_visualization(cached_pipeline)
 
                 cached_pipeline.add_to_scene()
+
+                # White simulation cell outline for dark-themed frontend
+                cell_vis = cached_pipeline.source.data.cell.vis
+                cell_vis.rendering_color = (1.0, 1.0, 1.0)
+                cell_vis.line_width = 1.4
+
                 cached_file = dump_file
 
             # Fit camera to current frame geometry
@@ -739,9 +702,6 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
                 break
         script_string = '\n'.join(lines)
 
-    # Compute frame stride for even spacing
-    frame_stride = estimate_frame_stride(script_string, config.MAX_TRAJECTORY_FRAMES)
-
     # Create run folder
     run_folder = run_manager.create_run_folder()
     print(f"Created run folder: {run_folder}")
@@ -763,12 +723,6 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
     max_queue_size = render_config.get('max_queue_size', 10)
     target_timesteps = render_config.get('target_timesteps', None)
     dump_filename_pattern = render_config.get('dump_filename_pattern', None)
-
-    # Deterministic fallback: parse the LAMMPS script for the dump filename pattern
-    if not dump_filename_pattern:
-        dump_filename_pattern = extract_dump_pattern_from_script(script_string) or ''
-        if dump_filename_pattern:
-            print(f"[LAMMPS] Extracted dump pattern from script: {dump_filename_pattern}")
 
     # Shared data structures
     thermo_data = []
@@ -819,7 +773,7 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         monitor_thread = threading.Thread(
             target=monitor_dump_file,
             args=(run_folder, frame_queue, simulation_done, data_callback,
-                  config.MAX_TRAJECTORY_FRAMES, target_timesteps, frame_stride,
+                  config.MAX_TRAJECTORY_FRAMES, target_timesteps, 1,
                   dump_filename_pattern)
         )
         monitor_thread.daemon = True

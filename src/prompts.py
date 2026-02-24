@@ -95,7 +95,15 @@ class GenerateLAMMPSScript(dspy.Signature):
     lammps_script: str = dspy.OutputField(desc="Complete LAMMPS input script")
     explanation: str = dspy.OutputField(desc="Brief explanation of key script features")
     dump_filename_pattern: str = dspy.OutputField(
-        desc="The dump filename pattern used in the script (e.g., 'dump.Cu_solidification.*.dat' or 'traj.lammpstrj')"
+        desc="The dump filename pattern used in the script (e.g., 'dump.Cu_solidification.*.dat' or 'traj.lammpstrj'). "
+             "For multi-phase simulations with separate dumps per phase, report a UNIFIED glob pattern that matches ALL "
+             "dump files (e.g., 'dump.*.dat' to match dump.*.prestress AND dump.*.cracked)."
+    )
+    total_steps: int = dspy.OutputField(
+        desc="Total number of simulation steps across all run commands combined"
+    )
+    dump_freq_val: int = dspy.OutputField(
+        desc="The trajectory dump frequency in timesteps set within the script (e.g. 10000)"
     )
 
 
@@ -106,7 +114,7 @@ class ReviewLAMMPSScript(dspy.Signature):
     kim interactions before create_box, missing mass command,
     NVT/NPT without velocity initialization, NPT combined with fix deform.
 
-    CHECK: Pdamp ~1000x timestep, CNA cutoff ~1.207*a0,
+    CHECK: Pdamp ~1000x timestep, CNA cutoff ~0.854*a0 (midpoint of 1st and 2nd NN),
     crack regions defined AFTER create_atoms, neigh_modify exclude
     (NOT delete_atoms) for Griffith cracks, unfix/undump hygiene
     between phases, pe/atom and stress/atom in crack dump commands,
@@ -134,9 +142,10 @@ class ReviewOVITOScript(dspy.Signature):
     one-off pipeline.compute() outside a modifier.
 
     CHECK: proper import statements, PythonModifier function signature
-    (frame, data), guard pattern for pre-computed properties (c_cna),
-    auto_adjust_range=False for stable color mapping, correct structure
-    type mapping (0=Other, 1=FCC, 2=HCP, 3=BCC, 4=ICO).
+    (frame, data), guard pattern for pre-computed properties ('Structure Type'
+    — OVITO auto-maps LAMMPS c_cna to this name), auto_adjust_range=False
+    for stable color mapping, correct structure type mapping
+    (0=Other, 1=FCC, 2=HCP, 3=BCC, 4=ICO).
     """
     ovito_script: str = dspy.InputField(desc="OVITO Python script to review")
     visualization_request: str = dspy.InputField(desc="Original visualization request", default="")
@@ -231,6 +240,12 @@ class ExtractSimulationParameters(dspy.Signature):
     visualization_notes: str = dspy.OutputField(
         desc="Visualization preferences from the text. Empty if none."
     )
+    camera_angle: str = dspy.OutputField(
+        desc="Camera viewing angle: 'top' for top-down/bird's-eye view along z-axis, "
+             "'side' for side view along x-axis, 'default' for standard 3D perspective. "
+             "Default 'default'",
+        default="default"
+    )
 
 
 class DetectVisualization(dspy.Signature):
@@ -258,9 +273,10 @@ class GenerateOVITOScript(dspy.Signature):
     Assume the 'pipeline' variable already exists with data loaded.
 
     Use PythonModifier with per-frame guards that run every frame.
-    Check for pre-computed LAMMPS properties (e.g., c_cna) before recomputing.
-    When CNA is pre-computed, use the c_cna property directly instead of
-    applying CommonNeighborAnalysisModifier.
+    Check for pre-computed LAMMPS properties before recomputing.
+    When CNA is pre-computed, OVITO auto-maps the 'c_cna' dump column to
+    'Structure Type' — use data.particles['Structure Type'] to access it,
+    NOT data.particles['c_cna'] (which does not exist after import).
     """
     visualization_request: str = dspy.InputField(desc="Natural language visualization request")
     simulation_context: str = dspy.InputField(desc="Material, temperature, structure info", default="")
@@ -302,16 +318,66 @@ Common atomic masses (metal units):
 - Nickel: 58.6934
 """
 
-    # CNA structure type mapping from OVITO docs
+    # CNA structure type mapping — LAMMPS vs OVITO encodings
     CNA_STRUCTURE_MAPPING = """
-# Mapping documented in CommonNeighborAnalysisModifier (docs/ovito_docs/modifiers.md)
-structure_names = {
-    1: "FCC",
-    2: "HCP",
-    3: "BCC",
-    4: "ICO",
-    5: "Other",
-}
+CNA STRUCTURE TYPE ENCODING (LAMMPS vs OVITO):
+
+LAMMPS compute cna/atom output:
+  1 = FCC, 2 = HCP, 3 = BCC, 4 = ICO, 5 = Other/Unknown
+
+OVITO CommonNeighborAnalysisModifier (Structure Type property):
+  0 = Other/Unknown, 1 = FCC, 2 = HCP, 3 = BCC, 4 = ICO
+
+CRITICAL — OVITO PROPERTY NAME AUTO-MAPPING:
+OVITO 3.14+ automatically renames the LAMMPS dump column 'c_cna' to
+'Structure Type' on import. The original name 'c_cna' does NOT exist
+in data.particles after import. You MUST use 'Structure Type' to access
+pre-computed CNA data:
+
+  # CORRECT:
+  cna_values = data.particles['Structure Type'][...]
+  # WRONG (will raise KeyError):
+  cna_values = data.particles['c_cna'][...]
+
+The values remain LAMMPS-encoded (1=FCC, 2=HCP, 3=BCC, 4=ICO, 5=Other),
+NOT remapped to OVITO encoding. You MUST remap value 5 → 0 for OVITO
+color compatibility:
+  import numpy as np
+  cna_values = data.particles['Structure Type'][...]
+  structure_type = np.where(cna_values >= 5, 0, cna_values)
+
+Without this remapping, OVITO will treat LAMMPS value 5 (unknown) as an
+unrecognized type, and filters like 'StructureType == 0' will not match.
+
+For display and statistics, use OVITO's encoding:
+structure_names = {0: "Other", 1: "FCC", 2: "HCP", 3: "BCC", 4: "ICO"}
+"""
+
+    # CNA cutoff formula for correct nearest-neighbor analysis
+    CNA_CUTOFF_FORMULA = """
+CNA CUTOFF FORMULA (CRITICAL — MUST USE CORRECT VALUE):
+
+The CNA cutoff must sit BETWEEN the 1st and 2nd nearest-neighbor distances.
+For FCC crystals:
+  1st NN distance = a0 / sqrt(2)   (12 neighbors)
+  2nd NN distance = a0             (6 neighbors)
+  Correct CNA cutoff = (1st_NN + 2nd_NN) / 2 = (a0/sqrt(2) + a0) / 2
+                      ≈ 0.854 * a0
+
+Per-element values:
+  Cu (a0 = 3.615 Å): cutoff = 3.086 Å
+  Al (a0 = 4.050 Å): cutoff = 3.457 Å
+  Au (a0 = 4.078 Å): cutoff = 3.481 Å
+  Ni (a0 = 3.524 Å): cutoff = 3.008 Å
+  Ag (a0 = 4.085 Å): cutoff = 3.487 Å
+
+COMMON MISTAKE — DO NOT USE:
+  1.207 * a0 → This is TOO LARGE (e.g., 4.365 Å for Cu).
+  It includes both 1st and 2nd NN shells (18 neighbors instead of 12),
+  causing CNA to classify ALL atoms as "Unknown/Other" (type 5).
+
+LAMMPS command:
+  compute cna all cna/atom 3.086    # For Cu with a0 = 3.615 Å
 """
 
     # OVITO correct import reference
@@ -352,7 +418,7 @@ PER-FRAME PROPERTY GUARDS (CRITICAL):
 
 OVITO recomputes the entire modifier stack for every requested animation frame. Any property you create just once (e.g., by calling pipeline.compute() outside the modifier chain) will not persist across frames. To avoid "property missing" fallbacks, wrap every derived-property requirement in a modifier that executes per frame:
 
-1. Use PythonModifier (docs/ovito_docs/user_modifier.md) when you simply need to copy, rename, or aggregate existing per-atom data (e.g., copying c_cna into Structure Type, computing a selection flag, calculating statistics, snapshot logging).
+1. Use PythonModifier (docs/ovito_docs/user_modifier.md) when you simply need to copy, rename, or aggregate existing per-atom data (e.g., accessing 'Structure Type' — OVITO's auto-mapped name for the LAMMPS c_cna column — computing a selection flag, calculating statistics, snapshot logging).
 2. Use built-in analysis modifiers (CommonNeighborAnalysisModifier, CentroSymmetryModifier, DislocationAnalysisModifier, etc.) inside that PythonModifier via `data.apply(...)` (in-place) or by appending them directly to the pipeline so they execute each frame.
 3. Never rely on a one-off `pipeline.compute()` side-effect to add properties, because the executor will call compute() again for each frame and those properties will vanish.
 4. When multiple downstream modifiers depend on the same derived property, install exactly one guard modifier at the *start* of the pipeline to prepare that property, and let later steps assume it exists.
@@ -430,9 +496,15 @@ For proper crack analysis, simulations MUST include these computes and dump fiel
 Required computes:
   compute peratom all pe/atom
   compute stress_atom all stress/atom NULL
+  compute cna all cna/atom <CUTOFF>
+
+CNA CUTOFF — use correct formula (0.854 * a0):
+  Cu (a0=3.615): compute cna all cna/atom 3.086
+  Al (a0=4.050): compute cna all cna/atom 3.457
+  DO NOT use 1.207*a0 — that is too large and misclassifies all atoms.
 
 Required dump fields (include in ALL dump commands):
-  dump <ID> all custom <freq> <file> id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3]
+  dump <ID> all custom <freq> <file> id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3] c_cna
 
 Where stress components are:
   c_stress_atom[1] = xx (tensile stress along x)
@@ -442,11 +514,17 @@ Where stress components are:
 Thermo output should include full stress tensor:
   thermo_style custom step time temp pe press pxx pyy pzz vol lx ly lz
 
-For multi-phase simulations, use separate dump files per phase:
-  dump prestressDump all custom 10000 dump.*.prestress id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3]
+For multi-phase simulations, use separate dump files per phase BUT ensure
+all dump filenames share a UNIFIED glob pattern so the monitoring system
+can find them all. Use a common prefix and extension:
+  dump prestressDump all custom 10000 dump.*.prestress id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3] c_cna
   ...
   undump prestressDump
-  dump crackDump all custom 10000 dump.*.cracked id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3]
+  dump crackDump all custom 10000 dump.*.cracked id type x y z c_peratom c_stress_atom[1] c_stress_atom[2] c_stress_atom[3] c_cna
+
+For dump_filename_pattern, report a unified pattern that matches ALL phase
+dump files. Example: if using dump.*.prestress and dump.*.cracked, report
+dump_filename_pattern as 'dump.*.*' so the monitor finds files from all phases.
 """
 
 

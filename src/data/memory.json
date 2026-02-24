@@ -1,21 +1,15 @@
 {
   "memories": [
     {
-      "id": "77f72d11",
-      "content": "Script for Cu (EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006) failed: ERROR: Variable THERMO_FREQ is used in 'thermo ${THERMO_FREQ}' before it is defined. The first 'thermo' command referencing this variable will fail.; WARNING: CNA cutoff of 3.086 Angstroms is likely too small for FCC Cu. The standard CNA cutoff for FCC is ~1.207*a0 = 1.207*3.615 = 4.365 Angstroms (midway between 2nd and 3rd nearest neighbors). The current value (midway between 1st and 2nd NN) may misidentify atomic structures.",
+      "id": "cna_cutoff_correct",
+      "content": "CNA cutoff for FCC metals must be (a0/sqrt(2) + a0)/2 \u2248 0.854*a0. For Cu (a0=3.615): cutoff = 3.086 Angstroms. Do NOT use 1.207*a0 (= 4.365 for Cu) \u2014 that value is too large because it includes the 2nd nearest-neighbor shell (18 neighbors instead of 12), causing CNA to classify ALL atoms as Unknown/Other (type 5).",
       "category": "failure",
       "metadata": {
         "material": "Cu",
-        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
-        "ensemble": "NPT",
-        "attempt": 1,
-        "issues": [
-          "ERROR: Variable THERMO_FREQ is used in 'thermo ${THERMO_FREQ}' before it is defined. The first 'thermo' command referencing this variable will fail.",
-          "WARNING: CNA cutoff of 3.086 Angstroms is likely too small for FCC Cu. The standard CNA cutoff for FCC is ~1.207*a0 = 1.207*3.615 = 4.365 Angstroms (midway between 2nd and 3rd nearest neighbors). The current value (midway between 1st and 2nd NN) may misidentify atomic structures.",
-          "WARNING: Intended parameters specify '300.0K' but the simulation is a multi-phase heating/cooling cycle spanning 100K to 2500K. The intended description may not accurately reflect the simulation."
-        ]
+        "keywords": "CNA, cutoff, FCC, nearest neighbor, cna/atom",
+        "corrected_from": "77f72d11"
       },
-      "created_at": "2026-02-23T15:55:02.319044"
+      "created_at": "2026-02-23T20:00:00.000000"
     },
     {
       "id": "211bfd6f",
@@ -178,6 +172,161 @@
         "attempts_needed": 1
       },
       "created_at": "2026-02-23T18:04:31.385955"
+    },
+    {
+      "id": "5dc681e8",
+      "content": "Script for Cu (EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006) failed: 'group crack_lower count' and 'group crack_upper count' are not valid LAMMPS commands. The 'group' command does not have a 'count' subcommand. This will cause a runtime error.; A single continuous dump is used across all phases. Best practice for multi-phase crack simulations is to use separate dump files per phase with undump/dump between phases for cleaner analysis.",
+      "category": "failure",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "attempt": 1,
+        "issues": [
+          "'group crack_lower count' and 'group crack_upper count' are not valid LAMMPS commands. The 'group' command does not have a 'count' subcommand. This will cause a runtime error.",
+          "A single continuous dump is used across all phases. Best practice for multi-phase crack simulations is to use separate dump files per phase with undump/dump between phases for cleaner analysis."
+        ]
+      },
+      "created_at": "2026-02-23T19:02:48.778217"
+    },
+    {
+      "id": "2ebd5f01",
+      "content": "Successful Cu NPT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NPT",
+        "temperature": 300.0,
+        "attempts_needed": 2
+      },
+      "created_at": "2026-02-23T19:04:06.274011"
+    },
+    {
+      "id": "ac3cf391",
+      "content": "OVITO script failed: ColorCodingModifier is missing 'auto_adjust_range=False'. Without this, the color range may auto-adjust per frame, causing inconsistent coloring across the trajectory. The visualization request explicitly requires this parameter.; ColorCodingModifier is missing 'discretize_color_map=True'. The visualization request explicitly asks for discrete color bands for integer CNA structure types.",
+      "category": "visualization_issue",
+      "metadata": {
+        "request": "Show only non-FCC atoms to highlight crack surfaces, dislocations, stacking faults, and defects; top-down view along z-axis; print atom counts for any groups defined in the LAMMPS script. System is 30",
+        "attempt": 1,
+        "issues": [
+          "ColorCodingModifier is missing 'auto_adjust_range=False'. Without this, the color range may auto-adjust per frame, causing inconsistent coloring across the trajectory. The visualization request explicitly requires this parameter.",
+          "ColorCodingModifier is missing 'discretize_color_map=True'. The visualization request explicitly asks for discrete color bands for integer CNA structure types."
+        ]
+      },
+      "created_at": "2026-02-23T19:04:56.480491"
+    },
+    {
+      "id": "fdad1645",
+      "content": "Successful OVITO script for: Show only non-FCC atoms to highlight crack surfaces, dislocations, stacking faults, and defects; top",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Show only non-FCC atoms to highlight crack surfaces, dislocations, stacking faults, and defects; top-down view along z-axis; print atom counts for any groups defined in the LAMMPS script. System is 30",
+        "attempts_needed": 2
+      },
+      "created_at": "2026-02-23T19:05:56.860093"
+    },
+    {
+      "id": "8917d4e7",
+      "content": "Successful Cu NVT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NVT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T20:24:18.981849"
+    },
+    {
+      "id": "2274000b",
+      "content": "Successful OVITO script for: Show only non-FCC atoms (defects, crack surfaces, dislocations, stacking faults), top-down view alon",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Show only non-FCC atoms (defects, crack surfaces, dislocations, stacking faults), top-down view along z-axis, and print atom statistics for every group created in the LAMMPS script. The dump file shou",
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-23T20:25:30.903583"
+    },
+    {
+      "id": "cf38d378",
+      "content": "Successful Cu NVT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NVT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-24T10:17:24.783355"
+    },
+    {
+      "id": "b124557b",
+      "content": "OVITO script failed: Creates a Viewport() object and attempts to set camera parameters; the provided guidelines explicitly say not to create viewports/renderers or perform rendering setup in this script environment.; Computes CNA via data.apply(CommonNeighborAnalysisModifier()) inside the PythonModifier instead of appending CommonNeighborAnalysisModifier to the pipeline; while it can work, it is less standard and may have performance/clarity drawbacks.",
+      "category": "visualization_issue",
+      "metadata": {
+        "request": "Show only non-FCC atoms; top-down view along z. Filter using CNA structure type (structure != FCC); reuse existing CNA fields if present else compute CNA each frame before filtering. Keep color mappin",
+        "attempt": 1,
+        "issues": [
+          "Creates a Viewport() object and attempts to set camera parameters; the provided guidelines explicitly say not to create viewports/renderers or perform rendering setup in this script environment.",
+          "Computes CNA via data.apply(CommonNeighborAnalysisModifier()) inside the PythonModifier instead of appending CommonNeighborAnalysisModifier to the pipeline; while it can work, it is less standard and may have performance/clarity drawbacks."
+        ]
+      },
+      "created_at": "2026-02-24T10:17:43.034865"
+    },
+    {
+      "id": "1fd80e85",
+      "content": "OVITO script failed: ExpressionSelectionModifier uses expression 'StructureType == 1' but the property created/used is named 'Structure Type' (with a space). This will likely break FCC filtering; use bracket notation like ParticleProperty[\"Structure Type\"] == 1.; CommonNeighborAnalysisModifier is appended unconditionally; if LAMMPS c_cna is present, CNA may recompute and overwrite the remapped 'Structure Type', defeating reuse of existing CNA fields.",
+      "category": "visualization_issue",
+      "metadata": {
+        "request": "Show only non-FCC atoms; top-down view along z. Filter using CNA structure type (structure != FCC); reuse existing CNA fields if present else compute CNA each frame before filtering. Keep color mappin",
+        "attempt": 2,
+        "issues": [
+          "ExpressionSelectionModifier uses expression 'StructureType == 1' but the property created/used is named 'Structure Type' (with a space). This will likely break FCC filtering; use bracket notation like ParticleProperty[\"Structure Type\"] == 1.",
+          "CommonNeighborAnalysisModifier is appended unconditionally; if LAMMPS c_cna is present, CNA may recompute and overwrite the remapped 'Structure Type', defeating reuse of existing CNA fields."
+        ]
+      },
+      "created_at": "2026-02-24T10:18:00.747781"
+    },
+    {
+      "id": "9c0ab4d3",
+      "content": "OVITO script failed: ERROR: In _ensure_structure_type(), uses undefined variable 'particles_' when creating the 'Structure Type' property; should be 'particles.create_property(...)'. This will crash when 'c_cna' exists but 'Structure Type' does not.; WARNING: _set_top_down_view() attempts to manipulate Viewport from within a PythonModifier; in many OVITO execution contexts (batch/headless) this is ineffective or ignored. Also, scripts are expected to only append modifiers to the pipeline.",
+      "category": "visualization_issue",
+      "metadata": {
+        "request": "Show only non-FCC atoms; top-down view along z. Filter using CNA structure type (structure != FCC); reuse existing CNA fields if present else compute CNA each frame before filtering. Keep color mappin",
+        "attempt": 3,
+        "issues": [
+          "ERROR: In _ensure_structure_type(), uses undefined variable 'particles_' when creating the 'Structure Type' property; should be 'particles.create_property(...)'. This will crash when 'c_cna' exists but 'Structure Type' does not.",
+          "WARNING: _set_top_down_view() attempts to manipulate Viewport from within a PythonModifier; in many OVITO execution contexts (batch/headless) this is ineffective or ignored. Also, scripts are expected to only append modifiers to the pipeline.",
+          "WARNING: Visualization request mentions consistent color mapping (disable auto range scaling if color coding), but no ColorCodingModifier is configured/applied."
+        ]
+      },
+      "created_at": "2026-02-24T10:18:19.100323"
+    },
+    {
+      "id": "30976214",
+      "content": "Successful Cu NVT simulation at 300.0K",
+      "category": "success",
+      "metadata": {
+        "material": "Cu",
+        "kim_model": "EAM_Dynamo_AcklandTichyVitek_1987_Cu__MO_179025990738_006",
+        "ensemble": "NVT",
+        "temperature": 300.0,
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-24T11:09:10.544574"
+    },
+    {
+      "id": "5e5c2c55",
+      "content": "Successful OVITO script for: Show only non-FCC atoms; top-down view. Compute/store per-atom CNA structure ID and filter out FCC; ",
+      "category": "visualization_success",
+      "metadata": {
+        "request": "Show only non-FCC atoms; top-down view. Compute/store per-atom CNA structure ID and filter out FCC; reuse existing per-atom fields when present, otherwise compute CNA each frame. Keep color ranges fix",
+        "attempts_needed": 1
+      },
+      "created_at": "2026-02-24T11:09:29.529065"
     }
   ]
 }

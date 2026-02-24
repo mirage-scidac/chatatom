@@ -1200,14 +1200,30 @@
 
         let currentAgentMessages = {};
         let isStreaming = false;
-        let conversationContext = '';  // Store context for phase 2 conversations
+        let conversationHistory = [];  // Multi-turn conversation history [{role, content}, ...]
+        let currentAbortController = null;  // AbortController for in-flight fetch streams
         let executionIntent = false;  // Track if original request implied execution
         let pendingScript = null;  // Holds LAMMPS script when ready but not yet executed
         let pendingOvitoScript = null;  // Holds OVITO script when ready but not yet executed
         let pendingDumpPattern = '';  // Holds dump filename pattern for per-timestep detection
+        let pendingTargetTimesteps = null;  // Holds target timesteps for smart frame sampling
+        let pendingCameraAngle = 'default';  // Holds camera angle preference
         let messageCounter = 0;  // Counter to ensure unique message IDs
         let streamingSessionId = 0;  // Incremented each sendMessage to avoid stale DOM collisions
         let lastSimulationSummary = '';  // Track what was simulated for feedback
+
+        function addToHistory(role, content) {
+            conversationHistory.push({ role, content });
+            // Trim to max 20 messages (10 user/assistant pairs)
+            const maxMessages = 20;
+            if (conversationHistory.length > maxMessages) {
+                conversationHistory = conversationHistory.slice(-maxMessages);
+            }
+        }
+
+        function clearHistory() {
+            conversationHistory = [];
+        }
 
         // 3D Trajectory Viewer Variables
         let trajectoryFrames = [];
@@ -2006,7 +2022,9 @@
                 socket.emit('start_streaming_simulation', {
                     script: pendingScript,
                     ovito_script: pendingOvitoScript,
-                    dump_filename_pattern: pendingDumpPattern
+                    dump_filename_pattern: pendingDumpPattern,
+                    target_timesteps: pendingTargetTimesteps,
+                    camera_angle: pendingCameraAngle
                 });
                 addStreamingMessage('System', 'Starting live streaming simulation...', 'info');
                 updateStatus('Simulation running...');
@@ -2015,10 +2033,12 @@
             }
 
             // Clear pending state
-            conversationContext = '';
+            clearHistory();
             pendingScript = null;
             pendingOvitoScript = null;
             pendingDumpPattern = '';
+            pendingTargetTimesteps = null;
+            pendingCameraAngle = 'default';
         }
 
         async function sendMessage() {
@@ -2026,6 +2046,12 @@
             const message = userInput.value.trim();
 
             if (message === '' || isStreaming) return;
+
+            // Cancel any in-flight stream
+            if (currentAbortController) {
+                currentAbortController.abort();
+                currentAbortController = null;
+            }
 
             // Dismiss script review prompt if present (user is typing corrections)
             const reviewPrompt = document.getElementById('script-review-prompt');
@@ -2038,159 +2064,197 @@
             currentAgentMessages = {};
             streamingSessionId++;
 
+            // Build POST body
+            const body = {
+                command: message,
+                history: conversationHistory,
+                execution_intent: executionIntent
+            };
+
+            // Include pending script as its own field (not stuffed into context)
+            if (pendingScript) {
+                body.pending_script = pendingScript;
+                if (pendingOvitoScript) {
+                    body.ovito_script = pendingOvitoScript;
+                }
+            }
+
+            currentAbortController = new AbortController();
+            let accumulatedContent = '';
+
             try {
-                // Build URL parameters
-                const params = new URLSearchParams({
-                    command: message
+                const response = await fetch('/api/llm-stream-live', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: currentAbortController.signal
                 });
 
-                // Add conversation context if we're in phase 2
-                if (conversationContext) {
-                    params.append('context', conversationContext);
-                    // Don't clear context yet - wait until execution starts
-                } else if (pendingScript) {
-                    // Script was ready but not executed - include it as context
-                    params.append('context', 'SCRIPT READY:\n' + pendingScript);
-                    if (pendingOvitoScript) {
-                        params.append('ovito_script', pendingOvitoScript);
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // Parse SSE "data: {...}\n\n" lines
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop(); // Keep incomplete data in buffer
+
+                    for (const part of parts) {
+                        const lines = part.split('\n');
+                        for (const line of lines) {
+                            if (!line.startsWith('data: ')) continue;
+                            const jsonStr = line.substring(6);
+                            try {
+                                const data = JSON.parse(jsonStr);
+
+                                // Track orchestrator content for history
+                                if (data.type === 'agent_content' && data.agent === 'Orchestrator') {
+                                    accumulatedContent += data.content;
+                                }
+
+                                handleSSEEvent(data, message);
+                            } catch (e) {
+                                console.error('Error parsing SSE data:', e);
+                            }
+                        }
                     }
                 }
 
-                // Use EventSource for streaming with live WebSocket support
-                const eventSource = new EventSource('/api/llm-stream-live?' + params);
-
-                eventSource.onmessage = function (event) {
-                    try {
-                        const data = JSON.parse(event.data);
-
-                        switch (data.type) {
-                            case 'status':
-                                updateStatus(data.message);
-                                break;
-
-                            case 'agent_start':
-                                removeTypingIndicator(data.agent);
-                                addTypingIndicator(data.agent);
-                                break;
-
-                            case 'agent_content':
-                                removeTypingIndicator(data.agent);
-                                addStreamingMessage(data.agent, data.content, data.message_type, data.attempt);
-                                break;
-
-                            case 'agent_complete':
-                                removeTypingIndicator(data.agent);
-                                break;
-
-                            case 'start_streaming_simulation':
-                                console.log('SSE: Received start_streaming_simulation event');
-
-                                // Track simulation summary for feedback
-                                lastSimulationSummary = message;
-
-                                // Capture ovito script and dump pattern before clearing state
-                                const ovitoScript = data.ovito_script || pendingOvitoScript;
-                                const dumpPattern = data.dump_filename_pattern || pendingDumpPattern;
-
-                                // Clear context now that we're executing
-                                conversationContext = '';
-                                pendingScript = null;
-                                pendingOvitoScript = null;
-                                pendingDumpPattern = '';
-
-                                // Start streaming simulation via WebSocket
-                                if (socket && socket.connected) {
-                                    socket.emit('start_streaming_simulation', {
-                                        script: data.script,
-                                        ovito_script: ovitoScript,
-                                        dump_filename_pattern: dumpPattern
-                                    });
-                                } else {
-                                    console.warn('WebSocket not available, falling back to batch simulation');
-                                    addConversationMessage('System', 'WebSocket not connected, falling back to batch simulation', 'info');
-                                }
-                                break;
-
-                            case 'simulation_complete':
-                                updateStatus('Simulation completed successfully');
-                                if (data.thermo_data && Array.isArray(data.thermo_data)) {
-                                    drawPlot(data.thermo_data);
-                                }
-                                showFeedbackPrompt(message);
-                                break;
-
-                            case 'simulation_failed':
-                                updateStatus('Simulation failed');
-                                break;
-
-                            case 'script_ready':
-                                updateStatus('Script ready');
-                                // Store the script so user can say "run" next
-                                pendingScript = data.script;
-                                pendingOvitoScript = data.ovito_script || null;
-                                pendingDumpPattern = data.dump_filename_pattern || '';
-                                conversationContext = '';  // Clear so pendingScript takes priority on next sendMessage()
-                                break;
-
-                            case 'scripts_ready_for_review':
-                                updateStatus('Scripts ready for review');
-                                pendingScript = data.lammps_script;
-                                pendingOvitoScript = data.ovito_script || null;
-                                pendingDumpPattern = data.dump_filename_pattern || '';
-                                conversationContext = '';
-                                showScriptReviewPrompt();
-                                break;
-
-                            case 'needs_more_info':
-                                updateStatus('Waiting for additional information');
-                                conversationContext = data.analysis || '';
-                                isStreaming = false;
-                                eventSource.close();
-                                break;
-
-                            case 'awaiting_confirmation':
-                                updateStatus('Awaiting parameter confirmation');
-                                // Store the analysis for phase 2
-                                conversationContext = data.analysis || '';
-                                isStreaming = false;
-                                eventSource.close();
-                                break;
-
-                            case 'review_failed':
-                                updateStatus('Script review failed');
-                                break;
-
-                            case 'workflow_complete':
-                                updateStatus('Ready to run simulations');
-                                isStreaming = false;
-                                eventSource.close();
-                                break;
-
-                            case 'error':
-                                addMessage('Error', data.message);
-                                updateStatus('Error occurred');
-                                isStreaming = false;
-                                eventSource.close();
-                                break;
-                        }
-                    } catch (e) {
-                        console.error('Error parsing SSE data:', e);
-                    }
-                };
-
-                eventSource.onerror = function (event) {
-                    console.error('EventSource failed:', event);
-                    addMessage('Error', 'Connection to server lost. Please try again.');
-                    updateStatus('Error occurred');
-                    isStreaming = false;
-                    eventSource.close();
-                };
+                // Stream finished — add this turn to conversation history
+                if (accumulatedContent) {
+                    addToHistory('user', message);
+                    addToHistory('assistant', accumulatedContent);
+                }
 
             } catch (error) {
+                if (error.name === 'AbortError') return; // Cancelled by new message
                 console.error('Error sending message:', error);
                 addMessage('Error', 'Could not connect to the server.');
                 updateStatus('Error occurred');
                 isStreaming = false;
+            } finally {
+                currentAbortController = null;
+            }
+        }
+
+        function handleSSEEvent(data, userMessage) {
+            switch (data.type) {
+                case 'status':
+                    updateStatus(data.message);
+                    break;
+
+                case 'agent_start':
+                    removeTypingIndicator(data.agent);
+                    addTypingIndicator(data.agent);
+                    break;
+
+                case 'agent_content':
+                    removeTypingIndicator(data.agent);
+                    addStreamingMessage(data.agent, data.content, data.message_type, data.attempt);
+                    break;
+
+                case 'agent_complete':
+                    removeTypingIndicator(data.agent);
+                    break;
+
+                case 'start_streaming_simulation':
+                    console.log('SSE: Received start_streaming_simulation event');
+
+                    // Track simulation summary for feedback
+                    lastSimulationSummary = userMessage;
+
+                    // Capture ovito script and dump pattern before clearing state
+                    const ovitoScript = data.ovito_script || pendingOvitoScript;
+                    const dumpPattern = data.dump_filename_pattern || pendingDumpPattern;
+                    const cameraAngle = data.camera_angle || pendingCameraAngle || 'default';
+
+                    // Clear conversation state — simulation is a natural boundary
+                    clearHistory();
+                    pendingScript = null;
+                    pendingOvitoScript = null;
+                    pendingDumpPattern = '';
+                    pendingTargetTimesteps = null;
+                    pendingCameraAngle = 'default';
+
+                    // Start streaming simulation via WebSocket
+                    if (socket && socket.connected) {
+                        socket.emit('start_streaming_simulation', {
+                            script: data.script,
+                            ovito_script: ovitoScript,
+                            dump_filename_pattern: dumpPattern,
+                            target_timesteps: data.target_timesteps || null,
+                            camera_angle: cameraAngle
+                        });
+                    } else {
+                        console.warn('WebSocket not available, falling back to batch simulation');
+                        addConversationMessage('System', 'WebSocket not connected, falling back to batch simulation', 'info');
+                    }
+                    break;
+
+                case 'simulation_complete':
+                    updateStatus('Simulation completed successfully');
+                    if (data.thermo_data && Array.isArray(data.thermo_data)) {
+                        drawPlot(data.thermo_data);
+                    }
+                    showFeedbackPrompt(userMessage);
+                    break;
+
+                case 'simulation_failed':
+                    updateStatus('Simulation failed');
+                    break;
+
+                case 'script_ready':
+                    updateStatus('Script ready');
+                    pendingScript = data.script;
+                    pendingOvitoScript = data.ovito_script || null;
+                    pendingDumpPattern = data.dump_filename_pattern || '';
+                    pendingTargetTimesteps = data.target_timesteps || null;
+                    pendingCameraAngle = data.camera_angle || 'default';
+                    break;
+
+                case 'scripts_ready_for_review':
+                    updateStatus('Scripts ready for review');
+                    pendingScript = data.lammps_script;
+                    pendingOvitoScript = data.ovito_script || null;
+                    pendingDumpPattern = data.dump_filename_pattern || '';
+                    pendingTargetTimesteps = data.target_timesteps || null;
+                    pendingCameraAngle = data.camera_angle || 'default';
+                    showScriptReviewPrompt();
+                    break;
+
+                case 'needs_more_info':
+                    updateStatus('Waiting for additional information');
+                    isStreaming = false;
+                    break;
+
+                case 'awaiting_confirmation':
+                    updateStatus('Awaiting parameter confirmation');
+                    isStreaming = false;
+                    break;
+
+                case 'review_failed':
+                    updateStatus('Script review failed');
+                    break;
+
+                case 'workflow_complete':
+                    updateStatus('Ready to run simulations');
+                    isStreaming = false;
+                    break;
+
+                case 'error':
+                    addMessage('Error', data.message);
+                    updateStatus('Error occurred');
+                    isStreaming = false;
+                    break;
             }
         }
     </script>
