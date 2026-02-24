@@ -183,6 +183,9 @@ tests/test_assets/kim.log
 #KIM potential registry
 kim_potentials_registry.md
 
+# Large LAMMPS data files
+*.data
+
 #Lammps outputs
 *.lammpstrj
 *.log
