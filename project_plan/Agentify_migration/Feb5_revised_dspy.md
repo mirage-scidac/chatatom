@@ -629,7 +629,7 @@ SESSION_EXPIRY_DAYS = 30  # Auto-delete sessions older than this
 
 1. **Sessions persist**: Server restart doesn't lose workflow state
 2. **Memory influences generation**: Failed patterns are avoided in subsequent runs
-3. **No regressions**: Existing `/api/llm-stream` endpoint still works
+3. **No regressions**: `/api/llm-stream-live` endpoint works correctly
 4. **Graceful fallback**: If Mem0 fails, SimpleMemory works transparently
 
 ---

@@ -56,7 +56,7 @@ The codebase now has:
 
 - **Mem0 Configuration**: Installed but requires embedding model config (Argonne API may not support `text-embedding-3-small`)
 - **Session Storage**: Currently in-memory (dict). Will be SQLite in Phase 2.
-- **Legacy Endpoints**: `/api/llm-stream` and `/api/llm-stream-live` still work with text parsing
+- **Legacy Endpoints**: `/api/llm-stream` has been removed; `/api/llm-stream-live` is the sole streaming endpoint
 
 ## Phase 3 Cleanup Reminder (Post-Migration)
 
@@ -74,8 +74,8 @@ The codebase now has:
    - `if 'REVIEW: PASS' in review` - Replace with `ReviewLAMMPSScript.is_valid`
 
 4. **Legacy endpoints** to delete:
-   - `/api/llm-stream` (240 lines)
-   - `/api/llm-command` (150 lines)
+   - `/api/llm-stream` (removed)
+   - `/api/llm-command` (150 lines) - still present, to be removed
    - Keep only `/api/llm-stream-live` refactored to use DSPy
 
 **Estimated savings: ~500 lines of brittle parsing code**
