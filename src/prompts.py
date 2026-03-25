@@ -465,10 +465,12 @@ CRITICAL CONSTRAINTS:
 CYCLIC LOADING TECHNIQUE (FATIGUE):
 Use fix deform with the wiggle option to apply oscillating strain for fatigue simulations.
 
-Command: fix <ID> all deform 1 <dir> wiggle <amplitude> <period>
+Command: fix <ID> all deform 1 <dir> wiggle <amplitude> <period> units box
 
 Key rules:
 - MUST use NVT ensemble (NOT NPT) — NPT fights the imposed deformation
+- MUST specify 'units box' — fix deform defaults to 'units lattice', which multiplies
+  amplitude by the lattice constant and produces incorrect strain magnitudes
 - Amplitude is in length units: amplitude = strain_fraction * box_length
   Example: 0.25% strain on a 100 Angstrom box → amplitude = 0.0025 * 100 = 0.25
 - Period is in time units (ps for metal units)
@@ -482,10 +484,12 @@ Typical parameters:
 Example for x-direction cycling:
   variable ampL equal 0.0025*lx    # 0.25% strain
   fix 1 all nvt temp ${temp} ${temp} 0.1
-  fix 2 all deform 1 x wiggle ${ampL} 100.0   # 100 ps period
+  fix 2 all deform 1 x wiggle ${ampL} 100.0 units box   # 100 ps period, units box required!
 
 CRITICAL: Always define amplitude as a variable using current box length,
 not a hardcoded value. The box length may change during pre-stress equilibration.
+CRITICAL: Always include 'units box' in fix deform commands. The default 'units lattice'
+multiplies amplitude by the lattice constant, causing strain amplitudes ~3-4x larger than intended.
 """
 
     # Output requirements for crack analysis
@@ -607,16 +611,11 @@ Optional parameters to consider:
 - Plotting preferences for thermodynamic data visualization
 
 SMART TRAJECTORY FREQUENCY CALCULATION:
-For trajectory dumps, use intelligent frequency calculation:
-- Small simulations (≤10,000 steps): Target ~20 frames
-- Medium simulations (≤100,000 steps): Target ~20-50 frames
-- Large simulations (>100,000 steps): Target ~50-100 frames
-- This ensures reasonable file sizes while maintaining visualization quality
-- For 10,000 steps: dump every 500 steps (20 frames)
-- For 100,000 steps: dump every 2,000 steps (50 frames)
-- For 1,000,000 steps: dump every 10,000 steps (100 frames)
-- For 10,000,000 steps: dump every 10,000 steps (1,000 frames)
-- Always propose this smart frequency unless user specifies otherwise
+For trajectory dumps, calculate the dump frequency to produce exactly config.MAX_TRAJECTORY_FRAMES frames:
+- dump_frequency = total_steps / config.MAX_TRAJECTORY_FRAMES (round to nearest 100)
+- This ensures consistent frame counts regardless of simulation size
+- Always import config and use config.MAX_TRAJECTORY_FRAMES — NEVER hardcode a frame count
+- Always propose this calculated frequency unless user specifies otherwise
 
 Plotting preferences to consider:
 - Which thermodynamic properties to monitor (Temperature, Pressure, Energy components, Volume, etc.)
@@ -734,9 +733,10 @@ When calculating the frame sampling strategy:
 IMPORTANT: You MUST import config at the start of your calculation to get the actual MAX_TRAJECTORY_FRAMES value.
 Do NOT assume or hardcode the number of frames - always use the configured value.
 
-Example for 120,000 step simulation with dump every 1000 steps and config.MAX_TRAJECTORY_FRAMES=20:
-- Target timesteps: [0, 6000, 12000, 18000, 24000, 30000, 36000, 42000, 48000, 54000, 60000, 66000, 72000, 78000, 84000, 90000, 96000, 102000, 108000, 114000]
-- This ensures frames from all phases of the simulation with 20 evenly distributed samples
+Example for 650,000 step simulation with dump every 13000 steps and config.MAX_TRAJECTORY_FRAMES=50:
+- dump_frequency = 650000 / 50 = 13000
+- Target timesteps: [0, 13000, 26000, ..., 637000, 650000]
+- This ensures frames from all phases of the simulation with 50 evenly distributed samples
 
 VISUALIZATION PREFERENCES (OPTIONAL):
 If the user specifies visualization preferences (e.g., "show only crystalline atoms", "color by structure", "highlight defects"), extract and note them separately. Common visualization requests include:
