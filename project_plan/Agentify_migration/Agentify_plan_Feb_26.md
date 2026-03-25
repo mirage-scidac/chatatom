@@ -1613,19 +1613,18 @@ class OrchestratorAgent(Agent):
 
 ### Tier 4: Endpoint Consolidation (~300 lines saved)
 
-**Current state:** Three endpoints share 80% identical code:
+**Current state:** Two endpoints share duplicated code (`/api/llm-stream` has been removed):
 
 | Endpoint | Location | Purpose |
 |----------|----------|---------|
-| `/api/llm-stream` | `app.py:113-353` | SSE streaming |
-| `/api/llm-command` | `app.py:355-503` | Non-streaming (legacy) |
-| `/api/llm-stream-live` | `app.py:601-809` | SSE + WebSocket simulation |
+| `/api/llm-command` | `app.py` | Non-streaming (legacy) |
+| `/api/llm-stream-live` | `app.py` | SSE + WebSocket simulation |
 
-**Duplicated logic across all three:**
-- Registry context building (25 lines × 3)
-- Phase 1/2 orchestrator logic (50 lines × 3)
-- Generator + Reviewer chain (25 lines × 3)
-- Execution decision logic (25 lines × 2)
+**Duplicated logic across both:**
+- Registry context building
+- Phase 1/2 orchestrator logic
+- Generator + Reviewer chain
+- Execution decision logic
 
 **Solution:** Extract shared workflow to internal function:
 
@@ -1688,14 +1687,15 @@ def _run_agent_workflow(
     }
 ```
 
-Then each endpoint becomes a thin wrapper:
+Then the endpoint becomes a thin wrapper (the old `/api/llm-stream` has been removed):
 ```python
-@app.route('/api/llm-stream')
-def llm_stream():
+@app.route('/api/llm-stream-live')
+def llm_stream_live():
     def generate():
         result = _run_agent_workflow(
             user_command=request.args.get('command'),
-            streaming_callback=lambda chunk: f"data: {chunk}\n\n"
+            streaming_callback=lambda chunk: f"data: {chunk}\n\n",
+            websocket_callback=emit_ws
         )
         yield f"data: {json.dumps(result)}\n\n"
     return Response(generate(), mimetype='text/event-stream')

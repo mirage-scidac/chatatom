@@ -1,29 +1,30 @@
 
 import pytest
-from agents import LammpsGeneratorAgent, LammpsReviewerAgent
+from agents import IterativeLammpsGeneration, configure_dspy_lm
 
 def test_mvp1_end_to_end():
     """
-    Tests the full MVP 1 workflow: Generator -> Reviewer
+    Tests the full MVP 1 workflow: Generator -> Reviewer via DSPy module.
     Makes a real (but small) LLM call.
     """
-    # The user prompt for the test
-    test_prompt = "Create a LAMMPS script for a simple simulation of silicon using a KIM potential."
+    # Configure DSPy LM
+    configure_dspy_lm()
 
-    # 1. Instantiate the agents
-    generator = LammpsGeneratorAgent()
-    reviewer = LammpsReviewerAgent()
+    # Instantiate the iterative generation module
+    generator = IterativeLammpsGeneration(max_attempts=1, use_memory=False)
 
-    # 2. Generate the script
-    # We use a low temperature for more predictable output
-    generated_script = generator.execute(test_prompt, temperature=0.0)
+    # Run generation + review
+    result = generator.forward(
+        material="Si",
+        kim_model="SW_StillingerWeber_1985_Si__MO_405512056662_005",
+        temperature=300.0,
+        ensemble="NVT",
+        duration_ps=1.0,
+        system_size=3,
+    )
 
-    # 3. Review the script
-    review_result = reviewer.execute(generated_script, temperature=0.0)
-
-    # 4. Assertions
     # Assert that the generated script contains the crucial 'kim' command
-    assert "kim" in generated_script.lower(), "The generated script should use the 'kim' command."
+    assert "kim" in result.script.lower(), "The generated script should use the 'kim' command."
 
-    # Assert that the reviewer passed the script
-    assert "REVIEW: PASS" in review_result, f"Reviewer failed the script with comments: {review_result}"
+    # Assert that review passed
+    assert result.review_passed, f"Reviewer failed the script. Issues: {result.issues}"

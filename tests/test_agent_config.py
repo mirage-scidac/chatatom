@@ -1,78 +1,59 @@
 #!/usr/bin/env python3
 """
-Test script to verify per-agent model configuration is working correctly.
+Test script to verify agent and DSPy module configuration is working correctly.
 """
 
 import config
-from agents import OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent
-from ovito_script_generator import OVITOScriptGenerator
+from agents import (
+    SmartOrchestrator, IterativeLammpsGeneration,
+    OVITOScriptReview, OVITOScriptGeneration,
+    configure_dspy_lm
+)
 
 def test_agent_configurations():
-    """Test that each agent uses its configured model and temperature."""
-    
-    print("Testing per-agent model configuration...")
+    """Test that DSPy modules use the configured model via configure_dspy_lm."""
+
+    print("Testing DSPy module configuration...")
     print(f"Config values:")
-    print(f"  ORCHESTRATOR_MODEL: {config.ORCHESTRATOR_MODEL}")
-    print(f"  LAMMPS_GENERATOR_MODEL: {config.LAMMPS_GENERATOR_MODEL}")
-    print(f"  LAMMPS_REVIEWER_MODEL: {config.LAMMPS_REVIEWER_MODEL}")
-    print(f"  OVITO_SCRIPT_MODEL: {config.OVITO_SCRIPT_MODEL}")
     print(f"  DEFAULT_MODEL: {config.DEFAULT_MODEL}")
+    print(f"  API_BASE_URL: {config.API_BASE_URL}")
     print()
-    
-    # Test OrchestratorAgent
-    orchestrator = OrchestratorAgent()
-    print(f"OrchestratorAgent:")
-    print(f"  Model: {orchestrator.model}")
-    print(f"  Temperature: {orchestrator.default_temperature}")
-    print(f"  Expected Model: {config.ORCHESTRATOR_MODEL}")
-    print(f"  Expected Temperature: {config.ORCHESTRATOR_TEMPERATURE}")
-    print(f"  ✓ Model matches: {orchestrator.model == config.ORCHESTRATOR_MODEL}")
-    print(f"  ✓ Temperature matches: {orchestrator.default_temperature == config.ORCHESTRATOR_TEMPERATURE}")
+
+    # Configure DSPy LM
+    lm = configure_dspy_lm()
+    print(f"DSPy LM configured: {lm}")
     print()
-    
-    # Test LammpsGeneratorAgent
-    generator = LammpsGeneratorAgent()
-    print(f"LammpsGeneratorAgent:")
-    print(f"  Model: {generator.model}")
-    print(f"  Temperature: {generator.default_temperature}")
-    print(f"  Expected Model: {config.LAMMPS_GENERATOR_MODEL}")
-    print(f"  Expected Temperature: {config.LAMMPS_GENERATOR_TEMPERATURE}")
-    print(f"  ✓ Model matches: {generator.model == config.LAMMPS_GENERATOR_MODEL}")
-    print(f"  ✓ Temperature matches: {generator.default_temperature == config.LAMMPS_GENERATOR_TEMPERATURE}")
+
+    # Test SmartOrchestrator instantiation
+    orchestrator = SmartOrchestrator()
+    print(f"SmartOrchestrator: instantiated successfully")
+    print(f"  Has analyzer: {hasattr(orchestrator, 'analyzer')}")
+    print(f"  Has intent_classifier: {hasattr(orchestrator, 'intent_classifier')}")
+    print(f"  Has viz_detector: {hasattr(orchestrator, 'viz_detector')}")
     print()
-    
-    # Test LammpsReviewerAgent
-    reviewer = LammpsReviewerAgent()
-    print(f"LammpsReviewerAgent:")
-    print(f"  Model: {reviewer.model}")
-    print(f"  Temperature: {reviewer.default_temperature}")
-    print(f"  Expected Model: {config.LAMMPS_REVIEWER_MODEL}")
-    print(f"  Expected Temperature: {config.LAMMPS_REVIEWER_TEMPERATURE}")
-    print(f"  ✓ Model matches: {reviewer.model == config.LAMMPS_REVIEWER_MODEL}")
-    print(f"  ✓ Temperature matches: {reviewer.default_temperature == config.LAMMPS_REVIEWER_TEMPERATURE}")
+
+    # Test OVITOScriptGeneration instantiation
+    ovito_gen = OVITOScriptGeneration()
+    print(f"OVITOScriptGeneration: instantiated successfully")
+    print(f"  Has generator: {hasattr(ovito_gen, 'generator')}")
     print()
-    
-    # Test OVITOScriptGenerator
-    ovito_generator = OVITOScriptGenerator()
-    print(f"OVITOScriptGenerator:")
-    print(f"  Model: {ovito_generator.model}")
-    print(f"  Temperature: {ovito_generator.default_temperature}")
-    print(f"  Expected Model: {config.OVITO_SCRIPT_MODEL}")
-    print(f"  Expected Temperature: {config.OVITO_SCRIPT_TEMPERATURE}")
-    print(f"  ✓ Model matches: {ovito_generator.model == config.OVITO_SCRIPT_MODEL}")
-    print(f"  ✓ Temperature matches: {ovito_generator.default_temperature == config.OVITO_SCRIPT_TEMPERATURE}")
+
+    # Test OVITOScriptReview instantiation
+    ovito_review = OVITOScriptReview()
+    print(f"OVITOScriptReview: instantiated successfully")
+    print(f"  Has reviewer: {hasattr(ovito_review, 'reviewer')}")
     print()
-    
-    # Verify all agents have different configurations if desired
-    all_models = [orchestrator.model, generator.model, reviewer.model, ovito_generator.model]
-    all_temps = [orchestrator.default_temperature, generator.default_temperature, reviewer.default_temperature, ovito_generator.default_temperature]
-    
+
+    # Test IterativeLammpsGeneration instantiation
+    lammps_gen = IterativeLammpsGeneration()
+    print(f"IterativeLammpsGeneration: instantiated successfully")
+    print(f"  Has generator: {hasattr(lammps_gen, 'generator')}")
+    print(f"  Has reviewer: {hasattr(lammps_gen, 'reviewer')}")
+    print()
+
     print("Configuration Summary:")
-    print(f"  All agents configured: ✓")
-    print(f"  Models: {all_models}")
-    print(f"  Temperatures: {all_temps}")
+    print(f"  All DSPy modules configured: ✓")
     print(f"  API Base URL: {config.API_BASE_URL}")
-    print(f"  API Key: {config.API_KEY}")
 
 if __name__ == "__main__":
     test_agent_configurations()

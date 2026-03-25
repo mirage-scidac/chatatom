@@ -121,7 +121,7 @@ With the `chatmd` environment active, run the Flask server:
 python src/app.py
 ```
 
-The application will be available at `http://localhost:5001`.
+The application will be available at `http://localhost:2002`.
 
 ### Real-Time Features
 

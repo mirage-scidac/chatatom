@@ -88,6 +88,7 @@ import os
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_socketio import SocketIO, emit
 import json
+import queue
 import threading
 import time
 
@@ -107,10 +108,12 @@ def serve_index():
     return send_from_directory('..', 'index.html')
 
 from agents import (
-    OrchestratorAgent, LammpsGeneratorAgent, LammpsReviewerAgent,
-    IterativeLammpsGeneration, PlanVerifier, SmartOrchestrator,
-    configure_dspy_lm
+    IterativeLammpsGeneration, SmartOrchestrator,
+    IterativeOVITOGeneration,
+    configure_dspy_lm,
+    detect_precomputed_properties,
 )
+from prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from memory import get_memory_backend
 from tools import run_lammps_simulation
 import kim_utils
@@ -146,680 +149,6 @@ def update_session(session_id: str, updates: dict) -> bool:
     return session_manager.update(session_id, updates)
 
 
-# =============================================================================
-# Checkpoint Workflow API Endpoints
-# =============================================================================
-
-@app.route('/api/workflow/start', methods=['POST'])
-def workflow_start():
-    """
-    Start a new agentic workflow with verification.
-
-    This endpoint:
-    1. Analyzes the user request
-    2. Verifies the simulation plan is feasible
-    3. Returns a checkpoint for user approval
-
-    Request body:
-        {"request": "simulate copper at 300K for 10ps"}
-
-    Response:
-        {
-            "session_id": "uuid",
-            "stage": "parameters_pending",
-            "analysis": {...},
-            "verification": {...},
-            "checkpoint": {
-                "type": "parameters",
-                "data": {...},
-                "confidence": 0.85
-            }
-        }
-    """
-    try:
-        data = request.get_json()
-        user_request = data.get('request')
-
-        if not user_request:
-            return jsonify({"error": "Request not provided"}), 400
-
-        # Configure DSPy
-        configure_dspy_lm()
-
-        # Create session
-        session_id = create_session(user_request)
-        session = get_session(session_id)
-
-        # Build registry context
-        registry_context = kim_utils.build_registry_context_for_command(user_request)
-
-        # Analyze request using SmartOrchestrator
-        orchestrator = SmartOrchestrator()
-        analysis = orchestrator.analyze_request(user_request, registry_context)
-
-        # Check if clarification is needed
-        if analysis.needs_clarification:
-            update_session(session_id, {
-                "stage": "clarification_needed",
-                "analysis": {
-                    "material": analysis.material,
-                    "temperature": analysis.temperature,
-                    "ensemble": analysis.ensemble,
-                    "duration_ps": analysis.duration_ps,
-                    "kim_model": analysis.kim_model,
-                    "system_size": analysis.system_size,
-                    "confidence": analysis.confidence
-                }
-            })
-
-            return jsonify({
-                "session_id": session_id,
-                "stage": "clarification_needed",
-                "question": analysis.clarification_question,
-                "partial_analysis": {
-                    "material": analysis.material,
-                    "temperature": analysis.temperature,
-                    "confidence": analysis.confidence
-                }
-            })
-
-        # Verify the plan
-        verifier = PlanVerifier()
-        verification = verifier.forward(
-            material=analysis.material,
-            kim_model=analysis.kim_model,
-            temperature=analysis.temperature,
-            ensemble=analysis.ensemble,
-            duration_ps=analysis.duration_ps,
-            system_size=analysis.system_size
-        )
-
-        # Update session
-        update_session(session_id, {
-            "stage": "parameters_pending",
-            "analysis": {
-                "material": analysis.material,
-                "temperature": analysis.temperature,
-                "ensemble": analysis.ensemble,
-                "duration_ps": analysis.duration_ps,
-                "kim_model": analysis.kim_model,
-                "system_size": analysis.system_size,
-                "confidence": analysis.confidence
-            },
-            "verification": {
-                "is_feasible": verification.is_feasible,
-                "issues": verification.issues,
-                "suggestions": verification.suggestions,
-                "confidence": verification.confidence,
-                "kim_model_available": verification.kim_model_available
-            }
-        })
-
-        return jsonify({
-            "session_id": session_id,
-            "stage": "parameters_pending",
-            "analysis": {
-                "material": analysis.material,
-                "temperature": analysis.temperature,
-                "ensemble": analysis.ensemble,
-                "duration_ps": analysis.duration_ps,
-                "kim_model": analysis.kim_model,
-                "system_size": analysis.system_size,
-                "confidence": analysis.confidence
-            },
-            "verification": {
-                "is_feasible": verification.is_feasible,
-                "issues": verification.issues,
-                "suggestions": verification.suggestions,
-                "confidence": verification.confidence,
-                "kim_model_available": verification.kim_model_available
-            },
-            "checkpoint": {
-                "type": "parameters",
-                "message": "Please review and approve these simulation parameters",
-                "requires_approval": True
-            }
-        })
-
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }), 500
-
-
-@app.route('/api/checkpoint/parameters', methods=['POST'])
-def checkpoint_parameters():
-    """
-    Handle parameter approval checkpoint.
-
-    Request body:
-        {
-            "session_id": "uuid",
-            "approved": true,
-            "modifications": {}  # Optional parameter modifications
-        }
-
-    Response:
-        {
-            "session_id": "uuid",
-            "stage": "script_pending",
-            "script": "...",
-            "review": {...},
-            "checkpoint": {...}
-        }
-    """
-    try:
-        data = request.get_json()
-        session_id = data.get('session_id')
-        approved = data.get('approved', False)
-        modifications = data.get('modifications', {})
-
-        if not session_id:
-            return jsonify({"error": "session_id required"}), 400
-
-        session = get_session(session_id)
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
-
-        if session['stage'] != 'parameters_pending':
-            return jsonify({"error": f"Invalid stage: {session['stage']}"}), 400
-
-        if not approved:
-            return jsonify({
-                "session_id": session_id,
-                "stage": "cancelled",
-                "message": "Workflow cancelled by user"
-            })
-
-        # Apply any modifications
-        params = session['analysis'].copy()
-        params.update(modifications)
-
-        # Configure DSPy
-        configure_dspy_lm()
-
-        # Generate script using IterativeLammpsGeneration
-        generator = IterativeLammpsGeneration(max_attempts=3)
-        result = generator.forward(
-            material=params['material'],
-            kim_model=params['kim_model'],
-            temperature=params['temperature'],
-            ensemble=params['ensemble'],
-            duration_ps=params['duration_ps'],
-            system_size=params.get('system_size', 5)
-        )
-
-        # Update session
-        update_session(session_id, {
-            "stage": "script_pending",
-            "parameters": params,
-            "script": result.script,
-            "review": {
-                "passed": result.review_passed,
-                "attempts": result.attempts,
-                "issues": result.issues,
-                "suggestions": result.suggestions,
-                "confidence": result.confidence
-            },
-            "conversation": result.conversation
-        })
-
-        return jsonify({
-            "session_id": session_id,
-            "stage": "script_pending",
-            "script": result.script,
-            "review": {
-                "passed": result.review_passed,
-                "attempts": result.attempts,
-                "issues": result.issues,
-                "suggestions": result.suggestions,
-                "confidence": result.confidence
-            },
-            "checkpoint": {
-                "type": "script",
-                "message": "Please review and approve this LAMMPS script",
-                "requires_approval": True
-            }
-        })
-
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }), 500
-
-
-@app.route('/api/checkpoint/script', methods=['POST'])
-def checkpoint_script():
-    """
-    Handle script approval checkpoint.
-
-    Request body:
-        {
-            "session_id": "uuid",
-            "approved": true,
-            "run_simulation": true  # Whether to execute the simulation
-        }
-
-    Response:
-        {
-            "session_id": "uuid",
-            "stage": "ready" | "executing",
-            "message": "..."
-        }
-    """
-    try:
-        data = request.get_json()
-        session_id = data.get('session_id')
-        approved = data.get('approved', False)
-        run_simulation = data.get('run_simulation', False)
-
-        if not session_id:
-            return jsonify({"error": "session_id required"}), 400
-
-        session = get_session(session_id)
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
-
-        if session['stage'] != 'script_pending':
-            return jsonify({"error": f"Invalid stage: {session['stage']}"}), 400
-
-        if not approved:
-            return jsonify({
-                "session_id": session_id,
-                "stage": "cancelled",
-                "message": "Workflow cancelled by user"
-            })
-
-        if run_simulation:
-            # Update stage to executing
-            update_session(session_id, {"stage": "executing"})
-
-            return jsonify({
-                "session_id": session_id,
-                "stage": "executing",
-                "script": session['script'],
-                "message": "Script approved. Use WebSocket to start streaming simulation.",
-                "websocket_event": "start_streaming_simulation"
-            })
-        else:
-            # Just mark as ready
-            update_session(session_id, {"stage": "ready"})
-
-            return jsonify({
-                "session_id": session_id,
-                "stage": "ready",
-                "script": session['script'],
-                "message": "Script approved and ready for execution"
-            })
-
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }), 500
-
-
-@app.route('/api/workflow/session/<session_id>', methods=['GET'])
-def get_workflow_session(session_id):
-    """Get the current state of a workflow session."""
-    session = get_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    return jsonify(session)
-
-
-@app.route('/api/llm-stream', methods=['GET'])
-def llm_stream():
-    user_command = request.args.get('command')
-    conversation_context = request.args.get('context', '')  # For phase 2 conversations
-    execution_intent = request.args.get('execution_intent', 'false').lower() == 'true'  # Track execution intent
-
-    if not user_command:
-        return jsonify({"error": "Command not provided"}), 400
-
-    def generate():
-        try:
-            # Instantiate agents
-            orchestrator = OrchestratorAgent()
-            generator = LammpsGeneratorAgent()
-            reviewer = LammpsReviewerAgent()
-
-            # Send initial status
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
-
-            # Detect execution intent from the original request if this is Phase 1
-            original_execution_intent = False
-            if not conversation_context:
-                # Phase 1: Check if the original request implies execution
-                user_command_lower = user_command.lower()
-                original_execution_intent = any(keyword in user_command_lower for keyword in [
-                    'simulate', 'run', 'execute', 'perform', 'start simulation', 'do simulation'
-                ])
-
-            # Extract element from user command and build registry context
-            registry_context = kim_utils.build_registry_context_for_command(user_command)
-
-            # Determine if this is Phase 1 (initial request) or Phase 2 (user response)
-            if conversation_context:
-                # Phase 2: User is responding to orchestrator's proposal
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-                
-                orchestrator_prompt = f"""Previous analysis and proposal:
-{conversation_context}
-
-User response: {user_command}
-
-Process the user's feedback and provide final simulation parameters using the SIMULATION PARAMETERS format."""
-                
-                finalization_chunks = []
-                finalization_generator = orchestrator.execute_stream(orchestrator_prompt)
-                for chunk in finalization_generator:
-                    finalization_chunks.append(chunk)
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'finalization'})}\n\n"
-                
-                finalization = ''.join(finalization_chunks)
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
-                
-                # Check if we now have final parameters
-                if "SIMULATION PARAMETERS:" not in finalization:
-                    # Still need more information
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    info_message = "Please provide more specific details to proceed."
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'needs_more_info', 'analysis': finalization})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-                    return
-                
-                analysis = finalization  # Use finalized parameters for script generation
-            else:
-                # Phase 1: Initial analysis and proposal
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-                
-                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}{registry_context}"
-                analysis_chunks = []
-                analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
-                for chunk in analysis_generator:
-                    analysis_chunks.append(chunk)
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'analysis'})}\n\n"
-                
-                analysis = ''.join(analysis_chunks)
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
-
-                # Check if orchestrator needs more information or is proposing parameters
-                if "SIMULATION PARAMETERS:" not in analysis:
-                    # Phase 1: Orchestrator is asking for confirmation or more info
-                    # Let the conversation flow naturally without system message
-                    yield f"data: {json.dumps({'type': 'awaiting_confirmation', 'analysis': analysis})}\n\n"
-                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-                    return
-
-            # 2. Generator creates the LAMMPS script using structured parameters
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
-            
-            generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
-            lammps_script_chunks = []
-            script_generator = generator.execute_stream(generator_prompt)
-            for chunk in script_generator:
-                lammps_script_chunks.append(chunk)
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': chunk, 'message_type': 'script'})}\n\n"
-            
-            lammps_script = ''.join(lammps_script_chunks)
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
-
-            # 3. Reviewer checks the script
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
-            
-            reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
-            review_generator = reviewer.execute_stream(reviewer_prompt)
-            review_chunks = []
-            for chunk in review_generator:
-                review_chunks.append(chunk)
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': chunk, 'message_type': 'review'})}\n\n"
-            
-            review = ''.join(review_chunks)
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
-
-            # 4. Visualization agent - ALWAYS runs to show visualization is happening
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
-
-            # Parse visualization request from orchestrator analysis
-            # The analysis contains VISUALIZATION PREFERENCES if the user requested custom viz
-            from tools import parse_visualization_request
-
-            # Extract material from analysis for context
-            simulation_context = {}
-            if 'Material:' in analysis:
-                # Simple extraction - look for material line
-                for line in analysis.split('\n'):
-                    if 'Material:' in line:
-                        material = line.split('Material:')[1].strip().split()[0]
-                        simulation_context['material'] = material
-                        break
-
-            # Use the analysis (not user_command) to detect visualization preferences
-            # The analysis contains structured VISUALIZATION PREFERENCES section
-            viz_request = analysis if 'VISUALIZATION' in analysis.upper() else user_command
-            ovito_script = parse_visualization_request(viz_request, simulation_context, lammps_script)
-            
-            print(f"[APP] Visualization script: {'Custom (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default'}")
-            
-            # Generate appropriate message based on whether custom visualization was requested
-            if ovito_script:
-                # Custom visualization requested - show the script
-                viz_message = f"**Custom Visualization Requested**\n\n**Generated OVITO Script:**\n```python\n{ovito_script}\n```"
-            else:
-                # No custom visualization - show minimal message
-                viz_message = "Applying default visualization settings for trajectory rendering."
-            
-            # Stream the visualization message
-            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
-
-            # Check if review passed
-            if "REVIEW: PASS" in review:
-                # Enhanced execution logic with intent tracking
-                user_command_lower = user_command.lower()
-                should_run = False
-                
-                # Check for explicit execution keywords in current command
-                should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform', 'go ahead', 'proceed', 'start'])
-                
-                # If we're in phase 2 (conversation_context exists), check for confirmation words
-                if conversation_context and not should_run:
-                    should_run = any(keyword in user_command_lower for keyword in ['yes', 'ok', 'confirm', 'go', 'ahead'])
-                
-                # NEW: If we're in phase 2 and have execution intent from original request, auto-execute
-                if conversation_context and execution_intent and not should_run:
-                    # Check if this looks like a parameter modification (not a rejection)
-                    is_parameter_change = any(phrase in user_command_lower for phrase in [
-                        'make it', 'change', 'set', 'use', 'atoms', 'temperature', 'pressure', 'time', 'duration'
-                    ])
-                    
-                    if is_parameter_change:
-                        should_run = True
-                        # Auto-execute silently without system message
-                
-                # NEW: If we're in phase 1 and detected original execution intent, auto-execute
-                if not conversation_context and original_execution_intent and not should_run:
-                    should_run = True
-                    # Auto-execute silently without system message
-                
-                if should_run:
-                    # 4. Execute the simulation
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Running LAMMPS simulation...', 'message_type': 'info'})}\n\n"
-                    
-                    try:
-                        output_files, thermo_data, frame_images = run_lammps_simulation(lammps_script)
-                        
-                        success_message = f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points and {len(frame_images)} visualization frames."
-                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': success_message, 'message_type': 'success'})}\n\n"
-                        yield f"data: {json.dumps({'type': 'simulation_complete', 'thermo_data': thermo_data, 'output_files': output_files, 'script': lammps_script})}\n\n"
-                            
-                    except Exception as e:
-                        error_message = f"Simulation execution failed: {str(e)}"
-                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
-                        yield f"data: {json.dumps({'type': 'simulation_failed', 'script': lammps_script})}\n\n"
-                    
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-                else:
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    info_message = "LAMMPS script generated and approved. Add 'run' or 'execute' to your command to run the simulation."
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                error_message = "Script review failed. Please check the issues identified by the reviewer."
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
-                yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script})}\n\n"
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-
-            # Send completion signal
-            yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-            
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': f'An error occurred: {str(e)}'})}\n\n"
-
-    return Response(generate(), mimetype="text/event-stream", headers={
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control'
-    })
-
-@app.route('/api/llm-command', methods=['POST'])
-def llm_command():
-    data = request.get_json()
-    user_command = data.get('command')
-
-    if not user_command:
-        return jsonify({"error": "Command not provided"}), 400
-
-    # Instantiate agents
-    orchestrator = OrchestratorAgent()
-    generator = LammpsGeneratorAgent()
-    reviewer = LammpsReviewerAgent()
-
-    try:
-        # Track the full conversation
-        conversation = []
-        
-        # 1. Orchestrator analyzes the request with registry context
-        registry_context = kim_utils.build_registry_context_for_command(user_command)
-
-        orchestrator_prompt = f"Analyze this simulation request: {user_command}{registry_context}"
-        analysis = orchestrator.execute(orchestrator_prompt)
-        conversation.append({
-            "agent": "Orchestrator",
-            "content": analysis,
-            "type": "analysis"
-        })
-
-        # Check if orchestrator needs more information
-        if "SIMULATION PARAMETERS:" not in analysis:
-            # Orchestrator is asking for more information
-            conversation.append({
-                "agent": "System",
-                "content": "The orchestrator needs more information to proceed. Please provide the requested details.",
-                "type": "info"
-            })
-            
-            return jsonify({
-                "conversation": conversation,
-                "status": "needs_more_info",
-                "analysis": analysis
-            })
-
-        # 2. Generator creates the LAMMPS script using structured parameters
-        generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
-        lammps_script = generator.execute(generator_prompt)
-        conversation.append({
-            "agent": "Generator",
-            "content": lammps_script,
-            "type": "script"
-        })
-
-        # 3. Reviewer checks the script
-        reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
-        review = reviewer.execute(reviewer_prompt)
-        conversation.append({
-            "agent": "Reviewer",
-            "content": review,
-            "type": "review"
-        })
-
-        # Check if review passed (fix: look for "PASS" instead of "APPROVED")
-        if "REVIEW: PASS" in review:
-            # Check if user wants to run the simulation
-            user_command_lower = user_command.lower()
-            should_run = any(keyword in user_command_lower for keyword in ['run', 'execute', 'simulate', 'perform'])
-            
-            if should_run:
-                # 4. Execute the simulation
-                try:
-                    output_files, thermo_data, frame_images = run_lammps_simulation(lammps_script)
-                    
-                    conversation.append({
-                        "agent": "System",
-                        "content": f"LAMMPS simulation completed successfully! Output files: {list(output_files.keys())}. Captured {len(thermo_data)} thermodynamic data points and {len(frame_images)} visualization frames.",
-                        "type": "success"
-                    })
-                    
-                    return jsonify({
-                        "conversation": conversation,
-                        "thermo_data": thermo_data,
-                        "output_files": output_files,
-                        "script": lammps_script,
-                        "status": "simulation_complete"
-                    })
-                    
-                except Exception as e:
-                    conversation.append({
-                        "agent": "System",
-                        "content": f"Simulation execution failed: {str(e)}",
-                        "type": "error"
-                    })
-                    
-                    return jsonify({
-                        "conversation": conversation,
-                        "script": lammps_script,
-                        "status": "simulation_failed"
-                    })
-            else:
-                conversation.append({
-                    "agent": "System",
-                    "content": "LAMMPS script generated and approved. Add 'run' or 'execute' to your command to run the simulation.",
-                    "type": "info"
-                })
-                
-                return jsonify({
-                    "conversation": conversation,
-                    "script": lammps_script,
-                    "status": "script_ready"
-                })
-        else:
-            conversation.append({
-                "agent": "System",
-                "content": "Script review failed. Please check the issues identified by the reviewer.",
-                "type": "error"
-            })
-            
-            return jsonify({
-                "conversation": conversation,
-                "script": lammps_script,
-                "status": "review_failed"
-            })
-        
-    except Exception as e:
-        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
-
 # WebSocket event handlers
 @socketio.on('connect')
 def handle_connect():
@@ -836,7 +165,10 @@ def handle_streaming_simulation(data):
     try:
         lammps_script = data.get('script')
         ovito_script = data.get('ovito_script')  # Get pre-generated OVITO script
-        
+        dump_filename_pattern = data.get('dump_filename_pattern', '')
+        target_timesteps_from_frontend = data.get('target_timesteps', None)
+        camera_angle = data.get('camera_angle', 'default')
+
         if not lammps_script:
             emit('error', {'message': 'No LAMMPS script provided'})
             return
@@ -865,25 +197,13 @@ def handle_streaming_simulation(data):
         
         def run_simulation():
             try:
-                import re
-                
-                # Extract frame sampling strategy from LAMMPS script comments
-                target_timesteps = None
-                for line in lammps_script.split('\n'):
-                    if 'Target timesteps:' in line or 'target timesteps:' in line.lower():
-                        # Extract the list of timesteps from the comment
-                        # Format: # Target timesteps: [0, 13000, 26000, ...]
-                        match = re.search(r'\[([\d,\s]+)\]', line)
-                        if match:
-                            timesteps_str = match.group(1)
-                            target_timesteps = [int(x.strip()) for x in timesteps_str.split(',')]
-                            print(f"[APP] Extracted target timesteps from script: {target_timesteps}")
-                            break
-                
-                # Simple render config with pre-generated OVITO script
+                # Use target timesteps from frontend (computed from LLM total_steps)
+                target_timesteps = target_timesteps_from_frontend
                 render_config = {
                     'ovito_script': ovito_script,  # OVITO script string or None (already generated)
                     'target_timesteps': target_timesteps,
+                    'dump_filename_pattern': dump_filename_pattern,
+                    'camera_angle': camera_angle,
                 }
                 
                 print(f"[APP] Render config: {'Custom script (' + str(len(ovito_script)) + ' chars)' if ovito_script else 'Default visualization'}")
@@ -916,23 +236,21 @@ def handle_streaming_simulation(data):
     except Exception as e:
         emit('error', {'message': f'Error starting simulation: {str(e)}'})
 
-@app.route('/api/llm-stream-live', methods=['GET'])
+@app.route('/api/llm-stream-live', methods=['POST'])
 def llm_stream_live():
-    """Enhanced streaming endpoint that uses WebSocket for simulation data"""
-    user_command = request.args.get('command')
-    conversation_context = request.args.get('context', '')
-    execution_intent = request.args.get('execution_intent', 'false').lower() == 'true'
+    """Enhanced streaming endpoint with multi-turn conversation history"""
+    body = request.get_json(force=True, silent=True) or {}
+    user_command = body.get('command')
+    history = body.get('history', [])
+    execution_intent = body.get('execution_intent', False)
+    ovito_script_param = body.get('ovito_script', None)
+    pending_script_param = body.get('pending_script', None)
 
     if not user_command:
         return jsonify({"error": "Command not provided"}), 400
 
     def generate():
         try:
-            # Instantiate agents
-            orchestrator = OrchestratorAgent()
-            generator = LammpsGeneratorAgent()
-            reviewer = LammpsReviewerAgent()
-
             # Send initial status
             yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
 
@@ -940,24 +258,21 @@ def llm_stream_live():
             configure_dspy_lm()
             smart_orchestrator = SmartOrchestrator()
 
-            # Use LLM to classify user intent
+            # Determine workflow stage from explicit fields
             workflow_stage = "initial"
-            if conversation_context:
-                if "SCRIPT READY:" in conversation_context:
-                    workflow_stage = "script_ready"
-                else:
-                    workflow_stage = "parameters_proposed"
+            if pending_script_param:
+                workflow_stage = "script_ready"
+            elif history:
+                workflow_stage = "parameters_proposed"
 
             intent_result = smart_orchestrator.classify_intent(user_command, workflow_stage)
             print(f"[INTENT] '{user_command}' -> {intent_result['intent']} (confidence: {intent_result['confidence']})")
 
             # If script is ready and user wants to execute, skip re-generation
             if workflow_stage == "script_ready" and intent_result["intent"] == "execute":
-                # Extract the pending script from context
-                pending_script = conversation_context.replace("SCRIPT READY:\n", "", 1)
                 yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
                 yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
-                yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': pending_script, 'ovito_script': None, 'user_command': user_command})}\n\n"
+                yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': pending_script_param, 'ovito_script': ovito_script_param, 'user_command': user_command})}\n\n"
                 yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
                 yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
                 return
@@ -965,53 +280,73 @@ def llm_stream_live():
             # Extract element from user command and build registry context
             registry_context = kim_utils.build_registry_context_for_command(user_command)
 
-            # Phase 1 or 2 logic (same as existing endpoint)
-            if conversation_context:
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-                
-                orchestrator_prompt = f"""Previous analysis and proposal:
-{conversation_context}
+            # Build multi-turn messages array
+            messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
 
-User response: {user_command}
+            # Add trimmed conversation history (only previous turns)
+            trimmed_history = history[-(config.MAX_CONVERSATION_TURNS * 2):]
+            for msg in trimmed_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
 
-Process the user's feedback and provide final simulation parameters using the SIMULATION PARAMETERS format."""
-                
-                finalization_chunks = []
-                finalization_generator = orchestrator.execute_stream(orchestrator_prompt)
-                for chunk in finalization_generator:
-                    finalization_chunks.append(chunk)
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'finalization'})}\n\n"
-                
-                finalization = ''.join(finalization_chunks)
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
-                
-                if "SIMULATION PARAMETERS:" not in finalization:
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    info_message = "Please provide more specific details to proceed."
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'needs_more_info', 'analysis': finalization})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-                    return
-                
-                analysis = finalization
-            else:
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-                
-                orchestrator_prompt = f"Analyze this simulation request and propose parameters (Phase 1): {user_command}{registry_context}"
-                analysis_chunks = []
-                analysis_generator = orchestrator.execute_stream(orchestrator_prompt)
-                for chunk in analysis_generator:
-                    analysis_chunks.append(chunk)
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': chunk, 'message_type': 'analysis'})}\n\n"
-                
-                analysis = ''.join(analysis_chunks)
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+            # Add current user message with registry context appended
+            current_message = user_command
+            if registry_context:
+                current_message += f"\n\n{registry_context}"
+            messages.append({"role": "user", "content": current_message})
 
-                if "SIMULATION PARAMETERS:" not in analysis:
-                    yield f"data: {json.dumps({'type': 'awaiting_confirmation', 'analysis': analysis})}\n\n"
-                    yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-                    return
+            # Stream LLM response (unified path for initial and follow-up turns)
+            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
+
+            response_chunks = []
+            try:
+                completion = client.chat.completions.create(
+                    model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
+                    messages=messages,
+                    temperature=config.ORCHESTRATOR_TEMPERATURE,
+                    stream=True,
+                )
+                for chunk in completion:
+                    if chunk.choices[0].delta.content is not None:
+                        text = chunk.choices[0].delta.content
+                        response_chunks.append(text)
+                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': text, 'message_type': 'analysis'})}\n\n"
+            except Exception as e:
+                # Fallback to non-streaming
+                completion = client.chat.completions.create(
+                    model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
+                    messages=messages,
+                    temperature=config.ORCHESTRATOR_TEMPERATURE,
+                )
+                content = completion.choices[0].message.content
+                response_chunks.append(content)
+                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': content, 'message_type': 'analysis'})}\n\n"
+
+            analysis = ''.join(response_chunks)
+            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
+
+            # --- Structured parameter extraction via DSPy ---
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Extracting parameters...'})}\n\n"
+            params = smart_orchestrator.extract_parameters(analysis)
+
+            if not params["has_parameters"]:
+                event_type = 'needs_more_info' if history else 'awaiting_confirmation'
+                yield f"data: {json.dumps({'type': event_type, 'analysis': analysis})}\n\n"
+                yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+                return
+
+            material_for_search = params["material"]
+            material_for_gen = params["material"] or "unknown"
+            kim_model = params["kim_model"]
+            temperature = params["temperature"]
+            ensemble = params["ensemble"]
+            duration_ps = params["duration_ps"]
+            system_size = params["system_size"]
+            viz_notes = params["visualization_notes"]
+            camera_angle = params.get("camera_angle", "default")
+
+            print(f"[PARAMS] Extracted: material={material_for_gen}, kim={kim_model}, "
+                  f"T={temperature}K, ensemble={ensemble}, duration={duration_ps}ps, "
+                  f"size={system_size}, camera_angle={camera_angle}")
 
             # Retrieve relevant lessons from memory before generation
             lammps_memory_context = ""
@@ -1019,18 +354,7 @@ Process the user's feedback and provide final simulation parameters using the SI
             try:
                 memory = get_memory_backend()
 
-                # Extract material from analysis for memory search
-                material_for_search = ""
-                if 'Material:' in analysis:
-                    for line in analysis.split('\n'):
-                        if 'Material:' in line:
-                            material_for_search = line.split('Material:')[1].strip().split()[0]
-                            break
-
-                if material_for_search:
-                    material_query = f"{material_for_search} simulation"
-                else:
-                    material_query = user_command
+                material_query = f"{material_for_search} simulation" if material_for_search else user_command
 
                 lammps_lessons = memory.search(material_query, category="lammps_issue", limit=3)
                 viz_lessons = memory.search(user_command, category="visualization_issue", limit=3)
@@ -1049,95 +373,231 @@ Process the user's feedback and provide final simulation parameters using the SI
             except Exception as e:
                 print(f"[MEMORY] Memory retrieval failed: {e}")
 
-            # Generate script
+            # Generate + review using DSPy (structured, iterative)
             yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Generating and reviewing script...'})}\n\n"
 
-            generator_prompt = f"Generate LAMMPS script with these parameters:\n{analysis}"
-            if lammps_memory_context:
-                generator_prompt += f"\n\n{lammps_memory_context}"
-            lammps_script_chunks = []
-            script_generator = generator.execute_stream(generator_prompt)
-            for chunk in script_generator:
-                lammps_script_chunks.append(chunk)
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': chunk, 'message_type': 'script'})}\n\n"
+            iterative_generator = IterativeLammpsGeneration(max_attempts=2)
 
-            lammps_script = ''.join(lammps_script_chunks)
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
+            # Use queue+thread to stream progress events during synchronous DSPy generation
+            progress_queue = queue.Queue()
 
-            # Review script
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
+            def _progress_callback(stage, attempt, max_attempts, **kwargs):
+                progress_queue.put((stage, attempt, max_attempts, kwargs))
 
-            reviewer_prompt = f"Review this LAMMPS script for correctness:\n\n{lammps_script}"
-            review_generator = reviewer.execute_stream(reviewer_prompt)
-            review_chunks = []
-            for chunk in review_generator:
-                review_chunks.append(chunk)
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': chunk, 'message_type': 'review'})}\n\n"
+            result_holder = [None]
+            gen_error_holder = [None]
 
-            review = ''.join(review_chunks)
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
+            def _run_generation():
+                try:
+                    result_holder[0] = iterative_generator.forward(
+                        material=material_for_gen,
+                        kim_model=kim_model,
+                        temperature=temperature,
+                        ensemble=ensemble,
+                        duration_ps=duration_ps,
+                        system_size=system_size,
+                        simulation_details=analysis,
+                        visualization_notes=viz_notes,
+                        progress_callback=_progress_callback
+                    )
+                except Exception as e:
+                    gen_error_holder[0] = e
+                finally:
+                    progress_queue.put(("done", 0, 0, {}))
 
-            # 4. Visualization agent - ALWAYS runs to show visualization is happening
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+            gen_thread = threading.Thread(target=_run_generation)
+            gen_thread.start()
 
-            # Parse visualization request from orchestrator analysis
-            # The analysis contains VISUALIZATION PREFERENCES if the user requested custom viz
-            from tools import parse_visualization_request
+            # Yield progress events from the queue while generation runs
+            while True:
+                try:
+                    stage, attempt, max_attempts, kwargs = progress_queue.get(timeout=0.5)
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    continue
 
-            # Extract material from analysis for context
-            simulation_context = {}
-            if 'Material:' in analysis:
-                # Simple extraction - look for material line
-                for line in analysis.split('\n'):
-                    if 'Material:' in line:
-                        material = line.split('Material:')[1].strip().split()[0]
-                        simulation_context['material'] = material
-                        break
+                if stage == "done":
+                    break
+                elif stage == "generating":
+                    msg = f"Generating script (attempt {attempt}/{max_attempts})..."
+                    yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
+                elif stage == "script_generated":
+                    # Emit intermediate script as a Generator trace
+                    script_text = kwargs.get('script', '')
+                    explanation = kwargs.get('explanation', '')
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': script_text, 'message_type': 'script_trace', 'attempt': attempt})}\n\n"
+                    if explanation:
+                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': explanation, 'message_type': 'explanation', 'attempt': attempt})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
+                elif stage == "reviewing":
+                    msg = f"Reviewing script (attempt {attempt}/{max_attempts})..."
+                    yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
+                elif stage == "review_complete":
+                    # Emit full review details as Reviewer trace
+                    is_valid = kwargs.get('is_valid', True)
+                    issues = kwargs.get('issues', [])
+                    suggestions = kwargs.get('suggestions', [])
+                    severity = kwargs.get('severity', 'none')
+                    verdict = 'PASS' if is_valid else 'FAIL'
+                    review_msg = f"**REVIEW: {verdict}** (attempt {attempt}/{max_attempts}, severity: {severity})\n"
+                    if issues:
+                        review_msg += "\n**Issues:**\n" + "\n".join(f"- {i}" for i in issues)
+                    if suggestions:
+                        review_msg += "\n\n**Suggestions:**\n" + "\n".join(f"- {s}" for s in suggestions)
+                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': review_msg, 'message_type': 'review', 'attempt': attempt})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
 
-            # Inject visualization lessons into simulation context
-            if viz_memory_context:
-                simulation_context['viz_lessons'] = viz_memory_context
+                    if not is_valid and attempt < max_attempts:
+                        issue_summary = '; '.join(str(i) for i in issues[:2]) if issues else 'unknown issues'
+                        msg = f"Review found issues, regenerating... ({issue_summary})"
+                        yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
 
-            # Use the analysis (not user_command) to detect visualization preferences
-            # The analysis contains structured VISUALIZATION PREFERENCES section
-            viz_request = analysis if 'VISUALIZATION' in analysis.upper() else user_command
-            ovito_script = parse_visualization_request(viz_request, simulation_context, lammps_script)
-            
-            # Generate appropriate message based on whether custom visualization was requested
-            if ovito_script:
-                # Custom visualization requested - show the script
-                viz_message = f"**Custom Visualization Requested**\n\n**Generated OVITO Script:**\n```python\n{ovito_script}\n```"
-            else:
-                # No custom visualization - show minimal message
-                viz_message = "Applying default visualization settings for trajectory rendering."
-            
-            # Stream the visualization message
-            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
+            gen_thread.join()
 
-            # Check if review passed and determine execution using LLM intent
-            if "REVIEW: PASS" in review:
-                # Use the intent we already classified at the top
-                should_run = intent_result["intent"] in ("execute", "new_simulation")
+            if gen_error_holder[0] is not None:
+                raise gen_error_holder[0]
 
-                if should_run:
-                    # Signal to use streaming simulation with OVITO script
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': lammps_script, 'ovito_script': ovito_script, 'user_command': user_command})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+            result = result_holder[0]
+            lammps_script = result.script
+
+            # Only run visualization agent if review passed
+            if result.review_passed:
+                # Visualization agent — use DSPy modules
+                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+
+                simulation_context = {}
+                if material_for_search:
+                    simulation_context['material'] = material_for_search
+                if viz_memory_context:
+                    simulation_context['viz_lessons'] = viz_memory_context
+
+                viz_request = viz_notes or user_command
+
+                # Detect pre-computed properties from the LAMMPS script
+                if lammps_script:
+                    precomputed = detect_precomputed_properties(lammps_script)
+                    if precomputed:
+                        simulation_context['precomputed_properties'] = precomputed
+                        print(f"[VIZ] Detected pre-computed properties: {list(precomputed.keys())}")
+
+                # Detect custom visualization intent via DSPy
+                ovito_script = None
+                has_custom_viz = smart_orchestrator.detect_visualization(viz_request)
+
+                if has_custom_viz:
+                    # Iterative OVITO generate+review via thread+queue (mirrors LAMMPS pattern)
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Generating and reviewing OVITO script...'})}\n\n"
+
+                    ovito_gen = IterativeOVITOGeneration(max_attempts=config.OVITO_SCRIPT_MAX_RETRIES)
+
+                    ovito_progress_queue = queue.Queue()
+
+                    def _ovito_progress(stage, attempt, max_attempts, **kwargs):
+                        ovito_progress_queue.put((stage, attempt, max_attempts, kwargs))
+
+                    ovito_result_holder = [None]
+                    ovito_error_holder = [None]
+
+                    def _run_ovito_generation():
+                        try:
+                            ovito_result_holder[0] = ovito_gen.forward(
+                                visualization_request=viz_request,
+                                simulation_context=simulation_context,
+                                progress_callback=_ovito_progress,
+                            )
+                        except Exception as e:
+                            ovito_error_holder[0] = e
+                        finally:
+                            ovito_progress_queue.put(("done", 0, 0, {}))
+
+                    ovito_thread = threading.Thread(target=_run_ovito_generation)
+                    ovito_thread.start()
+
+                    # Yield progress events from the queue while OVITO generation runs
+                    while True:
+                        try:
+                            stage, attempt, max_attempts, kwargs = ovito_progress_queue.get(timeout=0.5)
+                        except queue.Empty:
+                            yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                            continue
+
+                        if stage == "done":
+                            break
+                        elif stage == "generating":
+                            msg = f"Generating OVITO script (attempt {attempt}/{max_attempts})..."
+                            yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
+                        elif stage == "script_generated":
+                            script_text = kwargs.get('script', '')
+                            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
+                            viz_msg = f"**Custom Visualization Requested**\n\n**Generated OVITO Script (attempt {attempt}):**\n```python\n{script_text}\n```"
+                            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_msg, 'message_type': 'visualization', 'attempt': attempt})}\n\n"
+                            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
+                        elif stage == "reviewing":
+                            msg = f"Reviewing OVITO script (attempt {attempt}/{max_attempts})..."
+                            yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
+                        elif stage == "review_complete":
+                            is_valid = kwargs.get('is_valid', True)
+                            issues = kwargs.get('issues', [])
+                            suggestions = kwargs.get('suggestions', [])
+                            severity = kwargs.get('severity', 'none')
+                            verdict = 'PASS' if is_valid else 'FAIL'
+                            review_msg = f"**OVITO Review: {verdict}** (attempt {attempt}/{max_attempts}, severity: {severity})\n"
+                            if issues:
+                                review_msg += "\n**Issues:**\n" + "\n".join(f"- {i}" for i in issues)
+                            if suggestions:
+                                review_msg += "\n\n**Suggestions:**\n" + "\n".join(f"- {s}" for s in suggestions)
+                            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
+                            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': review_msg, 'message_type': 'ovito_review', 'attempt': attempt})}\n\n"
+                            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
+
+                            if not is_valid and severity == "error" and attempt < max_attempts:
+                                issue_summary = '; '.join(str(i) for i in issues[:2]) if issues else 'unknown issues'
+                                msg = f"OVITO review found issues, regenerating... ({issue_summary})"
+                                yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
+
+                    ovito_thread.join()
+
+                    if ovito_error_holder[0] is not None:
+                        print(f"[OVITO GEN] Error: {ovito_error_holder[0]}")
+                        # Non-fatal: fall back to default visualization
+
+                    ovito_gen_result = ovito_result_holder[0]
+                    if ovito_gen_result and ovito_gen_result.review_passed:
+                        ovito_script = ovito_gen_result.script
+                        print(f"[VIZ] OVITO script passed review after {ovito_gen_result.attempts} attempt(s)")
+                    else:
+                        ovito_script = None
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'OVITO script failed review after all attempts, falling back to default visualization'})}\n\n"
+                        print("[VIZ] OVITO script failed all review attempts, falling back to default")
                 else:
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                    info_message = "LAMMPS script generated and approved. Would you like to run the simulation?"
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': info_message, 'message_type': 'info'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'script_ready', 'script': lammps_script, 'ovito_script': ovito_script})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                    print("[VIZ] No custom visualization requested, using default")
+                    viz_message = "Applying default visualization settings for trajectory rendering."
+                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
+
+                # Compute target_timesteps from LLM-provided total_steps
+                dump_filename_pattern = getattr(result, 'dump_filename_pattern', '') or ''
+                llm_total_steps = getattr(result, 'total_steps', 0) or 0
+                dump_freq_val = getattr(result, 'dump_freq_val', 1000) or 1000
+                target_timesteps = None
+                if llm_total_steps > 0:
+                    n_frames = min(config.MAX_TRAJECTORY_FRAMES, max(1, llm_total_steps // dump_freq_val))
+                    if n_frames > 1:
+                        step_size = llm_total_steps / (n_frames - 1)
+                        raw = [int(round(i * step_size / dump_freq_val) * dump_freq_val) for i in range(n_frames)]
+                        target_timesteps = sorted(set(raw))
+                    elif n_frames == 1:
+                        target_timesteps = [0]
+                    print(f"[APP] Computed target_timesteps from LLM total_steps={llm_total_steps}: {len(target_timesteps or [])} frames")
+
+                # Emit scripts_ready_for_review checkpoint instead of auto-executing
+                yield f"data: {json.dumps({'type': 'scripts_ready_for_review', 'lammps_script': lammps_script, 'ovito_script': ovito_script, 'dump_filename_pattern': dump_filename_pattern, 'target_timesteps': target_timesteps, 'camera_angle': camera_angle})}\n\n"
             else:
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                error_message = "Script review failed. Please check the issues identified by the reviewer."
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': error_message, 'message_type': 'error'})}\n\n"
-                yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script})}\n\n"
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
+                # Review failed - no OVITO, emit structured failure
+                yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script, 'issues': result.issues, 'suggestions': result.suggestions})}\n\n"
 
             yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
             
