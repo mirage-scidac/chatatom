@@ -8,6 +8,21 @@ A web-based application that allows users to run molecular dynamics simulations 
 
 This project uses Conda for managing the environment and complex dependencies, and `uv` for fast Python package installation.
 
+### Pixi Quickstart
+
+The repository now includes a [`pixi.toml`](/data/programs/chatmd/pixi.toml) environment definition and generated lockfile. To create the environment and run the app:
+
+```bash
+pixi install
+pixi run python src/app.py
+```
+
+If you only want the predefined task:
+
+```bash
+pixi run run-app
+```
+
 ### Prerequisites
 
 - **Miniconda/Anaconda**: For the `conda` package manager.
