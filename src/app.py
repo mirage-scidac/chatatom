@@ -971,5 +971,10 @@ def initialize_kim_registry():
 if __name__ == "__main__":
     run_health_checks()
     initialize_kim_registry()
-    socketio.run(app, host='0.0.0.0', port=config.APP_PORT, debug=True)
-
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=config.APP_PORT,
+        debug=True,
+        allow_unsafe_werkzeug=True,
+    )
