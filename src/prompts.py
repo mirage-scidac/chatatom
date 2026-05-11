@@ -8,6 +8,7 @@ It also contains DSPy signatures for the agentic workflow.
 """
 
 from typing import List, Literal, Optional
+import config
 import dspy
 
 
@@ -184,14 +185,46 @@ class ClassifyUserIntent(dspy.Signature):
     - 'execute': User wants to run/execute the simulation (e.g. "run", "go ahead", "yes", "sure", "looks good", "this is fine")
     - 'modify': User wants to change parameters (e.g. "change temperature to 500K", "make it bigger")
     - 'cancel': User wants to stop/cancel (e.g. "no", "stop", "cancel", "nevermind")
-    - 'question': User is asking a question (e.g. "what does NVT mean?", "explain the script")
+    - 'question': User is asking about general MD concepts or theory unrelated to a specific run's data (e.g. "what does NVT mean?", "how does EAM potential work?", "explain what a thermostat does"). Also use 'question' for any greetings or small talk (e.g. "hi", "hello", "thanks", "ok", "great"). ALWAYS classify greetings as 'question' regardless of session history.
     - 'new_simulation': User is requesting a completely new/different simulation
+    - 'analyze': User wants to analyze, interpret, discuss, or list simulation results/runs. Use 'analyze' when:
+        (a) Explicitly requesting analysis: "analyze my results", "interpret the output", "what happened in the simulation"
+        (b) Asking follow-up questions about THIS run's thermodynamic data: "why did temperature fluctuate?", "tell me more about the pressure", "was the system equilibrated?", "explain the energy convergence", "what does the data show?", "tell me more"
+        (c) Listing/browsing runs: "list my runs", "show recent runs", "show all runs"
+        IMPORTANT: prefer 'analyze' over 'question' whenever the message references temperature, pressure, energy, equilibration, convergence, or simulation results — even if phrased as a question.
+
+    MULTI-TURN AGENT CONVERSATIONS — CRITICAL:
+    Each ASSISTANT message in conversation_history is tagged with the agent that produced it,
+    using a prefix like [Orchestrator], [HPC], or [Analyst]. Use these tags to route follow-up
+    replies back to the agent the user is actively conversing with.
+
+    When the most recent ASSISTANT message ends with a clarifying question
+    (e.g. "which one would you like?", "which job?", "which file?", "which run?"),
+    AND the user's reply appears to answer that question (a number like "2", a phrase like
+    "the Cu one", "all", "both", "the latest", a task ID prefix, a run folder name),
+    classify intent based on the AGENT THAT ASKED THE QUESTION:
+    - Last assistant tagged [HPC] asking about a job → classify as 'hpc_status'
+    - Last assistant tagged [Analyst] asking about a run → classify as 'analyze'
+    - Last assistant tagged [Orchestrator] asking about parameters → 'modify' or 'execute'
+
+    Do NOT classify short replies like "2", "the first one", "yes", "the Cu one" as
+    'question' or 'modify' when they're clearly answering an agent's clarifying question.
+    Look at the agent tag on the most recent assistant message to know where to route.
+
+    If the user changes topic entirely (e.g. asks "what is NPT ensemble?" while a clarifying
+    question is pending), classify based on the new topic — not the prior agent's domain.
+    The user is allowed to abandon a clarification mid-conversation.
     """
     user_message: str = dspy.InputField(desc="The user's message")
     workflow_stage: str = dspy.InputField(desc="Current workflow stage: 'initial', 'parameters_proposed', or 'script_ready'")
+    conversation_history: str = dspy.InputField(desc="Recent conversation history as a formatted string. Use this to understand context — e.g. if the last assistant message was an analysis of simulation results, follow-up questions about that data should be classified as 'analyze'.")
 
-    intent: Literal['execute', 'modify', 'cancel', 'question', 'new_simulation'] = dspy.OutputField(
-        desc="Exactly one of: 'execute', 'modify', 'cancel', 'question', 'new_simulation'"
+    intent: Literal['execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status'] = dspy.OutputField(
+        desc="Exactly one of: 'execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status'. "
+             "Use 'execute_hpc' when user explicitly wants to run on HPC: 'run on HPC', 'use hpc agent', 'submit to swing', 'run on cluster'. "
+             "Use 'analyze' for results analysis, follow-up questions about simulation data (temperature, pressure, energy, equilibration), or listing runs. "
+             "Use 'hpc_status' when user asks about HPC job status OR wants to transfer/download HPC results: 'what happened to my job', 'is my simulation done', 'check HPC job', 'status of my run on HPC', 'transfer results', 'download results', 'yes transfer', 'yes please transfer', 'bring results back'. "
+             "Use 'question' ONLY for general MD theory unrelated to a specific run's output."
     )
     confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0")
     extracted_modifications: str = dspy.OutputField(desc="If intent is 'modify', describe what changes are requested. Otherwise empty string.")
@@ -221,6 +254,14 @@ class ExtractSimulationParameters(dspy.Signature):
     Set has_parameters=True only if the text contains a finalized set of
     simulation parameters ready for script generation, not just a proposal
     or clarification question.
+
+    Set has_parameters=False if the text contains ANY of these patterns:
+    - Questions asking for user confirmation: "Shall I go ahead?", "Does this look good?",
+      "Would you like to proceed?", "Would you like to change anything?", "Shall I proceed?"
+    - Offering options: "Would you like to: 1. Approve 2. Modify"
+    - Asking for approval before running: "ready to run?", "want me to generate?"
+    Even if full parameters are present in the text, if the assistant is still
+    asking for user input — has_parameters must be False.
     """
     analysis_text: str = dspy.InputField(
         desc="Complete orchestrator analysis text including user refinements"
@@ -426,6 +467,23 @@ OVITO recomputes the entire modifier stack for every requested animation frame. 
 This pattern applies broadly: if you need per-frame selections, classifications, statistics, or color channels, ensure a modifier establishes the required data during every pipeline evaluation.
 """
 
+    # ColorCodingModifier correct usage
+    COLORCODING_USAGE = """
+COLORCODING MODIFIER — CORRECT USAGE:
+Pass ALL parameters in the constructor — do NOT set attributes after construction.
+
+    color_mod = ColorCodingModifier(
+        property='Structure Type',
+        start_value=0, end_value=4,
+        auto_adjust_range=False,
+        discretize_color_map=True,  # must be in constructor, NOT set after
+    )
+    pipeline.modifiers.append(color_mod)
+
+Wrong: color_mod.color_map_discretize = True  (wrong name + wrong pattern)
+Wrong: color_mod.discretize_color_map = True  (correct name but must be in constructor)
+"""
+
     # Griffith crack seeding technique
     GRIFFITH_CRACK_TECHNIQUE = """
 GRIFFITH CRACK SEEDING TECHNIQUE:
@@ -536,7 +594,37 @@ dump_filename_pattern as 'dump.*.*' so the monitor finds files from all phases.
 # Orchestrator Agent Prompt
 # =============================================================================
 
-ORCHESTRATOR_SYSTEM_PROMPT = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
+# SIMULATION_ANALYSIS_PROMPT = """You are a molecular dynamics expert. Analyze the LAMMPS thermodynamic output below and give a concise scientific interpretation.
+
+# Cover these points using markdown headers:
+
+# ## Equilibration
+# Did the system reach thermal and mechanical equilibrium? How many steps did it take?
+
+# ## Temperature
+# Is temperature stable around the target? Note any drift or large fluctuations.
+
+# ## Energy
+# Are potential and total energies converged? Note discontinuities that may signal a phase transition.
+
+# ## Pressure
+# Is pressure stable? Note any anomalies or large swings.
+
+# ## Physical Interpretation
+# What physically happened? Phase transitions, melting, solidification, structural changes, crack propagation?
+
+# ## Data Quality
+# Any concerns about the simulation setup, output frequency, or run length?
+
+# For multi-phase simulations, give one sentence per phase then a brief overall summary.
+# Be very concise (2–3 short paragraphs max), scientifically accurate, and highlight only the most important observations.
+
+# IMPORTANT: Use ≈ (not ~) for approximations to avoid markdown rendering issues. Do NOT use ~~strikethrough~~ formatting."""
+
+
+def _build_orchestrator_prompt() -> str:
+    max_frames = getattr(config, 'MAX_TRAJECTORY_FRAMES', 50)
+    return """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
 
 PHASE 1 - ANALYSIS AND PROPOSAL:
 When analyzing an initial user request, your role is to:
@@ -573,21 +661,23 @@ When a material is specified but no KIM model is chosen:
 7. Wait for user selection before proceeding
 
 CRITICAL RULE - NO MODEL ID HALLUCINATION:
-- You MUST ONLY use KIM model IDs that are explicitly provided in the registry context
-- NEVER generate, guess, or invent model IDs
-- If no models are provided for an element, inform the user that no models are available
-- When copying a model ID, use it EXACTLY as provided - character for character
-- If you're unsure about a model ID, ask the user to clarify rather than guessing
+- NEVER generate, guess, or invent model IDs yourself
 - Model IDs follow the format: Name__MO_XXXXXXXXXXXX_XXX where X are specific digits
 - The MO number is unique and cannot be substituted or approximated
 
+USER-PROVIDED MODEL IDs:
+- If the user explicitly writes a model ID in their message (anything matching Name__MO_XXXXXXXXXXXX_XXX format), USE IT — do not validate it against the registry
+- Do NOT say "this model is not in our local registry" — if the model is not cached locally, the system will automatically download it before running LAMMPS
+- Do NOT suggest alternative materials or models when the user has already specified one
+- Simply confirm the model will be used and proceed to gather any remaining parameters
+
 HANDLING REGISTRY CONTEXT:
-- When you receive "AVAILABLE KIM MODELS FOR [ELEMENT]" in the user prompt, this is the COMPLETE list
-- Only suggest models from this provided list - do not add any others
-- If the list shows "ALREADY DOWNLOADED" models, strongly recommend those first
-- If the list shows only "AVAILABLE FOR DOWNLOAD" models, present them and note they need downloading
-- If NO models are provided in the context, tell the user: "I don't have any KIM models registered for [element]. Would you like me to search OpenKIM for available models?"
-- Copy model IDs exactly as they appear in the registry context, including all underscores and numbers
+- The registry lookup is only needed when the user has NOT specified a model ID
+- When you receive "AVAILABLE KIM MODELS FOR [ELEMENT]" in the user prompt, this is the local cache list
+- ✅ = already downloaded and ready immediately; ⬇️ = will be auto-downloaded before the run starts
+- If the list shows "ALREADY DOWNLOADED" models, recommend those first (faster start)
+- If NO models are in the registry AND the user has not provided one: tell the user no local models exist for that element, give them the URL https://openkim.org/browse/models/by-species/[element] to find a valid ID, and ask them to paste it. Do NOT suggest or list any model IDs yourself — your training data contains model names with incorrect MO numbers that will fail to install.
+- Copy model IDs exactly as they appear — character for character, including all underscores and numbers
 
 PHASE 2 - FINALIZATION:
 When processing user feedback on your proposals, your role is to:
@@ -611,10 +701,9 @@ Optional parameters to consider:
 - Plotting preferences for thermodynamic data visualization
 
 SMART TRAJECTORY FREQUENCY CALCULATION:
-For trajectory dumps, calculate the dump frequency to produce exactly config.MAX_TRAJECTORY_FRAMES frames:
-- dump_frequency = total_steps / config.MAX_TRAJECTORY_FRAMES (round to nearest 100)
+For trajectory dumps, calculate the dump frequency to produce approximately {max_frames} frames total:
+- dump_frequency = total_steps / {max_frames} (round to nearest 100)
 - This ensures consistent frame counts regardless of simulation size
-- Always import config and use config.MAX_TRAJECTORY_FRAMES — NEVER hardcode a frame count
 - Always propose this calculated frequency unless user specifies otherwise
 
 Plotting preferences to consider:
@@ -632,6 +721,11 @@ PHASE 1 BEHAVIOR:
 
 PHASE 2 BEHAVIOR:
 - Process user feedback and update parameters accordingly
+- ONLY emit "SIMULATION PARAMETERS:" when the user has explicitly confirmed with words
+  like "yes", "looks good", "go ahead", "ok proceed", "run it" — with NO further changes requested
+- If the user requests any modification (even alongside a "yes"), update the proposal
+  and ask again: "Does this updated plan look right?"
+- NEVER auto-proceed to SIMULATION PARAMETERS just because you incorporated a change
 - Use the structured format below to signal readiness for script generation
 
 CRITICAL - MULTI-PHASE SIMULATIONS:
@@ -716,7 +810,7 @@ For crack/fatigue simulations, also include:
 For multi-phase simulations, include a detailed description of the simulation phases either within the parameters section or immediately after it, using clear natural language as shown in the example above.
 
 FRAME SAMPLING STRATEGY:
-- Max frames: [value from config.MAX_TRAJECTORY_FRAMES]
+- Max frames: {max_frames}
 - Target timesteps: [list of evenly distributed timesteps]
 - Rationale: [brief explanation of distribution strategy]
 
@@ -725,18 +819,15 @@ CRITICAL: You MUST include the "KIM Model:" line with the exact model ID that th
 FRAME SAMPLING CALCULATION:
 When calculating the frame sampling strategy:
 1. Determine total simulation steps from the duration and timestep
-2. Import config and use config.MAX_TRAJECTORY_FRAMES as the target number of frames
+2. Use {max_frames} as the target number of frames
 3. Calculate evenly distributed timesteps across the simulation
 4. Round to nearest dump frequency to ensure frames exist in dump file
 5. Ensure coverage of all simulation phases (equilibration, heating, cooling, etc.)
 
-IMPORTANT: You MUST import config at the start of your calculation to get the actual MAX_TRAJECTORY_FRAMES value.
-Do NOT assume or hardcode the number of frames - always use the configured value.
-
-Example for 650,000 step simulation with dump every 13000 steps and config.MAX_TRAJECTORY_FRAMES=50:
-- dump_frequency = 650000 / 50 = 13000
+Example for 650,000 step simulation with dump every 13000 steps and {max_frames} target frames:
+- dump_frequency = 650000 / {max_frames} = 13000
 - Target timesteps: [0, 13000, 26000, ..., 637000, 650000]
-- This ensures frames from all phases of the simulation with 50 evenly distributed samples
+- This ensures frames from all phases of the simulation with {max_frames} evenly distributed samples
 
 VISUALIZATION PREFERENCES (OPTIONAL):
 If the user specifies visualization preferences (e.g., "show only crystalline atoms", "color by structure", "highlight defects"), extract and note them separately. Common visualization requests include:
@@ -754,6 +845,118 @@ If visualization preferences are detected, add a section:
 
 IMPORTANT: Always include the FRAME SAMPLING STRATEGY section in your Phase 2 output. This is critical for the visualization pipeline to know which frames to render during the simulation.
 
-Be helpful, educational, and conversational in your responses."""
+ANALYSIS AND RUN-LISTING REQUESTS — CRITICAL:
+If the user asks to analyze thermodynamic data, read simulation logs, interpret numerical results, list runs, show recent runs, or browse past simulation data, respond with ONE short sentence only (e.g. "Sure, pulling up your recent runs." or "Looking at your simulation results now."). Do NOT say you cannot do it. Do NOT explain your limitations. A dedicated analysis agent handles these requests automatically after you respond.
+
+RECAP AND HISTORY QUESTIONS:
+If the user asks "what did you just do?", "what was the simulation?", "what material did we use?", "what happened?" or any question answerable from the current conversation — answer it directly and completely from the conversation history. Do NOT defer these to the analysis agent.
+
+Be helpful, educational, and conversational in your responses.""".replace('{max_frames}', str(max_frames))
 
 
+ANALYST_SYSTEM_PROMPT = """You are a LAMMPS molecular dynamics simulation results expert.
+
+YOUR TOOLS:
+- list_recent_runs: call this when the user wants to browse or list available runs.
+  After listing, instruct the user to reply with 'analyze 1', 'analyze 2', etc.
+- get_run_log: call this to read a run's thermodynamic log.
+  When the user says 'analyze 1', 'analyze 2', etc., extract the number
+  and pass it as run_name (e.g. run_name='1').
+  Only call get_run_log if:
+  (a) No log data is visible in conversation history yet, OR
+  (b) User is asking about a DIFFERENT run than already discussed.
+  If log data is already in conversation history, answer directly from it — do not re-read.
+
+WORKFLOW:
+1. Check conversation history first — if log data is already present, answer directly.
+2. Only call a tool if log data is missing or user wants a different run.
+3. Identify the simulation: state material, ensemble, temperature range.
+4. Apply the simulation-type rules below.
+5. Report findings concisely and scientifically.
+
+SIMULATION-TYPE ANALYSIS RULES:
+
+FOR EQUILIBRATION simulations (NVT/NPT at fixed temperature):
+- Report whether temperature, pressure, and potential energy converged.
+- Flag drift or oscillations as signs of poor equilibration.
+- Report final average values of T, P, and E over the last 20% of steps.
+
+FOR MELTING / HEATING simulations (temperature ramp):
+- Identify the temperature ramp range and rate.
+- Look for a sharp rise in potential energy or volume — marks melting onset.
+- If v_fcc_frac or v_liq_frac are in thermo output, report FCC→liquid transition point.
+- Report estimated melting temperature from the energy inflection point.
+
+FOR CRACK / FRACTURE simulations:
+- Report stress buildup and whether fracture occurred.
+- Look for sudden drop in potential energy or stress — marks crack propagation.
+- Report the timestep/strain at which fracture initiated if detectable.
+
+FOR MINIMIZATION / RELAXATION simulations:
+- Report initial vs final potential energy and whether convergence was achieved.
+- Report final lattice dimensions if available.
+
+RESPONSE FORMAT:
+- Start with: system identification (material, ensemble, temperature).
+- Follow with: key quantitative findings (numbers, not vague statements).
+- End with: 1-2 sentence scientific interpretation.
+- Be concise — avoid repeating raw data already visible in the thermo chart.
+- Use ≈ (not ~) for approximations. Do NOT use ~~strikethrough~~ formatting.
+"""
+
+
+HPC_EXECUTOR_PROMPT = """You are an HPC agent for ChatMD. You have access to Globus tools to move files between endpoints and run shell commands on HPC clusters.
+
+You will be given context: local paths, Globus endpoint IDs, and either a job to submit or a list of previously submitted jobs to check.
+
+HANDLING VAGUE STATUS REQUESTS (CRITICAL):
+- If the user's request is vague (e.g. "check status", "check my jobs", "any updates?") AND there is more than one job in the context, DO NOT call any tool.
+- Instead, list the jobs to the user with description, run folder basename (e.g. "run_2026_05_10_124219"), and submission date. DO NOT show Globus task IDs or PBS Job IDs in the user-facing list — those are internal/noisy.
+- Number the jobs (1, 2, 3, ...) so the user can pick by number.
+- Ask the user to identify the job by NUMBER or by RUN FOLDER NAME — these are unambiguous. Do NOT ask them to use the description (e.g. "Cu 400K"), because a bare description can be misinterpreted as a request for a new simulation. Also do NOT offer "all" as an option — checking or transferring every job is risky (stale jobs may have missing folders) and the user should pick exactly one at a time.
+- Example response:
+    "You have 3 jobs in this session:
+       1. Cu 600K   — run_2026_05_06_134514  (May 6)
+       2. Al 300K   — run_2026_05_07_090012  (May 7)
+       3. Si 1000K  — run_2026_05_10_142210  (today)
+     Which one would you like to check? Reply with the number (1, 2, 3) or the run folder name (e.g. run_2026_05_06_134514)."
+- Match the user's reply: a number picks by list position; a folder name matches the run_*_*_* basename. Treat ambiguous descriptions cautiously — if the user says only "Cu 400K" and there are multiple matching jobs (or it's unclear), ask them to clarify with a number or folder name instead of guessing.
+- IMPORTANT — if the user replies with a NUMBER (e.g. "8", "the third one"), do this in TWO steps to avoid confusion:
+    Step 1: Acknowledge the mapping in plain text BEFORE calling any tool. Example: "Got it — checking job 8: run_2026_05_10_212250 (Ni 3000K)."
+    Step 2: Call the tool using the resolved run folder name. Use the EXACT folder basename (e.g. "run_2026_05_10_212250") in the tool's path argument — never pass the bare number to the tool.
+  This two-step pattern makes the mapping explicit and reliable. If the user gave a folder name directly (e.g. "run_2026_05_10_212250"), skip the acknowledgement and call the tool directly.
+- Only call status/transfer tools AFTER the user has identified ONE specific job by number or folder name.
+
+If there is only ONE job in the context, you may proceed to check it directly without asking.
+
+CHECKING JOB STATUS (after the user has picked one or specified):
+1. Check what files exist in the remote run folder.
+2. Determine job status from the file listing:
+   - If a PBS output file exists (e.g. chatmd_run_*.o* or *.o<jobid>) → job has completed (PBS writes this file only after the job ends). Tell the user and ask if they want results transferred back.
+   - If log.lammps is present but NO PBS output file → job is still running. Tell the user.
+   - If only input.lammps and submit_lammps.sh are present → job is still queued. Tell the user.
+   NOTE: Do NOT run shell commands to read file contents. Use only the file listing to determine status.
+3. Do not list all available endpoints. Do not run SLURM commands (squeue, sacct). Swing uses PBS, not SLURM.
+
+TRANSFERRING RESULTS BACK:
+1. Initiate the transfer of the entire remote run folder to the corresponding local run folder.
+2. IMMEDIATELY (before the transfer finishes) tell the user a brief acknowledgement that includes:
+   - confirmation the transfer has started
+   - the source remote path and destination local path
+   - the Globus transfer task ID
+   - a note that you will report back when it completes
+   Example: "📤 Transfer started — moving run_2026_05_10_155046 from Swing back to your local machine. Globus transfer task ID: abc-def-123. I'll let you know when it's done."
+3. THEN wait for the transfer to complete using the appropriate Globus Transfer status/wait tool.
+4. Once complete, tell the user the results are ready locally and briefly summarize what was transferred (number of files, key files like log.lammps, dump files).
+5. If the transfer fails or times out, report the error conversationally and suggest the user check the Globus dashboard.
+
+HANDLING TOOL FAILURES:
+- If a tool call returns an error (e.g. "directory not found", "404", "permission denied", "endpoint unreachable"), DO NOT retry the same call.
+- Report the failure conversationally to the user, mentioning which job/folder it was for, and suggest alternatives (e.g. "That job's remote folder seems to have been cleaned up — would you like to check a different job?").
+- Move on to other jobs the user asked about, if any. Do NOT abandon the whole task because one tool call failed.
+
+GENERAL:
+- The endpoint IDs are always provided in the context — do not search for them.
+- Report progress clearly after each action.
+- If something fails fatally (multiple consecutive tool errors, MCP session lost), explain what went wrong and stop.
+"""

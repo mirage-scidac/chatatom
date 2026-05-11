@@ -7,6 +7,8 @@ This module provides MPI-only execution with:
 - Organized run folder management
 """
 import os
+import sys
+import json
 import subprocess
 import re
 import glob
@@ -21,58 +23,59 @@ import run_manager
 from queue import Queue
 
 
-def parse_visualization_request(user_command: str, simulation_context: Optional[Dict[str, Any]] = None,
-                               lammps_script: Optional[str] = None) -> Optional[str]:
+# ── OVITO Render Server (per-simulation subprocess via stdin/stdout JSON) ──────
+# OVITO's import_file() leaks OS semaphores, crashing Flask on the 2nd simulation.
+# Fix: launch ovito_render_server.py as a fresh subprocess per simulation.
+# Communication is via newline-delimited JSON on stdin/stdout.
+# close_fds=True ensures Flask's WebSocket fds are NOT inherited by the child.
+
+_RENDER_SERVER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'ovito_render_server.py')
+
+
+def _start_render_server_process() -> subprocess.Popen:
+    """Start a fresh ovito_render_server.py subprocess for one simulation."""
+    proc = subprocess.Popen(
+        [sys.executable, _RENDER_SERVER_SCRIPT],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,           # line-buffered
+        close_fds=True,      # don't inherit WebSocket file descriptors
+    )
+    print(f"[RENDERER] OVITO render server started (pid={proc.pid})")
+    return proc
+
+
+def _send_render_request(proc: subprocess.Popen, req: dict) -> dict:
+    """Send one render request and return the result dict.
+
+    OVITO may print non-JSON warning/info lines to stdout before the actual
+    JSON response. Skip those lines until we get a valid JSON object.
     """
-    Generate OVITO script if custom visualization is requested.
+    line = json.dumps(req) + '\n'
+    proc.stdin.write(line)
+    proc.stdin.flush()
+    while True:
+        result_line = proc.stdout.readline()
+        if not result_line:
+            return {'status': 'error', 'error': 'render server closed stdout'}
+        result_line = result_line.strip()
+        if not result_line:
+            continue
+        try:
+            return json.loads(result_line)
+        except json.JSONDecodeError:
+            # OVITO noise line — log it and keep reading
+            print(f"[RENDERER] skipping non-JSON stdout: {result_line[:120]}")
 
-    Uses DSPy modules (SmartOrchestrator for detection, OVITOScriptGeneration
-    for script generation) instead of the former OrchestratorAgent.
 
-    Args:
-        user_command: User's natural language command (may include visualization preferences)
-        simulation_context: Optional simulation context (material, structure, etc.)
-        lammps_script: Optional LAMMPS script to check for pre-computed properties
+def _get_ovito_renderer(camera_angle: str, render_size: tuple):
+    # Kept for backward compatibility — no longer used in rendering_worker
+    pass
 
-    Returns:
-        OVITO Python script as a string, or None for default visualization
-    """
-    from agents import SmartOrchestrator, IterativeOVITOGeneration, configure_dspy_lm, detect_precomputed_properties
 
-    try:
-        configure_dspy_lm()
-
-        if simulation_context is None:
-            simulation_context = {}
-
-        # Detect pre-computed properties from the LAMMPS script
-        if lammps_script:
-            precomputed = detect_precomputed_properties(lammps_script)
-            if precomputed:
-                simulation_context['precomputed_properties'] = precomputed
-                print(f"[VIZ] Detected pre-computed properties: {list(precomputed.keys())}")
-
-        # Detect custom visualization intent via DSPy
-        orchestrator = SmartOrchestrator()
-        has_custom_viz = orchestrator.detect_visualization(user_command)
-
-        if not has_custom_viz:
-            print("[VIZ] No custom visualization requested, using default")
-            return None
-
-        # Generate OVITO script via iterative DSPy module
-        ovito_gen = IterativeOVITOGeneration(max_attempts=config.OVITO_SCRIPT_MAX_RETRIES)
-        result = ovito_gen.forward(user_command, simulation_context)
-        if result.review_passed and result.script:
-            print(f"[VIZ] Generated custom OVITO script ({len(result.script)} chars) after {result.attempts} attempt(s)")
-            return result.script
-        else:
-            print(f"[VIZ] OVITO script failed review after {result.attempts} attempts, falling back to default")
-            return None
-
-    except Exception as e:
-        print(f"[VIZ] Warning: Failed to generate visualization script: {e}")
-        return None  # Fall back to default visualization
 
 
 def extract_kim_models(script_string: str) -> List[str]:
@@ -337,6 +340,7 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
 
     if dump_info is None:
         print(f"[DUMP MONITOR] ERROR: Dump file was never created")
+        frame_queue.put(None)  # sentinel so renderer doesn't hang
         return
 
     mode = dump_info['mode']
@@ -353,6 +357,22 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
     # ===================================================================
     if mode == 'per_timestep':
         pattern_for_glob = dump_filename_pattern or dump_info['pattern']
+
+        # Multi-stage scripts (equil/heat/hold) use separate dump commands with
+        # stage-specific suffixes: "dump.Cu_melting.*.equil", "dump.Cu_melting.*.heat".
+        # The LLM pattern only captures the first stage. Broaden to "dump.Cu_melting.*"
+        # so all stages are monitored together.
+        if '*' in pattern_for_glob:
+            star_idx = pattern_for_glob.index('*')
+            after_star = pattern_for_glob[star_idx + 1:]
+            if after_star and not after_star.startswith('.'):
+                # suffix is part of the numeric segment — keep as-is
+                pass
+            elif after_star:
+                # suffix is a stage name like ".equil" — drop it to cover all stages
+                pattern_for_glob = pattern_for_glob[:star_idx + 1]  # e.g. "dump.Cu_melting.*"
+                print(f"[DUMP MONITOR] Broadened pattern to '{pattern_for_glob}' to capture all dump stages")
+
         glob_path = os.path.join(search_dir, pattern_for_glob)
         seen_files = set()
         frame_counter = 0
@@ -406,10 +426,12 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
                         if use_smart_sampling and len(extracted_timesteps_set) >= len(target_timesteps):
                             print(f"[DUMP MONITOR] All {len(target_timesteps)} target frames queued")
                             print(f"[DUMP MONITOR] Completed. Total frames queued: {frame_counter}")
+                            frame_queue.put(None)  # sentinel
                             return
                         if not use_smart_sampling and frame_counter >= max_frames:
                             print(f"[DUMP MONITOR] Reached max_frames={max_frames}")
                             print(f"[DUMP MONITOR] Completed. Total frames queued: {frame_counter}")
+                            frame_queue.put(None)  # sentinel
                             return
 
             # If simulation is done and no new files, do one final sweep and exit
@@ -424,6 +446,7 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
             time.sleep(0.2)  # Poll interval
 
         print(f"[DUMP MONITOR] Completed (per-timestep). Total frames queued: {frame_counter}")
+        frame_queue.put(None)  # sentinel
         return
 
     # ===================================================================
@@ -497,6 +520,8 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
     else:
         print(f"[DUMP MONITOR] Completed. Total frames queued: {frame_counter}")
 
+    frame_queue.put(None)  # sentinel — rendering_worker exits on this
+
 
 def apply_basic_visualization(pipeline) -> None:
     """Apply basic particle type coloring as default visualization."""
@@ -529,145 +554,81 @@ def rendering_worker(frame_queue: Queue, ovito_script: Optional[str],
     """
     print("[RENDERER] Starting rendering worker thread")
 
-    import ovito
-    from ovito.io import import_file
-    from ovito.vis import Viewport, TachyonRenderer
-    from ovito_executor import DynamicOVITOExecutor
-    cached_pipeline = None
-    cached_file = None
-    known_frames = 0
-
-    # Setup renderer once
-    renderer = TachyonRenderer()
-    renderer.antialiasing = True
-    renderer.shadows = True
-    renderer.ambient_occlusion = True
-
-    # Determine render size from quality
     size_map = {'high': (800, 600), 'low': (400, 300), 'medium': (600, 450)}
-    render_size = size_map.get(quality, (600, 450))
+    render_size = list(size_map.get(quality, (600, 450)))
 
-    # Create viewport ONCE (reused across all frames)
-    viewport = Viewport()
-    viewport.type = Viewport.Type.Perspective
-    if camera_angle == 'top':
-        viewport.camera_pos = (0, 0, 50)
-        viewport.camera_dir = (0, 0, -1)
-    elif camera_angle == 'side':
-        viewport.camera_pos = (50, 0, 0)
-        viewport.camera_dir = (-1, 0, 0)
-    else:  # default perspective
-        viewport.camera_pos = (30, 30, 30)
-        viewport.camera_dir = (-1, -1, -1)
+    # Fresh subprocess per simulation — avoids OVITO semaphore leak across runs
+    render_proc = _start_render_server_process()
 
-    while not simulation_done.is_set() or not frame_queue.empty():
-        try:
-            frame_info = frame_queue.get(timeout=0.5)
-        except:
-            continue
-
-        if frame_info is None:
-            continue
-
-        try:
-            dump_file = frame_info['dump_file']
-            frame_index = frame_info['frame_number']  # Sequential counter for output
-            file_frame_index = frame_info.get('file_frame_index', frame_index)  # Index within file
-            timestep = frame_info['timestep']
-
-            # Reimport only when file changed or we need frames beyond known count
-            if cached_file != dump_file or file_frame_index >= known_frames:
-                if cached_pipeline:
-                    cached_pipeline.remove_from_scene()
-
-                # Defensive: clear ALL pipelines from scene to prevent ghosting
-                for p in list(ovito.scene.pipelines):
-                    p.remove_from_scene()
-                del cached_pipeline
-                cached_pipeline = None
-
-                print(f"[RENDERER] Importing dump file: {dump_file}")
-                cached_pipeline = import_file(dump_file)
-                known_frames = cached_pipeline.source.num_frames
-                cached_pipeline.modifiers.clear()
-
-                if ovito_script:
-                    try:
-                        data = cached_pipeline.compute(0)
-                        executor = DynamicOVITOExecutor()
-                        cached_pipeline = executor.execute_script(
-                            ovito_script, cached_pipeline, data)
-                        print("[RENDERER] Applied custom OVITO script to cached pipeline")
-                    except Exception as e:
-                        print(f"[RENDERER] Script execution failed: {e}, using basic visualization")
-                        apply_basic_visualization(cached_pipeline)
-                else:
-                    apply_basic_visualization(cached_pipeline)
-
-                cached_pipeline.add_to_scene()
-
-                # White simulation cell outline for dark-themed frontend
-                cell_vis = cached_pipeline.source.data.cell.vis
-                cell_vis.rendering_color = (1.0, 1.0, 1.0)
-                cell_vis.line_width = 1.4
-
-                cached_file = dump_file
-
-            # Fit camera to current frame geometry
-            viewport.zoom_all()
-
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                tmp_path = tmp.name
+    try:
+        # Loop until sentinel None is received — monitor puts None when done.
+        # This avoids the race where queue is momentarily empty while monitor
+        # is sleeping (1s pacing) and simulation_done is already set.
+        while True:
             try:
-                viewport.render_image(
-                    filename=tmp_path,
-                    size=render_size,
-                    alpha=True,
-                    renderer=renderer,
-                    frame=file_frame_index
-                )
-                with open(tmp_path, 'rb') as f:
-                    image_b64 = base64.b64encode(f.read()).decode('utf-8')
-            finally:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
+                frame_info = frame_queue.get(timeout=2.0)
+            except Exception:
+                # Timed out waiting — keep waiting for sentinel from monitor
+                continue
 
-            if image_b64:
-                frame_result = {
-                    'image': image_b64,
-                    'frame_number': frame_index,
-                    'timestep': timestep
-                }
-                frame_images.append(frame_result)
-                print(f"[RENDERER] Rendered frame {frame_index} (timestep {timestep})")
+            if frame_info is None:
+                # Sentinel: monitor has finished queuing all frames
+                break
 
-                # Stream via callback
-                if data_callback:
-                    try:
-                        data_callback({
-                            'type': 'trajectory_frame',
-                            'image_data': image_b64,
-                            'frame_number': frame_index,
-                            'timestep': timestep
-                        })
-                    except Exception as e:
-                        print(f"[RENDERER] Warning: Error in visualization callback: {e}")
+            dump_file        = frame_info['dump_file']
+            frame_index      = frame_info['frame_number']
+            file_frame_index = frame_info.get('file_frame_index', frame_index)
+            timestep         = frame_info['timestep']
 
-        except Exception as e:
-            print(f"Warning: Error rendering frame: {e}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            continue
+            print(f"[RENDERER] Importing dump file: {dump_file}")
 
-    # Final cleanup: clear ALL pipelines from scene
-    for p in list(ovito.scene.pipelines):
-        p.remove_from_scene()
+            try:
+                result = _send_render_request(render_proc, {
+                    'dump_file':        dump_file,
+                    'ovito_script':     ovito_script,
+                    'camera_angle':     camera_angle,
+                    'render_size':      render_size,
+                    'file_frame_index': file_frame_index,
+                })
+            except Exception as e:
+                print(f"[RENDERER] Communication error: {e}")
+                continue
 
-    print(f"[RENDERER] Completed. Total frames rendered: {len(frame_images)}")
+            if result.get('status') != 'ok':
+                print(f"[RENDERER] Frame {frame_index} error: {result.get('error')}")
+                if result.get('tb'):
+                    print(result['tb'])
+                continue
+
+            image_b64 = result['image']
+            frame_images.append({'image': image_b64, 'frame_number': frame_index, 'timestep': timestep})
+            print(f"[RENDERER] Rendered frame {frame_index} (timestep {timestep})")
+
+            if data_callback:
+                try:
+                    data_callback({
+                        'type': 'trajectory_frame',
+                        'image_data': image_b64,
+                        'frame_number': frame_index,
+                        'timestep': timestep,
+                    })
+                except Exception as e:
+                    print(f"[RENDERER] Warning: callback error: {e}")
+
+    finally:
+        # Shut down the OVITO subprocess cleanly
+        try:
+            render_proc.stdin.write(json.dumps({'type': 'shutdown'}) + '\n')
+            render_proc.stdin.flush()
+            render_proc.stdin.close()
+            render_proc.wait(timeout=5)
+        except Exception:
+            render_proc.kill()
+        print(f"[RENDERER] Completed. Total frames rendered: {len(frame_images)}")
 
 
-def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, Any]] = None, 
-                          data_callback: Optional[Callable] = None, 
+def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, Any]] = None,
+                          data_callback: Optional[Callable] = None,
                           num_cores: Optional[int] = None) -> Tuple[Dict[str, str], List[Dict[str, Any]], List[Dict]]:
     """
     Execute MPI-based LAMMPS simulation with real-time streaming and async rendering.
@@ -718,6 +679,9 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
         render_config = {}
     
     ovito_script = render_config.get('ovito_script', None)
+    if ovito_script:
+        with open(os.path.join(run_folder, 'ovito_script.py'), 'w') as f:
+            f.write(ovito_script)
     quality = render_config.get('quality', 'medium')
     camera_angle = render_config.get('camera_angle', 'default')
     max_queue_size = render_config.get('max_queue_size', 10)
@@ -766,7 +730,8 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
             text=True,
             cwd=run_folder,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            close_fds=True,          # prevent child inheriting WebSocket file descriptors
         )
         
         # Start dump file monitor (async) - pass run_folder to find dump file dynamically

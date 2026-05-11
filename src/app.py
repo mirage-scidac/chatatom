@@ -1,7 +1,6 @@
 import subprocess
 import sys
 import os
-import re
 
 # This will be populated with the Flask app later.
 # For now, it contains the health checks.
@@ -60,7 +59,7 @@ def check_llm_api():
         completion = client.chat.completions.create(
             model="gpt4o",  # This can be any name for local models
             messages=[{"role": "user", "content": "respond with only the word 'ok'"}],
-            max_tokens=5,
+            max_completion_tokens=5,
             timeout=5, # 5 second timeout
         )
         response = completion.choices[0].message.content.strip().lower()
@@ -92,12 +91,19 @@ import queue
 import threading
 import time
 
+import sqlite3
 import config
 from openai import OpenAI
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 app.config['SECRET_KEY'] = 'chatmd_secret_key'  # Required for SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    ping_timeout=120,        # wait 120s before declaring connection dead
+    ping_interval=25,        # send ping every 25s to keep connection alive
+)
 
 # Create the global OpenAI client
 client = OpenAI(base_url=config.API_BASE_URL, api_key=config.API_KEY)
@@ -108,45 +114,22 @@ def serve_index():
     return send_from_directory('..', 'index.html')
 
 from agents import (
-    IterativeLammpsGeneration, SmartOrchestrator,
-    IterativeOVITOGeneration,
+    SmartOrchestrator,
     configure_dspy_lm,
-    detect_precomputed_properties,
 )
-from prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from memory import get_memory_backend
 from tools import run_lammps_simulation
 import kim_utils
 import uuid
+
+# Configure DSPy once at startup in the main thread.
+# DSPy 3.x locks settings to the thread that first calls dspy.configure(),
+# so this must happen here — never inside request handlers or background threads.
+configure_dspy_lm()
 from datetime import datetime
-from session_manager import get_session_manager
-
-# =============================================================================
-# Session Storage for Checkpoint Workflow
-# =============================================================================
-
-# SQLite-based session persistence (replaces in-memory storage)
-# Sessions now survive server restarts
-
-
-def create_session(user_request: str) -> str:
-    """Create a new workflow session using SQLite backend."""
-    session_id = str(uuid.uuid4())
-    session_manager = get_session_manager()
-    session_manager.create(session_id, user_request)
-    return session_id
-
-
-def get_session(session_id: str) -> dict:
-    """Get a workflow session by ID from SQLite."""
-    session_manager = get_session_manager()
-    return session_manager.get(session_id)
-
-
-def update_session(session_id: str, updates: dict) -> bool:
-    """Update a workflow session in SQLite."""
-    session_manager = get_session_manager()
-    return session_manager.update(session_id, updates)
+from graph.graph import simulation_graph
+from graph.state import SimulationState
+from graph.nodes import SESSION_QUEUES
 
 
 # WebSocket event handlers
@@ -210,7 +193,7 @@ def handle_streaming_simulation(data):
                 
                 # Use configured number of cores from config.py
                 output_files, all_thermo_data, frame_images = run_lammps_simulation(
-                    lammps_script, 
+                    lammps_script,
                     render_config,
                     data_callback,
                     num_cores=config.LAMMPS_CORES
@@ -228,381 +211,282 @@ def handle_streaming_simulation(data):
                     'message': f'Simulation failed: {str(e)}'
                 })
         
-        # Run simulation in a separate thread to avoid blocking
-        simulation_thread = threading.Thread(target=run_simulation)
-        simulation_thread.daemon = True
-        simulation_thread.start()
-        
+        # Use socketio's background task so it's managed within the async context
+        socketio.start_background_task(run_simulation)
+
     except Exception as e:
         emit('error', {'message': f'Error starting simulation: {str(e)}'})
 
+
+@socketio.on('replay_trajectory')
+def handle_replay_trajectory(data):
+    """Render dump files from a past run and stream trajectory_frame events."""
+    run_folder = data.get('run_folder', '')
+    if not run_folder or not os.path.isdir(run_folder):
+        emit('simulation_error', {'message': f'Run folder not found: {run_folder}'})
+        return
+
+    def run_replay():
+        from tools import (find_dump_file, extract_timestep_from_filename,
+                           _start_render_server_process, _send_render_request)
+
+        dump_info = find_dump_file(run_folder)
+        if not dump_info or not dump_info['files']:
+            socketio.emit('simulation_error', {'message': 'No dump files found in run folder'})
+            return
+
+        pattern = dump_info.get('pattern', '')
+        files = sorted(dump_info['files'],
+                       key=lambda f: extract_timestep_from_filename(f, pattern))
+
+        # Subsample to at most 50 frames
+        if len(files) > 50:
+            step = max(1, len(files) // 50)
+            files = files[::step][:50]
+
+        # Load saved OVITO script if present
+        ovito_script_path = os.path.join(run_folder, 'ovito_script.py')
+        ovito_script = None
+        if os.path.exists(ovito_script_path):
+            with open(ovito_script_path) as _f:
+                ovito_script = _f.read()
+        print(f"[replay_trajectory] rendering {len(files)} frames from {run_folder} "
+              f"({'custom viz' if ovito_script else 'default viz'})")
+
+        proc = _start_render_server_process()
+        try:
+            for i, f in enumerate(files):
+                timestep = extract_timestep_from_filename(f, pattern)
+                result = _send_render_request(proc, {
+                    'dump_file': f,
+                    'ovito_script': ovito_script,
+                    'file_frame_index': 0,
+                    'camera_angle': 'default',
+                    'render_size': [600, 450],
+                })
+                if result.get('status') == 'ok':
+                    socketio.emit('trajectory_frame', {
+                        'image_data': result['image'],
+                        'frame_number': i,
+                        'timestep': timestep,
+                    })
+                else:
+                    print(f"[replay_trajectory] frame {i} error: {result.get('error')}")
+
+            socketio.emit('trajectory_complete', {
+                'total_frames': len(files),
+                'message': f'Loaded {len(files)} frames from past run',
+            })
+        finally:
+            try:
+                _send_render_request(proc, {'type': 'shutdown'})
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    socketio.start_background_task(run_replay)
+
+
 @app.route('/api/llm-stream-live', methods=['POST'])
 def llm_stream_live():
-    """Enhanced streaming endpoint with multi-turn conversation history"""
+    """Streaming endpoint — delegates pipeline to LangGraph simulation_graph."""
     body = request.get_json(force=True, silent=True) or {}
     user_command = body.get('command')
     history = body.get('history', [])
-    execution_intent = body.get('execution_intent', False)
     ovito_script_param = body.get('ovito_script', None)
     pending_script_param = body.get('pending_script', None)
+    execution_target = body.get('execution_target', 'local')
 
     if not user_command:
         return jsonify({"error": "Command not provided"}), 400
 
-    def generate():
+    # Determine workflow stage
+    workflow_stage = "initial"
+    if body.get('workflow_stage') == 'pbs_pending':
+        workflow_stage = "pbs_pending"
+    elif pending_script_param:
+        workflow_stage = "script_ready"
+    elif history:
+        workflow_stage = "parameters_proposed"
+
+    # session_id ties this request to a persisted LangGraph checkpoint
+    session_id = body.get("session_id") or str(uuid.uuid4())
+    sse_q = queue.Queue()
+    SESSION_QUEUES[session_id] = sse_q
+
+    # Ensure session row exists (upsert — no-op if already present)
+    now = datetime.utcnow().isoformat()
+    _sess_conn = _get_sessions_db()
+    _sess_conn.execute(
+        "INSERT OR IGNORE INTO sessions (session_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (session_id, 'New Session', now, now)
+    )
+    _sess_conn.commit()
+    _sess_conn.close()
+
+    # Only pass fields that come from this request.
+    # Generation outputs (material, lammps_script, temperature, etc.) are intentionally
+    # omitted so that LangGraph restores them from the SqliteSaver checkpoint rather
+    # than overwriting them with None on every follow-up turn.
+    initial_state: SimulationState = {
+        "user_message":       user_command,
+        "workflow_stage":     workflow_stage,
+        "pending_script":     pending_script_param,
+        "ovito_script_param": ovito_script_param,
+        "execution_target":   execution_target,
+        "session_id":         session_id,
+        # Per-turn transient fields — always reset each request
+        "intent":             None,
+        "analysis":           None,
+        "has_parameters":     None,
+        "review_passed":      None,
+        "review_issues":      None,
+        "review_suggestions": None,
+        "has_custom_viz":     None,
+        "error":              None,
+        **({"conversation_history": history} if history else {}),
+    }
+
+    graph_config = {"configurable": {"thread_id": session_id}}
+
+    def run_graph():
         try:
-            # Send initial status
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
+            # Snapshot hpc_jobs count before invoke so we can detect a fresh submit this turn.
+            # Defensive: fresh sessions have no checkpoint yet; old checkpoints may lack hpc_jobs.
+            prior_hpc_count = 0
+            try:
+                prior_state = simulation_graph.get_state(graph_config)
+                if prior_state and prior_state.values:
+                    prior_hpc_count = len(prior_state.values.get("hpc_jobs") or [])
+            except Exception as _e:
+                print(f"[POST-GRAPH] get_state failed (likely fresh session): {_e}")
 
-            # Configure DSPy for intent classification
-            configure_dspy_lm()
-            smart_orchestrator = SmartOrchestrator()
+            final = simulation_graph.invoke(initial_state, config=graph_config)
 
-            # Determine workflow stage from explicit fields
-            workflow_stage = "initial"
-            if pending_script_param:
-                workflow_stage = "script_ready"
-            elif history:
-                workflow_stage = "parameters_proposed"
+            # Auto-title session from first simulation parameters
+            if final.get("material"):
+                title_parts = [final["material"]]
+                if final.get("temperature"):
+                    title_parts.append(f"{final['temperature']}K")
+                new_title = " ".join(str(p) for p in title_parts)
+                _t_conn = _get_sessions_db()
+                _t_conn.execute(
+                    "UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ? AND title = 'New Session'",
+                    (new_title, datetime.utcnow().isoformat(), session_id)
+                )
+                _t_conn.commit()
+                _t_conn.close()
 
-            intent_result = smart_orchestrator.classify_intent(user_command, workflow_stage)
-            print(f"[INTENT] '{user_command}' -> {intent_result['intent']} (confidence: {intent_result['confidence']})")
-
-            # If script is ready and user wants to execute, skip re-generation
-            if workflow_stage == "script_ready" and intent_result["intent"] == "execute":
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'System'})}\n\n"
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'System', 'content': 'Starting live streaming simulation...', 'message_type': 'info'})}\n\n"
-                yield f"data: {json.dumps({'type': 'start_streaming_simulation', 'script': pending_script_param, 'ovito_script': ovito_script_param, 'user_command': user_command})}\n\n"
-                yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'System'})}\n\n"
-                yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+            # HPC submission completed this turn — agent already streamed the success
+            # message with task ID + PBS job ID. Just close the stream cleanly and
+            # skip the script-related cascade below (which would otherwise misfire
+            # as review_failed from stale checkpoint state).
+            new_hpc_count = len(final.get("hpc_jobs") or [])
+            if new_hpc_count > prior_hpc_count:
+                sse_q.put({"type": "workflow_complete", "session_id": session_id})
                 return
 
-            # Extract element from user command and build registry context
-            registry_context = kim_utils.build_registry_context_for_command(user_command)
-
-            # Build multi-turn messages array
-            messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
-
-            # Add trimmed conversation history (only previous turns)
-            trimmed_history = history[-(config.MAX_CONVERSATION_TURNS * 2):]
-            for msg in trimmed_history:
-                messages.append({"role": msg["role"], "content": msg["content"]})
-
-            # Add current user message with registry context appended
-            current_message = user_command
-            if registry_context:
-                current_message += f"\n\n{registry_context}"
-            messages.append({"role": "user", "content": current_message})
-
-            # Stream LLM response (unified path for initial and follow-up turns)
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Orchestrator'})}\n\n"
-
-            response_chunks = []
-            try:
-                completion = client.chat.completions.create(
-                    model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
-                    messages=messages,
-                    temperature=config.ORCHESTRATOR_TEMPERATURE,
-                    stream=True,
-                )
-                for chunk in completion:
-                    if chunk.choices[0].delta.content is not None:
-                        text = chunk.choices[0].delta.content
-                        response_chunks.append(text)
-                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': text, 'message_type': 'analysis'})}\n\n"
-            except Exception as e:
-                # Fallback to non-streaming
-                completion = client.chat.completions.create(
-                    model=config.ORCHESTRATOR_MODEL or config.DEFAULT_MODEL,
-                    messages=messages,
-                    temperature=config.ORCHESTRATOR_TEMPERATURE,
-                )
-                content = completion.choices[0].message.content
-                response_chunks.append(content)
-                yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Orchestrator', 'content': content, 'message_type': 'analysis'})}\n\n"
-
-            analysis = ''.join(response_chunks)
-            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Orchestrator'})}\n\n"
-
-            # --- Structured parameter extraction via DSPy ---
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Extracting parameters...'})}\n\n"
-            params = smart_orchestrator.extract_parameters(analysis)
-
-            if not params["has_parameters"]:
-                event_type = 'needs_more_info' if history else 'awaiting_confirmation'
-                yield f"data: {json.dumps({'type': event_type, 'analysis': analysis})}\n\n"
-                yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
+            # Direct execution path: script already approved, start simulation
+            if final["workflow_stage"] == "script_ready" and final["intent"] == "execute":
+                sse_q.put({"type": "agent_start", "agent": "System"})
+                sse_q.put({"type": "agent_content", "agent": "System",
+                           "content": "Starting live streaming simulation...", "message_type": "info"})
+                sse_q.put({"type": "start_streaming_simulation",
+                           "script": final["pending_script"],
+                           "ovito_script": final["ovito_script_param"],
+                           "user_command": user_command})
+                sse_q.put({"type": "agent_complete", "agent": "System"})
+                sse_q.put({"type": "workflow_complete", "session_id": session_id})
                 return
 
-            material_for_search = params["material"]
-            material_for_gen = params["material"] or "unknown"
-            kim_model = params["kim_model"]
-            temperature = params["temperature"]
-            ensemble = params["ensemble"]
-            duration_ps = params["duration_ps"]
-            system_size = params["system_size"]
-            viz_notes = params["visualization_notes"]
-            camera_angle = params.get("camera_angle", "default")
+            # No simulation parameters extracted — ask for clarification
+            # Skip this branch for analyze/question/cancel intents — they handle their own output
+            if (not final.get("has_parameters") and final.get("analysis")
+                    and final.get("intent") not in ("analyze", "question", "cancel")):
+                event_type = "needs_more_info" if history else "awaiting_confirmation"
+                sse_q.put({"type": event_type, "analysis": final["analysis"]})
+                sse_q.put({"type": "workflow_complete", "session_id": session_id})
+                return
 
-            print(f"[PARAMS] Extracted: material={material_for_gen}, kim={kim_model}, "
-                  f"T={temperature}K, ensemble={ensemble}, duration={duration_ps}ps, "
-                  f"size={system_size}, camera_angle={camera_angle}")
+            # LAMMPS review failed
+            if final.get("lammps_script") and not final.get("review_passed"):
+                sse_q.put({"type": "review_failed",
+                           "script": final["lammps_script"],
+                           "issues": final.get("review_issues") or [],
+                           "suggestions": final.get("review_suggestions") or []})
+                sse_q.put({"type": "workflow_complete", "session_id": session_id})
+                return
 
-            # Retrieve relevant lessons from memory before generation
-            lammps_memory_context = ""
-            viz_memory_context = ""
-            try:
-                memory = get_memory_backend()
+            # Default viz message when no custom viz
+            if final.get("lammps_script") and final.get("review_passed") and not final.get("has_custom_viz"):
+                sse_q.put({"type": "agent_content", "agent": "Visualization",
+                           "content": "Applying default visualization settings for trajectory rendering.",
+                           "message_type": "visualization"})
+                sse_q.put({"type": "agent_complete", "agent": "Visualization"})
 
-                material_query = f"{material_for_search} simulation" if material_for_search else user_command
+            # Compute target_timesteps from the actual LAMMPS script text.
+            # DSPy's total_steps and dump_freq_val are unreliable for multi-stage
+            # scripts (e.g. equil + heat + hold with separate run commands and
+            # separate dump commands per stage). Parse the script directly.
+            # Let the dump monitor read actual frames from dump files directly.
+            # Pre-computing target_timesteps from the script is unreliable for
+            # multi-phase simulations with separate dump commands per phase.
+            target_timesteps = None
 
-                lammps_lessons = memory.search(material_query, category="lammps_issue", limit=3)
-                viz_lessons = memory.search(user_command, category="visualization_issue", limit=3)
+            # Scripts ready for user approval
+            if final.get("lammps_script") and final.get("review_passed"):
+                sse_q.put({
+                    "type":                 "scripts_ready_for_review",
+                    "lammps_script":        final["lammps_script"],
+                    "ovito_script":         final.get("ovito_script"),
+                    "dump_filename_pattern": final.get("dump_filename_pattern", ""),
+                    "target_timesteps":     target_timesteps,
+                    "camera_angle":         final.get("camera_angle", "default"),
+                    "execution_target":     final.get("execution_target", "local"),
+                })
 
-                if lammps_lessons:
-                    lammps_memory_context = "LESSONS FROM PAST SIMULATIONS:\n" + "\n".join(
-                        f"- {m.content}" for m in lammps_lessons
-                    )
-                    print(f"[MEMORY] Found {len(lammps_lessons)} relevant LAMMPS lessons")
+            sse_q.put({"type": "workflow_complete", "session_id": session_id})
 
-                if viz_lessons:
-                    viz_memory_context = "VISUALIZATION LESSONS:\n" + "\n".join(
-                        f"- {m.content}" for m in viz_lessons
-                    )
-                    print(f"[MEMORY] Found {len(viz_lessons)} relevant visualization lessons")
-            except Exception as e:
-                print(f"[MEMORY] Memory retrieval failed: {e}")
-
-            # Generate + review using DSPy (structured, iterative)
-            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Generating and reviewing script...'})}\n\n"
-
-            iterative_generator = IterativeLammpsGeneration(max_attempts=2)
-
-            # Use queue+thread to stream progress events during synchronous DSPy generation
-            progress_queue = queue.Queue()
-
-            def _progress_callback(stage, attempt, max_attempts, **kwargs):
-                progress_queue.put((stage, attempt, max_attempts, kwargs))
-
-            result_holder = [None]
-            gen_error_holder = [None]
-
-            def _run_generation():
-                try:
-                    result_holder[0] = iterative_generator.forward(
-                        material=material_for_gen,
-                        kim_model=kim_model,
-                        temperature=temperature,
-                        ensemble=ensemble,
-                        duration_ps=duration_ps,
-                        system_size=system_size,
-                        simulation_details=analysis,
-                        visualization_notes=viz_notes,
-                        progress_callback=_progress_callback
-                    )
-                except Exception as e:
-                    gen_error_holder[0] = e
-                finally:
-                    progress_queue.put(("done", 0, 0, {}))
-
-            gen_thread = threading.Thread(target=_run_generation)
-            gen_thread.start()
-
-            # Yield progress events from the queue while generation runs
-            while True:
-                try:
-                    stage, attempt, max_attempts, kwargs = progress_queue.get(timeout=0.5)
-                except queue.Empty:
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-                    continue
-
-                if stage == "done":
-                    break
-                elif stage == "generating":
-                    msg = f"Generating script (attempt {attempt}/{max_attempts})..."
-                    yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
-                elif stage == "script_generated":
-                    # Emit intermediate script as a Generator trace
-                    script_text = kwargs.get('script', '')
-                    explanation = kwargs.get('explanation', '')
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Generator'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': script_text, 'message_type': 'script_trace', 'attempt': attempt})}\n\n"
-                    if explanation:
-                        yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Generator', 'content': explanation, 'message_type': 'explanation', 'attempt': attempt})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Generator'})}\n\n"
-                elif stage == "reviewing":
-                    msg = f"Reviewing script (attempt {attempt}/{max_attempts})..."
-                    yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
-                elif stage == "review_complete":
-                    # Emit full review details as Reviewer trace
-                    is_valid = kwargs.get('is_valid', True)
-                    issues = kwargs.get('issues', [])
-                    suggestions = kwargs.get('suggestions', [])
-                    severity = kwargs.get('severity', 'none')
-                    verdict = 'PASS' if is_valid else 'FAIL'
-                    review_msg = f"**REVIEW: {verdict}** (attempt {attempt}/{max_attempts}, severity: {severity})\n"
-                    if issues:
-                        review_msg += "\n**Issues:**\n" + "\n".join(f"- {i}" for i in issues)
-                    if suggestions:
-                        review_msg += "\n\n**Suggestions:**\n" + "\n".join(f"- {s}" for s in suggestions)
-                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': review_msg, 'message_type': 'review', 'attempt': attempt})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
-
-                    if not is_valid and attempt < max_attempts:
-                        issue_summary = '; '.join(str(i) for i in issues[:2]) if issues else 'unknown issues'
-                        msg = f"Review found issues, regenerating... ({issue_summary})"
-                        yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
-
-            gen_thread.join()
-
-            if gen_error_holder[0] is not None:
-                raise gen_error_holder[0]
-
-            result = result_holder[0]
-            lammps_script = result.script
-
-            # Only run visualization agent if review passed
-            if result.review_passed:
-                # Visualization agent — use DSPy modules
-                yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
-
-                simulation_context = {}
-                if material_for_search:
-                    simulation_context['material'] = material_for_search
-                if viz_memory_context:
-                    simulation_context['viz_lessons'] = viz_memory_context
-
-                viz_request = viz_notes or user_command
-
-                # Detect pre-computed properties from the LAMMPS script
-                if lammps_script:
-                    precomputed = detect_precomputed_properties(lammps_script)
-                    if precomputed:
-                        simulation_context['precomputed_properties'] = precomputed
-                        print(f"[VIZ] Detected pre-computed properties: {list(precomputed.keys())}")
-
-                # Detect custom visualization intent via DSPy
-                ovito_script = None
-                has_custom_viz = smart_orchestrator.detect_visualization(viz_request)
-
-                if has_custom_viz:
-                    # Iterative OVITO generate+review via thread+queue (mirrors LAMMPS pattern)
-                    yield f"data: {json.dumps({'type': 'status', 'message': 'Generating and reviewing OVITO script...'})}\n\n"
-
-                    ovito_gen = IterativeOVITOGeneration(max_attempts=config.OVITO_SCRIPT_MAX_RETRIES)
-
-                    ovito_progress_queue = queue.Queue()
-
-                    def _ovito_progress(stage, attempt, max_attempts, **kwargs):
-                        ovito_progress_queue.put((stage, attempt, max_attempts, kwargs))
-
-                    ovito_result_holder = [None]
-                    ovito_error_holder = [None]
-
-                    def _run_ovito_generation():
-                        try:
-                            ovito_result_holder[0] = ovito_gen.forward(
-                                visualization_request=viz_request,
-                                simulation_context=simulation_context,
-                                progress_callback=_ovito_progress,
-                            )
-                        except Exception as e:
-                            ovito_error_holder[0] = e
-                        finally:
-                            ovito_progress_queue.put(("done", 0, 0, {}))
-
-                    ovito_thread = threading.Thread(target=_run_ovito_generation)
-                    ovito_thread.start()
-
-                    # Yield progress events from the queue while OVITO generation runs
-                    while True:
-                        try:
-                            stage, attempt, max_attempts, kwargs = ovito_progress_queue.get(timeout=0.5)
-                        except queue.Empty:
-                            yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-                            continue
-
-                        if stage == "done":
-                            break
-                        elif stage == "generating":
-                            msg = f"Generating OVITO script (attempt {attempt}/{max_attempts})..."
-                            yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
-                        elif stage == "script_generated":
-                            script_text = kwargs.get('script', '')
-                            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Visualization'})}\n\n"
-                            viz_msg = f"**Custom Visualization Requested**\n\n**Generated OVITO Script (attempt {attempt}):**\n```python\n{script_text}\n```"
-                            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_msg, 'message_type': 'visualization', 'attempt': attempt})}\n\n"
-                            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
-                        elif stage == "reviewing":
-                            msg = f"Reviewing OVITO script (attempt {attempt}/{max_attempts})..."
-                            yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
-                        elif stage == "review_complete":
-                            is_valid = kwargs.get('is_valid', True)
-                            issues = kwargs.get('issues', [])
-                            suggestions = kwargs.get('suggestions', [])
-                            severity = kwargs.get('severity', 'none')
-                            verdict = 'PASS' if is_valid else 'FAIL'
-                            review_msg = f"**OVITO Review: {verdict}** (attempt {attempt}/{max_attempts}, severity: {severity})\n"
-                            if issues:
-                                review_msg += "\n**Issues:**\n" + "\n".join(f"- {i}" for i in issues)
-                            if suggestions:
-                                review_msg += "\n\n**Suggestions:**\n" + "\n".join(f"- {s}" for s in suggestions)
-                            yield f"data: {json.dumps({'type': 'agent_start', 'agent': 'Reviewer'})}\n\n"
-                            yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Reviewer', 'content': review_msg, 'message_type': 'ovito_review', 'attempt': attempt})}\n\n"
-                            yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Reviewer'})}\n\n"
-
-                            if not is_valid and severity == "error" and attempt < max_attempts:
-                                issue_summary = '; '.join(str(i) for i in issues[:2]) if issues else 'unknown issues'
-                                msg = f"OVITO review found issues, regenerating... ({issue_summary})"
-                                yield f"data: {json.dumps({'type': 'status', 'message': msg})}\n\n"
-
-                    ovito_thread.join()
-
-                    if ovito_error_holder[0] is not None:
-                        print(f"[OVITO GEN] Error: {ovito_error_holder[0]}")
-                        # Non-fatal: fall back to default visualization
-
-                    ovito_gen_result = ovito_result_holder[0]
-                    if ovito_gen_result and ovito_gen_result.review_passed:
-                        ovito_script = ovito_gen_result.script
-                        print(f"[VIZ] OVITO script passed review after {ovito_gen_result.attempts} attempt(s)")
-                    else:
-                        ovito_script = None
-                        yield f"data: {json.dumps({'type': 'status', 'message': 'OVITO script failed review after all attempts, falling back to default visualization'})}\n\n"
-                        print("[VIZ] OVITO script failed all review attempts, falling back to default")
-                else:
-                    print("[VIZ] No custom visualization requested, using default")
-                    viz_message = "Applying default visualization settings for trajectory rendering."
-                    yield f"data: {json.dumps({'type': 'agent_content', 'agent': 'Visualization', 'content': viz_message, 'message_type': 'visualization'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'agent_complete', 'agent': 'Visualization'})}\n\n"
-
-                # Compute target_timesteps from LLM-provided total_steps
-                dump_filename_pattern = getattr(result, 'dump_filename_pattern', '') or ''
-                llm_total_steps = getattr(result, 'total_steps', 0) or 0
-                dump_freq_val = getattr(result, 'dump_freq_val', 1000) or 1000
-                target_timesteps = None
-                if llm_total_steps > 0:
-                    n_frames = min(config.MAX_TRAJECTORY_FRAMES, max(1, llm_total_steps // dump_freq_val))
-                    if n_frames > 1:
-                        step_size = llm_total_steps / (n_frames - 1)
-                        raw = [int(round(i * step_size / dump_freq_val) * dump_freq_val) for i in range(n_frames)]
-                        target_timesteps = sorted(set(raw))
-                    elif n_frames == 1:
-                        target_timesteps = [0]
-                    print(f"[APP] Computed target_timesteps from LLM total_steps={llm_total_steps}: {len(target_timesteps or [])} frames")
-
-                # Emit scripts_ready_for_review checkpoint instead of auto-executing
-                yield f"data: {json.dumps({'type': 'scripts_ready_for_review', 'lammps_script': lammps_script, 'ovito_script': ovito_script, 'dump_filename_pattern': dump_filename_pattern, 'target_timesteps': target_timesteps, 'camera_angle': camera_angle})}\n\n"
-            else:
-                # Review failed - no OVITO, emit structured failure
-                yield f"data: {json.dumps({'type': 'review_failed', 'script': lammps_script, 'issues': result.issues, 'suggestions': result.suggestions})}\n\n"
-
-            yield f"data: {json.dumps({'type': 'workflow_complete'})}\n\n"
-            
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': f'An error occurred: {str(e)}'})}\n\n"
+            import traceback
+            traceback.print_exc()
+
+            def _flatten(exc, depth=0):
+                """Recursively unpack ExceptionGroup / __cause__ / __context__ for a useful message."""
+                if depth > 5 or exc is None:
+                    return []
+                msgs = []
+                inner = getattr(exc, "exceptions", None)  # ExceptionGroup
+                if inner:
+                    for sub in inner:
+                        msgs.extend(_flatten(sub, depth + 1))
+                else:
+                    text = f"{type(exc).__name__}: {exc}".strip()
+                    msgs.append(text or type(exc).__name__)
+                # Also surface __cause__ if no inner — these often carry the real reason
+                if not inner and getattr(exc, "__cause__", None):
+                    msgs.extend(_flatten(exc.__cause__, depth + 1))
+                return msgs
+
+            parts = _flatten(e) or [repr(e)]
+            msg = " | ".join(parts)
+            sse_q.put({"type": "error", "message": f"An error occurred: {msg}"})
+        finally:
+            sse_q.put(None)                        # sentinel — SSE generator stops
+            SESSION_QUEUES.pop(session_id, None)   # clean up queue reference
+
+    threading.Thread(target=run_graph, daemon=True).start()
+
+    def generate():
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Starting agent workflow...'})}\n\n"
+        while True:
+            item = sse_q.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
 
     return Response(generate(), mimetype="text/event-stream", headers={
         'Cache-Control': 'no-cache',
@@ -646,7 +530,6 @@ def submit_feedback():
         if not feedback:
             return jsonify({"error": "feedback is required"}), 400
 
-        configure_dspy_lm()
         orchestrator = SmartOrchestrator()
         result = orchestrator.process_feedback(feedback, simulation_summary)
 
@@ -663,6 +546,105 @@ def submit_feedback():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+# ============================================================================
+# Sessions API Endpoints
+# ============================================================================
+
+def _get_sessions_db():
+    db_path = os.path.abspath(config.SESSION_DB_PATH)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_sessions_table():
+    conn = _get_sessions_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id  TEXT PRIMARY KEY,
+            title       TEXT DEFAULT 'New Session',
+            created_at  TEXT,
+            updated_at  TEXT,
+            messages    TEXT DEFAULT '[]'
+        )
+    """)
+    # Add messages column if table already exists without it
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN messages TEXT DEFAULT '[]'")
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
+
+
+@app.route('/api/sessions', methods=['GET'])
+def list_sessions():
+    conn = _get_sessions_db()
+    rows = conn.execute(
+        "SELECT session_id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/sessions', methods=['POST'])
+def create_session():
+    session_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    conn = _get_sessions_db()
+    conn.execute(
+        "INSERT INTO sessions (session_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (session_id, 'New Session', now, now)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"session_id": session_id, "title": "New Session", "created_at": now})
+
+
+@app.route('/api/sessions/<session_id>', methods=['GET'])
+def get_session(session_id):
+    conn = _get_sessions_db()
+    row = conn.execute(
+        "SELECT session_id, title, created_at, updated_at, messages FROM sessions WHERE session_id = ?",
+        (session_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "session not found"}), 404
+    return jsonify(dict(row))
+
+
+@app.route('/api/sessions/<session_id>', methods=['PATCH'])
+def update_session(session_id):
+    data = request.get_json(force=True, silent=True) or {}
+    now = datetime.utcnow().isoformat()
+    conn = _get_sessions_db()
+    if 'title' in data:
+        conn.execute(
+            "UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?",
+            (data['title'].strip(), now, session_id)
+        )
+    if 'messages' in data:
+        conn.execute(
+            "UPDATE sessions SET messages = ?, updated_at = ? WHERE session_id = ?",
+            (json.dumps(data['messages']), now, session_id)
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({"session_id": session_id})
+
+
+@app.route('/api/sessions/<session_id>', methods=['DELETE'])
+def delete_session(session_id):
+    conn = _get_sessions_db()
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+    conn.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"deleted": session_id})
 
 
 # ============================================================================
@@ -970,11 +952,13 @@ def initialize_kim_registry():
 
 if __name__ == "__main__":
     run_health_checks()
+    _init_sessions_table()
     initialize_kim_registry()
     socketio.run(
         app,
         host='0.0.0.0',
         port=config.APP_PORT,
         debug=True,
+        use_reloader=False,      # reloader restarts app when OVITO spawns subprocess → kills WebSocket
         allow_unsafe_werkzeug=True,
     )

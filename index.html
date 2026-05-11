@@ -320,8 +320,24 @@
     </style>
 </head>
 
-<body class="bg-gray-900 text-white h-screen overflow-hidden">
-    <div class="container mx-auto p-4 h-full grid grid-rows-[auto_auto_1fr] gap-4">
+<body class="bg-gray-900 text-white h-screen overflow-hidden flex">
+
+    <!-- Sessions Sidebar -->
+    <div id="sessions-sidebar" class="w-52 flex-shrink-0 bg-gray-800 border-r border-gray-700/60 flex flex-col overflow-hidden">
+        <div class="p-3 border-b border-gray-700/60">
+            <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Sessions</div>
+            <button onclick="createNewSession()"
+                class="w-full text-left text-sm px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 flex items-center gap-2 transition-colors">
+                <span class="text-base leading-none">+</span> New Session
+            </button>
+        </div>
+        <div id="sessions-list" class="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
+            <!-- populated by loadSessions() -->
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="flex-1 p-4 h-full grid grid-rows-[auto_auto_1fr] gap-4 overflow-hidden min-w-0">
         <h1 class="text-4xl font-bold logo-text mb-2">ChatMD</h1>
 
         <!-- Tab Navigation -->
@@ -557,8 +573,8 @@
                 updateConnectionStatus('connected');
             });
 
-            socket.on('disconnect', function () {
-                console.log('❌ WebSocket: Disconnected from server');
+            socket.on('disconnect', function (reason) {
+                console.log('❌ WebSocket: Disconnected from server. Reason:', reason);
                 updateStatus('🔌 WebSocket disconnected');
                 updateConnectionStatus('disconnected');
             });
@@ -586,6 +602,9 @@
 
                 // Add completion message to chat
                 addConversationMessage('System', data.message, 'success');
+
+                const chatContainer = document.getElementById('chat-container');
+                chatContainer.scrollTop = chatContainer.scrollHeight;
 
                 // Show feedback prompt
                 showFeedbackPrompt(data.message || '');
@@ -817,6 +836,7 @@
         });
 
         function addMessage(sender, message) {
+            chatMessages.push({ role: sender === 'You' ? 'user' : 'agent', sender, content: message });
             const chatContainer = document.getElementById('chat-container');
             const messageElement = document.createElement('div');
             messageElement.classList.add('mb-3', 'p-2', 'rounded');
@@ -866,7 +886,8 @@
                     agentIcon = '🔍';
                     break;
                 case 'Visualization':
-                    colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                    // colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                    colorClass = 'bg-gray-700 border-l-4 border-green-400';
                     agentIcon = '🎨';
                     break;
                 case 'System':
@@ -1168,12 +1189,12 @@
 
             console.log(`Received ${thermoData.length} data points:`, thermoData);
 
-            // Hide placeholder
-            const placeholder = document.getElementById('plot-placeholder');
-            placeholder.style.display = 'none';
-
-            // Clear existing plots
+            // Clear existing plots first (also removes plot-placeholder from DOM)
             clearPlots();
+
+            // Hide placeholder if it still exists (first render only)
+            const placeholder = document.getElementById('plot-placeholder');
+            if (placeholder) placeholder.style.display = 'none';
 
             // Identify available properties in the data
             const availableProps = identifyAvailableProperties(thermoData);
@@ -1208,9 +1229,12 @@
         let pendingDumpPattern = '';  // Holds dump filename pattern for per-timestep detection
         let pendingTargetTimesteps = null;  // Holds target timesteps for smart frame sampling
         let pendingCameraAngle = 'default';  // Holds camera angle preference
+        let pendingExecutionTarget = 'local'; // Holds execution target from scripts_ready_for_review
+        let chatMessages = [];               // Saved to SQLite for session restore
         let messageCounter = 0;  // Counter to ensure unique message IDs
         let streamingSessionId = 0;  // Incremented each sendMessage to avoid stale DOM collisions
         let lastSimulationSummary = '';  // Track what was simulated for feedback
+        let currentSessionId = null;  // LangGraph thread_id — persists conversation memory across turns
 
         function addToHistory(role, content) {
             conversationHistory.push({ role, content });
@@ -1466,10 +1490,22 @@
                     colorClass = 'bg-yellow-800 border-l-4 border-yellow-400';
                     agentIcon = '🔍';
                     break;
+                case 'Visualization':
+                    // colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                    colorClass = 'bg-gray-700 border-l-4 border-green-400';
+                    agentIcon = '🎨';
+                    break;
+                case 'Analyst':
+                    colorClass = 'bg-teal-900 border-l-4 border-teal-400';
+                    agentIcon = '🔬';
+                    break;
                 case 'System':
                     colorClass = 'bg-gray-700 border-l-4 border-gray-400';
                     agentIcon = 'ℹ️';
                     break;
+                default:
+                    colorClass = 'bg-gray-700 border-l-4 border-gray-400';
+                    agentIcon = '💬';
             }
 
             typingElement.classList.add(...colorClass.split(' '));
@@ -1586,8 +1622,13 @@
                         agentIcon = '🔍';
                         break;
                     case 'Visualization':
-                        colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                        // colorClass = 'bg-purple-800 border-l-4 border-purple-400';
+                        colorClass = 'bg-gray-700 border-l-4 border-green-400';
                         agentIcon = '🎨';
+                        break;
+                    case 'Analyst':
+                        colorClass = 'bg-teal-900 border-l-4 border-teal-400';
+                        agentIcon = '🔬';
                         break;
                     case 'System':
                         if (messageType === 'error') {
@@ -1865,6 +1906,7 @@
             initializeSocket();
             initializeTrajectoryViewer();
             initializeKimWebSocket();
+            loadSessions();
             updateStatus('Initializing connection...');
 
             // Tab switching event listeners
@@ -1984,6 +2026,14 @@
                 scriptSummary += ` | OVITO script: ${ovitoLines} lines`;
             }
 
+            const ovitoSection = pendingOvitoScript ? `
+                <div class="mt-3">
+                    <div class="text-gray-400 text-xs font-semibold mb-1">OVITO Script (${ovitoLines} lines)</div>
+                    <textarea id="editable-ovito-script"
+                        class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y"
+                        rows="8" spellcheck="false">${pendingOvitoScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                </div>` : '';
+
             promptElement.innerHTML = `
                 <div class="flex items-start">
                     <span class="mr-2 text-lg">🔬</span>
@@ -1991,10 +2041,22 @@
                         <strong class="text-white">Scripts Ready for Review</strong>
                         <div class="mt-1 text-gray-200 text-sm mb-2">
                             ${scriptSummary}<br>
-                            Review the scripts above. Click <strong>Approve & Run</strong> to start the simulation, or type corrections in the chat to modify.
+                            Click <strong>Approve & Run</strong> to start, or type corrections in the chat to regenerate. Use <strong>Edit Scripts</strong> to modify directly.
                         </div>
-                        <div class="flex gap-2">
-                            <button onclick="approveAndRun()" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-1.5 rounded text-sm font-medium">Approve & Run</button>
+                        <div class="flex gap-2 mb-2 flex-wrap">
+                            ${pendingExecutionTarget === 'hpc'
+                                ? `<button onclick="approveAndRunHPC()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">Approve & Run on HPC</button>`
+                                : `<button onclick="approveAndRun()" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-1.5 rounded text-sm font-medium">Approve & Run</button>
+                                   <button onclick="approveAndRunHPC()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">Run on HPC</button>`
+                            }
+                            <button onclick="toggleScriptEdit(this)" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-1.5 rounded text-sm font-medium">Edit Scripts ▼</button>
+                        </div>
+                        <div id="script-edit-panel" class="hidden">
+                            <div class="text-gray-400 text-xs font-semibold mb-1">LAMMPS Script (${lammpsLines} lines)</div>
+                            <textarea id="editable-lammps-script"
+                                class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y"
+                                rows="12" spellcheck="false">${pendingScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                            ${ovitoSection}
                         </div>
                     </div>
                 </div>
@@ -2004,7 +2066,20 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        function toggleScriptEdit(btn) {
+            const panel = document.getElementById('script-edit-panel');
+            if (!panel) return;
+            const hidden = panel.classList.toggle('hidden');
+            btn.textContent = hidden ? 'Edit Scripts ▼' : 'Edit Scripts ▲';
+        }
+
         function approveAndRun() {
+            // Read edited script content if user modified the textareas
+            const la = document.getElementById('editable-lammps-script');
+            if (la) pendingScript = la.value;
+            const oa = document.getElementById('editable-ovito-script');
+            if (oa) pendingOvitoScript = oa.value;
+
             // Remove the review prompt
             const prompt = document.getElementById('script-review-prompt');
             if (prompt) prompt.remove();
@@ -2019,6 +2094,9 @@
 
             // Start streaming simulation via WebSocket
             if (socket && socket.connected) {
+                // Reset trajectory viewer before each new simulation
+                hideTrajectoryViewer();
+
                 socket.emit('start_streaming_simulation', {
                     script: pendingScript,
                     ovito_script: pendingOvitoScript,
@@ -2039,6 +2117,289 @@
             pendingDumpPattern = '';
             pendingTargetTimesteps = null;
             pendingCameraAngle = 'default';
+            pendingExecutionTarget = 'local';
+        }
+
+        // ── HPC functions ──────────────────────────────────────────────────────
+
+        async function approveAndRunHPC() {
+            if (isStreaming) return;
+            const la = document.getElementById('editable-lammps-script');
+            if (la) pendingScript = la.value;
+            const oa = document.getElementById('editable-ovito-script');
+            if (oa) pendingOvitoScript = oa.value;
+
+            const reviewEl = document.getElementById('script-review-prompt');
+            if (reviewEl) reviewEl.remove();
+
+            if (!pendingScript) { addMessage('Error', 'No pending script.'); return; }
+
+            const scriptToSend = pendingScript;
+            const ovitoToSend = pendingOvitoScript;
+            pendingScript = null;
+            pendingOvitoScript = null;
+            pendingExecutionTarget = 'local';
+
+            isStreaming = true;
+            addStreamingMessage('System', 'Preparing HPC submission…', 'info');
+
+            const body = {
+                command: 'run on hpc',
+                session_id: currentSessionId,
+                pending_script: scriptToSend,
+                ovito_script: ovitoToSend,
+                execution_target: 'hpc',
+            };
+
+            await _hpcStream(body);
+        }
+
+        function showPBSApprovalCard(pbsScript, runFolder) {
+            const chatContainer = document.getElementById('chat-container');
+            const card = document.createElement('div');
+            card.id = 'pbs-approval-card';
+            card.className = 'mb-3 p-3 rounded bg-indigo-900/60 border-l-4 border-indigo-400';
+            card.innerHTML = `
+                <div class="flex items-start">
+                    <span class="mr-2 text-lg">🖥️</span>
+                    <div class="flex-1">
+                        <strong class="text-white">PBS Script — Review before submitting to HPC</strong>
+                        <pre class="mt-2 p-2 bg-black/50 text-xs font-mono text-white rounded overflow-x-auto whitespace-pre-wrap">${pbsScript.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+                        <div class="flex gap-2 mt-3">
+                            <button onclick="confirmHPCSubmit('${runFolder.replace(/'/g,"\\'")}')"
+                                class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">
+                                Confirm & Submit to HPC
+                            </button>
+                            <button onclick="cancelHPCSubmit()"
+                                class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-1.5 rounded text-sm font-medium">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>`;
+            chatContainer.appendChild(card);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        async function confirmHPCSubmit(runFolder) {
+            if (isStreaming) return;
+            const card = document.getElementById('pbs-approval-card');
+            if (card) card.remove();
+
+            isStreaming = true;
+            addStreamingMessage('System', 'Submitting job to HPC via Globus…', 'info');
+
+            const body = {
+                command: 'confirm hpc submit',
+                session_id: currentSessionId,
+                workflow_stage: 'pbs_pending',
+            };
+
+            await _hpcStream(body);
+        }
+
+        function cancelHPCSubmit() {
+            const card = document.getElementById('pbs-approval-card');
+            if (card) card.remove();
+            addStreamingMessage('System', 'HPC submission cancelled.', 'info');
+        }
+
+        async function _hpcStream(body) {
+            currentAbortController = new AbortController();
+            try {
+                const response = await fetch('/api/llm-stream-live', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: currentAbortController.signal,
+                });
+                if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop();
+                    for (const part of parts) {
+                        for (const line of part.split('\n')) {
+                            if (!line.startsWith('data: ')) continue;
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                handleSSEEvent(data, body.command);
+                            } catch (e) {}
+                        }
+                    }
+                }
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    addMessage('Error', 'HPC stream error: ' + err.message);
+                    isStreaming = false;
+                }
+            } finally {
+                currentAbortController = null;
+            }
+        }
+
+        // ── Sessions sidebar ───────────────────────────────────────────────────
+
+        async function loadSessions() {
+            const lastId = localStorage.getItem('chatmd_last_session');
+            if (lastId) {
+                await switchSession(lastId, '');
+            } else {
+                await refreshSessions();
+            }
+        }
+
+        async function refreshSessions() {
+            try {
+                const res = await fetch('/api/sessions');
+                const sessions = await res.json();
+                renderSessions(sessions);
+            } catch (e) {
+                console.warn('Could not load sessions:', e);
+            }
+        }
+
+        function renderSessions(sessions) {
+            const list = document.getElementById('sessions-list');
+            if (!list) return;
+            list.innerHTML = '';
+            sessions.forEach(s => {
+                const isActive = s.session_id === currentSessionId;
+                const row = document.createElement('div');
+                row.className = 'group flex items-center gap-1 rounded px-1 ' +
+                    (isActive ? 'bg-blue-700/60' : 'hover:bg-gray-700');
+
+                // Session title button
+                const btn = document.createElement('button');
+                btn.className = 'flex-1 text-left text-xs py-2 px-1 truncate ' +
+                    (isActive ? 'text-white' : 'text-gray-300');
+                btn.title = s.title;
+                btn.textContent = s.title || 'New Session';
+                btn.onclick = () => switchSession(s.session_id, s.title);
+
+                // Rename button
+                const renameBtn = document.createElement('button');
+                renameBtn.className = 'hidden group-hover:block text-gray-400 hover:text-white px-1 flex-shrink-0';
+                renameBtn.title = 'Rename';
+                renameBtn.textContent = '✏️';
+                renameBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    renameSession(s.session_id, s.title);
+                };
+
+                // Delete button
+                const delBtn = document.createElement('button');
+                delBtn.className = 'hidden group-hover:block text-gray-400 hover:text-red-400 px-1 flex-shrink-0';
+                delBtn.title = 'Delete';
+                delBtn.textContent = '×';
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteSession(s.session_id, s.title);
+                };
+
+                row.appendChild(btn);
+                row.appendChild(renameBtn);
+                row.appendChild(delBtn);
+                list.appendChild(row);
+            });
+        }
+
+        async function renameSession(sessionId, currentTitle) {
+            const newTitle = prompt('Rename session:', currentTitle);
+            if (!newTitle || newTitle.trim() === currentTitle) return;
+            try {
+                await fetch(`/api/sessions/${sessionId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: newTitle.trim() }),
+                });
+                await refreshSessions();
+            } catch (e) {
+                console.error('Failed to rename session:', e);
+            }
+        }
+
+        async function deleteSession(sessionId, title) {
+            if (!confirm(`Delete session "${title}"?`)) return;
+            try {
+                await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+                if (currentSessionId === sessionId) {
+                    currentSessionId = null;
+                    localStorage.removeItem('chatmd_last_session');
+                    chatMessages = [];
+                    const chatContainer = document.getElementById('chat-container');
+                    if (chatContainer) chatContainer.innerHTML = '';
+                }
+                await refreshSessions();
+            } catch (e) {
+                console.error('Failed to delete session:', e);
+            }
+        }
+
+
+        async function createNewSession() {
+            try {
+                const res = await fetch('/api/sessions', { method: 'POST' });
+                const data = await res.json();
+                currentSessionId = data.session_id;
+                localStorage.setItem('chatmd_last_session', data.session_id);
+                clearHistory();
+                chatMessages = [];
+                const chatContainer = document.getElementById('chat-container');
+                if (chatContainer) chatContainer.innerHTML = '';
+                pendingScript = null;
+                pendingOvitoScript = null;
+                await refreshSessions();
+            } catch (e) {
+                console.error('Failed to create session:', e);
+            }
+        }
+
+        async function saveMessagesToSession(sessionId) {
+            if (!sessionId) return;
+            try {
+                await fetch(`/api/sessions/${sessionId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: chatMessages }),
+                });
+            } catch (e) {
+                console.warn('Could not save messages:', e);
+            }
+        }
+
+        async function switchSession(sessionId, title) {
+            currentSessionId = sessionId;
+            localStorage.setItem('chatmd_last_session', sessionId);
+            clearHistory();
+            chatMessages = [];
+            pendingScript = null;
+            pendingOvitoScript = null;
+
+            const chatContainer = document.getElementById('chat-container');
+            if (chatContainer) chatContainer.innerHTML = '';
+
+            // Restore messages from SQLite
+            try {
+                const res = await fetch(`/api/sessions/${sessionId}`);
+                const session = await res.json();
+                const saved = session.messages || [];
+                saved.forEach(m => {
+                    addMessage(m.sender, m.content);
+                });
+                chatMessages = saved;
+            } catch (e) {
+                console.warn('Could not restore messages:', e);
+            }
+
+            refreshSessions();
         }
 
         async function sendMessage() {
@@ -2068,7 +2429,8 @@
             const body = {
                 command: message,
                 history: conversationHistory,
-                execution_intent: executionIntent
+                execution_intent: executionIntent,
+                session_id: currentSessionId  // null on first turn; backend generates one and returns it
             };
 
             // Include pending script as its own field (not stuffed into context)
@@ -2081,6 +2443,7 @@
 
             currentAbortController = new AbortController();
             let accumulatedContent = '';
+            let lastAssistantAgent = null;  // track which agent produced the reply (Orchestrator | Analyst | HPC)
 
             try {
                 const response = await fetch('/api/llm-stream-live', {
@@ -2116,9 +2479,14 @@
                             try {
                                 const data = JSON.parse(jsonStr);
 
-                                // Track orchestrator content for history
-                                if (data.type === 'agent_content' && data.agent === 'Orchestrator') {
+                                // Track Orchestrator/Analyst/HPC content for history.
+                                // Tag the message with which agent produced it so the next turn's
+                                // intent classifier can reason about agent context (e.g., reply to
+                                // an HPC clarifying question vs. an Orchestrator clarifying question).
+                                if (data.type === 'agent_content' && data.content
+                                        && (data.agent === 'Orchestrator' || data.agent === 'Analyst' || data.agent === 'HPC')) {
                                     accumulatedContent += data.content;
+                                    lastAssistantAgent = data.agent;
                                 }
 
                                 handleSSEEvent(data, message);
@@ -2129,10 +2497,13 @@
                     }
                 }
 
-                // Stream finished — add this turn to conversation history
+                // Stream finished — add this turn to conversation history.
+                // Prefix the assistant message with [AgentName] so the intent classifier
+                // can see WHICH agent the user is conversing with on the next turn.
                 if (accumulatedContent) {
                     addToHistory('user', message);
-                    addToHistory('assistant', accumulatedContent);
+                    const tag = lastAssistantAgent ? `[${lastAssistantAgent}] ` : '';
+                    addToHistory('assistant', tag + accumulatedContent);
                 }
 
             } catch (error) {
@@ -2187,6 +2558,15 @@
 
                     // Start streaming simulation via WebSocket
                     if (socket && socket.connected) {
+                        // Reset trajectory viewer state before each new simulation
+                        trajectoryFrames = [];
+                        currentFrameIndex = 0;
+                        isPlaying = false;
+                        if (playbackInterval) {
+                            clearInterval(playbackInterval);
+                            playbackInterval = null;
+                        }
+
                         socket.emit('start_streaming_simulation', {
                             script: data.script,
                             ovito_script: ovitoScript,
@@ -2206,6 +2586,26 @@
                         drawPlot(data.thermo_data);
                     }
                     showFeedbackPrompt(userMessage);
+                    break;
+
+                case 'thermo_data':
+                    if (data.data && Array.isArray(data.data)) {
+                        drawPlot(data.data);
+                    }
+                    break;
+
+                case 'load_trajectory':
+                    trajectoryFrames = [];
+                    currentFrameIndex = 0;
+                    isPlaying = false;
+                    if (playbackInterval) {
+                        clearInterval(playbackInterval);
+                        playbackInterval = null;
+                    }
+                    hideTrajectoryViewer();
+                    if (socket && socket.connected && data.run_folder) {
+                        socket.emit('replay_trajectory', { run_folder: data.run_folder });
+                    }
                     break;
 
                 case 'simulation_failed':
@@ -2228,7 +2628,12 @@
                     pendingDumpPattern = data.dump_filename_pattern || '';
                     pendingTargetTimesteps = data.target_timesteps || null;
                     pendingCameraAngle = data.camera_angle || 'default';
+                    pendingExecutionTarget = data.execution_target || 'local';
                     showScriptReviewPrompt();
+                    break;
+
+                case 'pbs_preview':
+                    showPBSApprovalCard(data.pbs_script, data.run_folder);
                     break;
 
                 case 'needs_more_info':
@@ -2247,7 +2652,45 @@
 
                 case 'workflow_complete':
                     updateStatus('Ready to run simulations');
+                    if (data.session_id) {
+                        currentSessionId = data.session_id;
+                        localStorage.setItem('chatmd_last_session', data.session_id);
+                        // Flush accumulated streaming content into chatMessages
+                        Object.entries(currentAgentMessages).forEach(([key, content]) => {
+                            if (content) {
+                                const agent = key.split('-')[0];
+                                chatMessages.push({ role: 'agent', sender: agent, content });
+                            }
+                        });
+                        saveMessagesToSession(data.session_id);
+                        refreshSessions();
+                    }
                     isStreaming = false;
+                    break;
+
+                case 'run_list':
+                    // Render one "Analyze" button per run below the streamed list
+                    (function() {
+                        const chatContainer = document.getElementById('chat-container');
+                        const btnRow = document.createElement('div');
+                        btnRow.className = 'mt-2 mb-3 flex flex-wrap gap-2';
+                        (data.runs || []).forEach(function(run) {
+                            const btn = document.createElement('button');
+                            btn.className = 'px-3 py-1 bg-teal-700 hover:bg-teal-600 text-white rounded text-sm font-medium';
+                            const label = (run.material && run.material !== 'unknown')
+                                ? '🔬 ' + run.material + ' (' + run.status + ')'
+                                : '🔬 ' + run.name;
+                            btn.textContent = label;
+                            btn.title = run.name;
+                            btn.onclick = function() {
+                                btnRow.remove();
+                                sendMessage('analyze run ' + run.name);
+                            };
+                            btnRow.appendChild(btn);
+                        });
+                        chatContainer.appendChild(btnRow);
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    })();
                     break;
 
                 case 'error':

@@ -378,6 +378,7 @@ def install_user_selected_model(model_id: str) -> Tuple[bool, str]:
     success, message = install_and_verify_kim_model(model_id, timeout=180)
     
     if success:
+        update_registry(model_id, downloaded=True)
         return True, f"✅ Successfully installed {model_id}. Ready to use!"
     else:
         # Provide clear failure message

@@ -5,12 +5,10 @@ from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
 import dspy
 from prompts import (
-    AnalyzeRequest,
     VerifySimulationPlan,
     GenerateLAMMPSScript,
     ReviewLAMMPSScript,
     ReviewOVITOScript,
-    SelectTools,
     ClassifyUserIntent,
     ExtractFeedback,
     ExtractSimulationParameters,
@@ -385,37 +383,10 @@ class SmartOrchestrator(dspy.Module):
 
     def __init__(self):
         super().__init__()
-        self.analyzer = dspy.ChainOfThought(AnalyzeRequest)
-        self.tool_selector = dspy.ChainOfThought(SelectTools)
         self.intent_classifier = dspy.ChainOfThought(ClassifyUserIntent)
         self.feedback_extractor = dspy.ChainOfThought(ExtractFeedback)
         self.param_extractor = dspy.ChainOfThought(ExtractSimulationParameters)
         self.viz_detector = dspy.Predict(DetectVisualization)
-
-    def analyze_request(
-        self,
-        user_request: str,
-        registry_context: str = ""
-    ) -> AnalysisResult:
-        """
-        Analyze a user request and extract simulation parameters.
-        """
-        result = self.analyzer(
-            user_request=user_request,
-            registry_context=registry_context
-        )
-
-        return AnalysisResult(
-            material=result.material,
-            temperature=result.temperature,
-            ensemble=result.ensemble,
-            duration_ps=result.duration_ps,
-            kim_model=result.kim_model,
-            system_size=result.system_size,
-            needs_clarification=result.needs_clarification,
-            clarification_question=result.clarification_question,
-            confidence=result.confidence
-        )
 
     def extract_parameters(self, analysis_text: str) -> Dict[str, Any]:
         """Extract structured simulation parameters from orchestrator analysis text.
@@ -465,30 +436,11 @@ class SmartOrchestrator(dspy.Module):
             "camera_angle": camera_angle,
         }
 
-    def select_tools(
-        self,
-        user_request: str,
-        available_tools: List[str],
-        conversation_context: str = ""
-    ) -> Tuple[List[str], List[str], str]:
-        """
-        Select appropriate tools for handling a request.
-
-        Returns:
-            Tuple of (selected_tools, tool_arguments, reasoning)
-        """
-        result = self.tool_selector(
-            user_request=user_request,
-            available_tools=available_tools,
-            conversation_context=conversation_context
-        )
-
-        return result.selected_tools, result.tool_arguments, result.reasoning
-
     def classify_intent(
         self,
         user_message: str,
-        workflow_stage: str = "initial"
+        workflow_stage: str = "initial",
+        conversation_history: list = None,
     ) -> Dict[str, Any]:
         """
         Classify user intent using LLM instead of string matching.
@@ -496,19 +448,28 @@ class SmartOrchestrator(dspy.Module):
         Args:
             user_message: The user's message text
             workflow_stage: Current stage - 'initial', 'parameters_proposed', or 'script_ready'
+            conversation_history: Recent conversation history for context
 
         Returns:
             Dict with 'intent', 'confidence', and 'modifications' keys
         """
+        history_str = ""
+        if conversation_history:
+            recent = conversation_history[-(6):]  # last 3 turns
+            history_str = "\n".join(
+                f"{m['role'].upper()}: {m['content'][:300]}" for m in recent
+            )
+
         result = self.intent_classifier(
             user_message=user_message,
-            workflow_stage=workflow_stage
+            workflow_stage=workflow_stage,
+            conversation_history=history_str,
         )
 
         # With Literal type constraint, the LLM should return a valid value.
         # Minimal fallback in case of unexpected output.
         intent = str(result.intent).strip().lower()
-        valid_intents = {'execute', 'modify', 'cancel', 'question', 'new_simulation'}
+        valid_intents = {'execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status'}
         if intent not in valid_intents:
             print(f"[INTENT] WARNING: unexpected intent '{intent}', defaulting to 'question'")
             intent = 'question'
@@ -601,36 +562,6 @@ class OVITOReviewResult:
     severity: str
 
 
-class OVITOScriptReview(dspy.Module):
-    """
-    DSPy module that reviews OVITO Python scripts for correctness.
-
-    Checks for unauthorized imports, proper PythonModifier patterns,
-    per-frame guards, and OVITO API best practices.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.reviewer = dspy.ChainOfThought(ReviewOVITOScript)
-
-    def forward(self, ovito_script: str, visualization_request: str = "") -> OVITOReviewResult:
-        ovito_knowledge = "\n".join([
-            KnowledgeBase.OVITO_IMPORT_REFERENCE,
-            KnowledgeBase.OVITO_PROPERTY_GUARDS,
-            KnowledgeBase.CNA_STRUCTURE_MAPPING,
-        ])
-        review = self.reviewer(
-            ovito_script=ovito_script,
-            visualization_request=visualization_request,
-            knowledge_context=ovito_knowledge,
-        )
-        return OVITOReviewResult(
-            script=ovito_script,
-            is_valid=review.is_valid,
-            issues=review.issues,
-            suggestions=review.suggestions,
-            severity=review.severity,
-        )
 
 
 @dataclass
@@ -644,71 +575,6 @@ class OVITOGenerationResult:
     conversation: List[Dict[str, str]]
 
 
-class OVITOScriptGeneration(dspy.Module):
-    """
-    DSPy module that generates OVITO Python scripts from visualization requests.
-
-    Replaces the former OVITOScriptGenerator Agent subclass with a structured
-    DSPy ChainOfThought pipeline that leverages KnowledgeBase context.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.generator = dspy.ChainOfThought(GenerateOVITOScript)
-
-    def forward(self, user_request: str, simulation_context: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Generate an OVITO Python script from a visualization request.
-
-        Args:
-            user_request: Natural language visualization request
-            simulation_context: Optional dict with material, temperature, etc.
-
-        Returns:
-            Complete OVITO Python script as a string
-        """
-        # Build context string from simulation_context dict
-        context_str = ""
-        if simulation_context:
-            context_str = f"Material: {simulation_context.get('material', 'Unknown')}"
-            if simulation_context.get('natoms'):
-                context_str += f", Atoms: {simulation_context['natoms']}"
-            if simulation_context.get('temperature'):
-                context_str += f", Temperature: {simulation_context['temperature']} K"
-            if simulation_context.get('structure'):
-                context_str += f", Structure: {simulation_context['structure']}"
-
-            precomputed = simulation_context.get('precomputed_properties', {})
-            if precomputed:
-                props = ", ".join(f"'{k}' ({v})" for k, v in precomputed.items())
-                context_str += f"\nPRE-COMPUTED LAMMPS PROPERTIES (use directly, do not recompute): {props}"
-
-            viz_lessons = simulation_context.get('viz_lessons', '')
-            if viz_lessons:
-                context_str += f"\n{viz_lessons}"
-
-        # Assemble knowledge from KnowledgeBase
-        knowledge = "\n".join([
-            KnowledgeBase.OVITO_IMPORT_REFERENCE,
-            KnowledgeBase.OVITO_PROPERTY_GUARDS,
-            KnowledgeBase.CNA_STRUCTURE_MAPPING,
-        ])
-
-        result = self.generator(
-            visualization_request=user_request,
-            simulation_context=context_str,
-            knowledge_context=knowledge,
-        )
-
-        script = result.ovito_script
-
-        # Strip markdown fences if present
-        if "```python" in script:
-            script = script.split("```python")[1].split("```")[0].strip()
-        elif "```" in script:
-            script = script.split("```")[1].split("```")[0].strip()
-
-        return script
 
 
 class IterativeOVITOGeneration(dspy.Module):
@@ -863,12 +729,14 @@ class IterativeOVITOGeneration(dspy.Module):
             KnowledgeBase.OVITO_IMPORT_REFERENCE,
             KnowledgeBase.OVITO_PROPERTY_GUARDS,
             KnowledgeBase.CNA_STRUCTURE_MAPPING,
+            KnowledgeBase.COLORCODING_USAGE,
         ])
 
         ovito_knowledge = "\n".join([
             KnowledgeBase.OVITO_IMPORT_REFERENCE,
             KnowledgeBase.OVITO_PROPERTY_GUARDS,
             KnowledgeBase.CNA_STRUCTURE_MAPPING,
+            KnowledgeBase.COLORCODING_USAGE,
         ])
 
         for attempt in range(1, self.max_attempts + 1):

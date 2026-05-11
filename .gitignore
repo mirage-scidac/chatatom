@@ -206,4 +206,9 @@ __pycache__/
 data/*.json
 data/*.db
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 !data/.gitkeep
+
+# Local secrets — never commit. Use src/config.example.py as a template.
+src/config.py
