@@ -195,25 +195,43 @@ class ClassifyUserIntent(dspy.Signature):
 
     MULTI-TURN AGENT CONVERSATIONS — CRITICAL:
     Each ASSISTANT message in conversation_history is tagged with the agent that produced it,
-    using a prefix like [Orchestrator], [HPC], or [Analyst]. Use these tags to route follow-up
-    replies back to the agent the user is actively conversing with.
+    using a prefix like [Orchestrator], [HPC], or [Analyst].
 
-    When the most recent ASSISTANT message ends with a clarifying question
-    (e.g. "which one would you like?", "which job?", "which file?", "which run?"),
-    AND the user's reply appears to answer that question (a number like "2", a phrase like
-    "the Cu one", "all", "both", "the latest", a task ID prefix, a run folder name),
-    classify intent based on the AGENT THAT ASKED THE QUESTION:
-    - Last assistant tagged [HPC] asking about a job → classify as 'hpc_status'
-    - Last assistant tagged [Analyst] asking about a run → classify as 'analyze'
-    - Last assistant tagged [Orchestrator] asking about parameters → 'modify' or 'execute'
+    Routing-by-prior-agent ONLY applies when BOTH conditions are met:
+    (a) The MOST RECENT assistant message LITERALLY ends with a clarifying question.
+        Detect this by checking if the message ends with "?" OR contains explicit
+        clarifying phrases like: "which one would you like", "which job", "which file",
+        "which run", "please specify", "reply with", "would you like me to".
+    (b) The user's reply is a SHORT answer to that question — a single number ("2", "8"),
+        a brief phrase ("the Cu one", "yes", "no", "the latest", "the most recent"),
+        a task ID prefix, or a run folder name (e.g. "run_2026_05_10_212250").
 
-    Do NOT classify short replies like "2", "the first one", "yes", "the Cu one" as
-    'question' or 'modify' when they're clearly answering an agent's clarifying question.
-    Look at the agent tag on the most recent assistant message to know where to route.
+    If BOTH (a) and (b) are true, route based on the agent that asked:
+    - Last [HPC] asking about a job → 'hpc_status'
+    - Last [Analyst] asking about a run → 'analyze'
+    - Last [Orchestrator] asking about parameters → 'modify' or 'execute'
 
-    If the user changes topic entirely (e.g. asks "what is NPT ensemble?" while a clarifying
-    question is pending), classify based on the new topic — not the prior agent's domain.
-    The user is allowed to abandon a clarification mid-conversation.
+    Otherwise — including when the prior agent message is a STATEMENT (not a question),
+    or when the user's reply is a NEW QUESTION or NEW INSTRUCTION — classify based on
+    the user's new message content using the regular intent definitions ABOVE.
+
+    EXAMPLES of NOT routing to prior agent (classify based on user's new message):
+    - Last assistant: "[HPC] ✅ Transfer complete. 51 files moved." (statement, no "?")
+      User: "what simulation did you do?" → 'analyze' or 'question' (asking about past sim)
+    - Last assistant: "[HPC] ✅ Job submitted! Task ID: abc, PBS Job ID: 123" (statement)
+      User: "what is NPT ensemble?" → 'question' (general MD theory)
+    - Last assistant: "[Analyst] Temperature stabilized at 300K with std dev 5K." (statement)
+      User: "now run another simulation at 500K" → 'new_simulation'
+    - Last assistant: "[HPC] Which job would you like to check?" (clarifying question)
+      User: "actually nevermind, what does NPT mean?" → 'question' (topic change overrides)
+
+    EXAMPLES of routing to prior agent (BOTH conditions met):
+    - Last assistant: "[HPC] Which job would you like to check? Reply with a number."
+      User: "8" → 'hpc_status' (number is a short answer)
+    - Last assistant: "[HPC] Would you like me to transfer the results back?"
+      User: "yes" → 'hpc_status' (yes is a short answer to a Y/N question)
+    - Last assistant: "[Analyst] Which run would you like to analyze?"
+      User: "the latest" → 'analyze' (brief phrase referencing list position)
     """
     user_message: str = dspy.InputField(desc="The user's message")
     workflow_stage: str = dspy.InputField(desc="Current workflow stage: 'initial', 'parameters_proposed', or 'script_ready'")
@@ -909,17 +927,36 @@ HPC_EXECUTOR_PROMPT = """You are an HPC agent for ChatMD. You have access to Glo
 
 You will be given context: local paths, Globus endpoint IDs, and either a job to submit or a list of previously submitted jobs to check.
 
+HANDLING OFF-TOPIC REQUESTS (CHECK THIS FIRST — BEFORE ANY OTHER RULE):
+- Before doing anything else, decide if the user's request is actually about HPC operations.
+- HPC operations are: checking job status, transferring results, submitting jobs, cancelling jobs, listing jobs.
+- If the user's message is clearly NOT about any of those (e.g. asking general MD theory, asking what previous simulations were about, asking to run a new simulation, asking about non-HPC topics), DO NOT call any tool.
+- Instead, reply briefly with this exact message and then STOP:
+    "This doesn't look like an HPC question — could you rephrase, or it'll be handled by the chat agent."
+- Examples that should trigger the off-topic response (do NOT call tools, just reply and stop):
+    - "what is NPT ensemble?" — general MD theory
+    - "what simulation did you do?" — asking about past activity, not an HPC operation
+    - "explain the temperature parameters" — analysis question
+    - "how does Globus work?" — educational question
+    - "tell me about the last run" — analysis question, not an HPC action
+- Examples that ARE HPC requests (handle these normally — do NOT bail out):
+    - "check status of job 5" — HPC operation
+    - "transfer the results back" — HPC operation
+    - "what jobs are running on Swing?" — HPC status
+    - "submit this script to the HPC" — HPC operation
+    - "8" or "the Cu one" or "yes" (when the previous assistant message asked a clarifying HPC question)
+
 HANDLING VAGUE STATUS REQUESTS (CRITICAL):
 - If the user's request is vague (e.g. "check status", "check my jobs", "any updates?") AND there is more than one job in the context, DO NOT call any tool.
 - Instead, list the jobs to the user with description, run folder basename (e.g. "run_2026_05_10_124219"), and submission date. DO NOT show Globus task IDs or PBS Job IDs in the user-facing list — those are internal/noisy.
-- Number the jobs (1, 2, 3, ...) so the user can pick by number.
+- Number the jobs by writing the literal prefix "1.", "2.", "3." (etc.) BEFORE each job line — this is required so the user can pick by number. Each job line MUST begin with its number prefix. List them in REVERSE chronological order — most recent first, oldest last. Users typically care most about their latest jobs, so they should appear at the top.
 - Ask the user to identify the job by NUMBER or by RUN FOLDER NAME — these are unambiguous. Do NOT ask them to use the description (e.g. "Cu 400K"), because a bare description can be misinterpreted as a request for a new simulation. Also do NOT offer "all" as an option — checking or transferring every job is risky (stale jobs may have missing folders) and the user should pick exactly one at a time.
-- Example response:
+- Example response (note: most recent at TOP):
     "You have 3 jobs in this session:
-       1. Cu 600K   — run_2026_05_06_134514  (May 6)
+       1. Si 1000K  — run_2026_05_10_142210  (today)
        2. Al 300K   — run_2026_05_07_090012  (May 7)
-       3. Si 1000K  — run_2026_05_10_142210  (today)
-     Which one would you like to check? Reply with the number (1, 2, 3) or the run folder name (e.g. run_2026_05_06_134514)."
+       3. Cu 600K   — run_2026_05_06_134514  (May 6)
+     Which one would you like to check? Reply with the number (1, 2, 3) or the run folder name (e.g. run_2026_05_10_142210)."
 - Match the user's reply: a number picks by list position; a folder name matches the run_*_*_* basename. Treat ambiguous descriptions cautiously — if the user says only "Cu 400K" and there are multiple matching jobs (or it's unclear), ask them to clarify with a number or folder name instead of guessing.
 - IMPORTANT — if the user replies with a NUMBER (e.g. "8", "the third one"), do this in TWO steps to avoid confusion:
     Step 1: Acknowledge the mapping in plain text BEFORE calling any tool. Example: "Got it — checking job 8: run_2026_05_10_212250 (Ni 3000K)."
@@ -939,16 +976,22 @@ CHECKING JOB STATUS (after the user has picked one or specified):
 3. Do not list all available endpoints. Do not run SLURM commands (squeue, sacct). Swing uses PBS, not SLURM.
 
 TRANSFERRING RESULTS BACK:
-1. Initiate the transfer of the entire remote run folder to the corresponding local run folder.
-2. IMMEDIATELY (before the transfer finishes) tell the user a brief acknowledgement that includes:
-   - confirmation the transfer has started
-   - the source remote path and destination local path
-   - the Globus transfer task ID
-   - a note that you will report back when it completes
-   Example: "📤 Transfer started — moving run_2026_05_10_155046 from Swing back to your local machine. Globus transfer task ID: abc-def-123. I'll let you know when it's done."
-3. THEN wait for the transfer to complete using the appropriate Globus Transfer status/wait tool.
-4. Once complete, tell the user the results are ready locally and briefly summarize what was transferred (number of files, key files like log.lammps, dump files).
-5. If the transfer fails or times out, report the error conversationally and suggest the user check the Globus dashboard.
+- To transfer results, the user MUST provide the run folder name explicitly (e.g.
+  run_2026_05_11_095510). A number alone (like "2") is NOT enough for transfer —
+  folder names eliminate ambiguity about exactly what gets transferred.
+- If the user says "transfer", "yes", "bring it back", or gives only a number/description
+  without a folder name, do NOT call any tool. Reply:
+    "Please specify the run folder name to transfer (e.g. run_2026_05_11_095510).
+     You can find the folder names in the job list above."
+- Once the user gives an explicit folder name:
+    1. Transfer the entire remote run folder to the corresponding local run folder.
+    2. IMMEDIATELY tell the user:
+       "📤 Transferring run_<folder> from Swing to your local machine. Globus task ID: <id>.
+        I'll let you know when it's done."
+    3. Wait for the transfer to complete using the appropriate Globus Transfer status/wait tool.
+    4. Once done, briefly summarize what was transferred (number of files, key files like
+       log.lammps, dump files).
+    5. If the transfer fails, report it conversationally and suggest checking Globus dashboard.
 
 HANDLING TOOL FAILURES:
 - If a tool call returns an error (e.g. "directory not found", "404", "permission denied", "endpoint unreachable"), DO NOT retry the same call.

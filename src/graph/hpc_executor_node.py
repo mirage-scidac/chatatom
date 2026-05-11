@@ -325,7 +325,23 @@ def hpc_executor_node(state: SimulationState) -> dict:
             f"submitted={j['submitted_at']}"
             for j in hpc_jobs
         )
+
+        # Build recent conversation context so the HPC agent can reason about
+        # multi-turn replies like "yes" or "transfer it" — without this, the
+        # agent has no memory of what was just asked. Capped at last 6 messages
+        # (~3 user/assistant pairs) to keep the prompt bounded.
+        history = state.get("conversation_history", []) or []
+        recent = history[-6:]
+        history_block = ""
+        if recent:
+            history_str = "\n".join(
+                f"{m.get('role', '?').upper()}: {m.get('content', '')[:400]}"
+                for m in recent
+            )
+            history_block = f"Recent conversation (most recent at bottom):\n{history_str}\n\n"
+
         user_msg = (
+            f"{history_block}"
             f"User request: {state.get('user_message', 'check job status')}\n\n"
             f"HPC jobs submitted in this session:\n{jobs_summary}\n\n"
             f"Local Globus endpoint: {config.GLOBUS_LOCAL_ENDPOINT}\n"

@@ -354,3 +354,94 @@ The qsub call site (`_run_hpc_submit_async` step 3) is the only caller that opts
 None of those features exist in the UI today. When they're added, implement Fix #5 to populate the IDs.
 
 **Implementation sketch (when needed):** Add `_extract_after_label(text, label)` helper. In post-loop scan of `final_messages`, also iterate AIMessages and extract values after "Globus Compute Task ID:" and "PBS Job ID:" labels. Return tuple `(globus_task_id, pbs_job_id)` from `_run_hpc_submit_async`. Add `pbs_job_id` field to `new_job` dict.
+
+---
+
+## May 11 2026 session — additional fixes
+
+Continuation of HPC + multi-turn debugging. Goal: make agent transitions reliable and frontend never permanently lock.
+
+### Completed (this session)
+
+#### A. Tighter classifier multi-turn rule
+**File:** `src/prompts.py` — `ClassifyUserIntent` docstring
+
+Routing-by-prior-agent now requires BOTH:
+- (a) Last assistant message ends with a clarifying question (text ends with "?", or contains phrases like "which one", "which job", "please specify")
+- (b) User reply is a SHORT answer (number, "yes", "the Cu one", folder name)
+
+Otherwise classify based on user's new message. Added explicit DO/DON'T examples for each agent.
+
+#### B. HPC off-topic escape hatch
+**File:** `src/prompts.py` — `HPC_EXECUTOR_PROMPT`
+
+Added `HANDLING OFF-TOPIC REQUESTS` as the FIRST rule. Agent recognizes non-HPC questions (e.g. "what is your name", "what is NPT?") and replies with a fixed redirect message instead of calling tools. Defense in depth Layer 2 — backstops the classifier when it misroutes.
+
+#### C. HPC listing format improvements
+**File:** `src/prompts.py` — `HPC_EXECUTOR_PROMPT`
+
+- Reverse chronological order (newest at top, oldest at bottom)
+- Explicit numbered prefixes "1.", "2.", "3." required on each job line
+- Two-step pattern for numeric replies: agent acknowledges the mapping ("Got it — checking job 8: run_xxx") before calling tools
+- Transfer requires the user to provide the EXPLICIT run folder name (not number, not description). Numbers acceptable for status check, NOT for transfer — eliminates ambiguity about which folder gets transferred
+
+#### D. Inject `conversation_history` into HPC status agent
+**File:** `src/graph/hpc_executor_node.py` — Branch C (status query)
+
+**Problem:** HPC status agent received only `user_message` + jobs list each turn. Had no memory of prior turns. So when user said "yes" after agent asked "would you like to transfer?", agent had no context to interpret "yes".
+
+**Fix:** Build `history_block` from last 6 messages (3 user/assistant pairs) and prepend to `user_msg`. Cap at 400 chars per message to keep prompt bounded. HPC agent now sees prior conversation and can reason about multi-turn replies. Status branch only — submit branch unchanged.
+
+#### E. Frontend `isStreaming` safety net
+**File:** `index.html` — `sendMessage` and `_hpcStream` finally blocks
+
+**Problem:** If backend stream closes without firing `workflow_complete` (or any other reset event), `isStreaming` stays `true` forever. User can't type, must hard-refresh.
+
+**Fix:** Added `isStreaming = false;` to the `finally` block of both `sendMessage` and `_hpcStream`. Guarantees the input box always unlocks after the stream ends, regardless of which (or no) SSE events fired. Catches: SSE delivery issues, dropped events, backend exceptions, race conditions.
+
+#### F. Diagnostic prints in `app.py` for visibility
+**File:** `src/app.py` — `llm_stream_live` + `run_graph`
+
+Added `print()` statements at key points:
+- `[USER MSG]` — when each user message arrives at backend (with session_id, history_len, pending_script status)
+- `[POST-GRAPH] calling simulation_graph.invoke()...` — before the graph runs
+- `[POST-GRAPH] invoke returned. ...` — after graph returns, with full state summary (intent, workflow_stage, has_params, review_passed, material, has_script, hpc_jobs_count)
+- `[CASCADE] branch=...` — for each cascade branch that fires, with the matched condition
+
+Now the terminal output reveals exactly which step hangs (or doesn't). Diagnostic-only, no behavior change.
+
+#### G. Fix #2 — Tighten `review_failed` cascade condition
+**File:** `src/app.py` — post-graph cascade
+
+**Problem (root cause of analyst/HPC-then-orchestrator hang):** The `review_failed` cascade branch fired on EVERY non-generation turn (analyst, hpc_status, question), because:
+- `lammps_script` persists in checkpoint from any earlier `generate_lammps` run
+- `review_passed` is reset to `None` at the start of each turn
+- `not None` evaluates to `True` in Python
+- So the condition `lammps_script AND not review_passed` was True for any turn AFTER the first successful sim
+
+This emitted misleading `review_failed` events on turns where no review actually happened, leading to broken downstream behavior (frontend got confused, eventually couldn't send next message).
+
+**Fix:** Tightened the condition:
+```python
+# Before:
+if final.get("lammps_script") and not final.get("review_passed"):
+# After:
+if (final.get("lammps_script")
+        and final.get("review_passed") is False     # explicit False, not None
+        and final.get("review_issues")):            # populated issues
+```
+
+`is False` distinguishes "reviewer ran and rejected" from "no review ran this turn". The `review_issues` check is belt-and-suspenders — real failures always have populated issues.
+
+**Verified:** This fix resolved the "analyst/HPC turn breaks subsequent orchestrator turns" pattern that was the major remaining blocker.
+
+---
+
+### Still pending after May 11
+
+| # | Fix | Notes |
+|---|---|---|
+| 3 | Explicit `confirm_execute` flag for pendingScript bypass | Prevents accidental sim re-runs from stale frontend state |
+| 4 | Guard empty `hpc_run_folder` before submit | HPC submit safety after server restart between PBS preview + confirm |
+| 5 (deferred) | Real `globus_task_id` + `pbs_job_id` extraction | Skip until cancel-job or task-detail features needed |
+| 8 | MCP stdio retry on broken pipe | First HPC operation after long idle (~1 hour) sometimes fails |

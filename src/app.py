@@ -303,6 +303,13 @@ def llm_stream_live():
     if not user_command:
         return jsonify({"error": "Command not provided"}), 400
 
+    # ── DIAGNOSTIC ─────────────────────────────────────────────────────────────
+    print(f"\n[USER MSG] {user_command!r}")
+    print(f"          session_id={body.get('session_id')!r}  history_len={len(history)}  "
+          f"pending_script={'yes' if pending_script_param else 'no'}  "
+          f"body_workflow_stage={body.get('workflow_stage')!r}")
+    # ──────────────────────────────────────────────────────────────────────────
+
     # Determine workflow stage
     workflow_stage = "initial"
     if body.get('workflow_stage') == 'pbs_pending':
@@ -364,7 +371,16 @@ def llm_stream_live():
             except Exception as _e:
                 print(f"[POST-GRAPH] get_state failed (likely fresh session): {_e}")
 
+            print(f"[POST-GRAPH] calling simulation_graph.invoke()...")
             final = simulation_graph.invoke(initial_state, config=graph_config)
+            print(f"[POST-GRAPH] invoke returned. "
+                  f"intent={final.get('intent')!r}  "
+                  f"workflow_stage={final.get('workflow_stage')!r}  "
+                  f"has_params={final.get('has_parameters')}  "
+                  f"review_passed={final.get('review_passed')}  "
+                  f"material={final.get('material')!r}  "
+                  f"has_script={'yes' if final.get('lammps_script') else 'no'}  "
+                  f"hpc_jobs_count={len(final.get('hpc_jobs') or [])}")
 
             # Auto-title session from first simulation parameters
             if final.get("material"):
@@ -386,11 +402,13 @@ def llm_stream_live():
             # as review_failed from stale checkpoint state).
             new_hpc_count = len(final.get("hpc_jobs") or [])
             if new_hpc_count > prior_hpc_count:
+                print(f"[CASCADE] branch=hpc_submission_complete (hpc_jobs grew from {prior_hpc_count} to {new_hpc_count})")
                 sse_q.put({"type": "workflow_complete", "session_id": session_id})
                 return
 
             # Direct execution path: script already approved, start simulation
             if final["workflow_stage"] == "script_ready" and final["intent"] == "execute":
+                print(f"[CASCADE] branch=direct_execute (script_ready + execute)")
                 sse_q.put({"type": "agent_start", "agent": "System"})
                 sse_q.put({"type": "agent_content", "agent": "System",
                            "content": "Starting live streaming simulation...", "message_type": "info"})
@@ -407,12 +425,20 @@ def llm_stream_live():
             if (not final.get("has_parameters") and final.get("analysis")
                     and final.get("intent") not in ("analyze", "question", "cancel")):
                 event_type = "needs_more_info" if history else "awaiting_confirmation"
+                print(f"[CASCADE] branch={event_type} (no params + analysis present + intent not analyze/question/cancel)")
                 sse_q.put({"type": event_type, "analysis": final["analysis"]})
                 sse_q.put({"type": "workflow_complete", "session_id": session_id})
                 return
 
-            # LAMMPS review failed
-            if final.get("lammps_script") and not final.get("review_passed"):
+            # LAMMPS review failed — only fire when generate_lammps actually ran THIS turn
+            # AND the reviewer explicitly rejected (review_passed is False, not None) AND there
+            # are real issues to report. Without these guards, this branch misfires on every
+            # non-generation turn (analyst, hpc_status, question) because lammps_script
+            # persists in the checkpoint and review_passed is reset to None each turn.
+            if (final.get("lammps_script")
+                    and final.get("review_passed") is False
+                    and final.get("review_issues")):
+                print(f"[CASCADE] branch=review_failed (real failure: review_passed=False + issues present)")
                 sse_q.put({"type": "review_failed",
                            "script": final["lammps_script"],
                            "issues": final.get("review_issues") or [],
@@ -422,6 +448,7 @@ def llm_stream_live():
 
             # Default viz message when no custom viz
             if final.get("lammps_script") and final.get("review_passed") and not final.get("has_custom_viz"):
+                print(f"[CASCADE] branch=default_viz (script + review_passed + not has_custom_viz)")
                 sse_q.put({"type": "agent_content", "agent": "Visualization",
                            "content": "Applying default visualization settings for trajectory rendering.",
                            "message_type": "visualization"})
@@ -438,6 +465,7 @@ def llm_stream_live():
 
             # Scripts ready for user approval
             if final.get("lammps_script") and final.get("review_passed"):
+                print(f"[CASCADE] branch=scripts_ready_for_review (script + review_passed)")
                 sse_q.put({
                     "type":                 "scripts_ready_for_review",
                     "lammps_script":        final["lammps_script"],
@@ -448,6 +476,7 @@ def llm_stream_live():
                     "execution_target":     final.get("execution_target", "local"),
                 })
 
+            print(f"[CASCADE] emitting workflow_complete (final fallthrough)")
             sse_q.put({"type": "workflow_complete", "session_id": session_id})
 
         except Exception as e:
