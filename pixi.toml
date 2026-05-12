@@ -8,7 +8,6 @@ platforms = ["linux-64", "osx-arm64"]
 
 [dependencies]
 python = ">=3.11,<3.12"
-flask = ">=3.1,<3.2"
 lammps = ">=2024.8,<2025"
 numpy = ">=2.4,<2.5"
 pip = ">=24,<26"
@@ -16,7 +15,6 @@ requests = ">=2.33,<2.34"
 
 [pypi-dependencies]
 dspy = ">=3.1,<3.2"
-flask-socketio = ">=5.6,<6"
 openai = ">=1.58"
 langgraph-prebuilt = ">=1.0"
 ovito = ">=3.15,<3.16"
@@ -25,6 +23,15 @@ langchain-openai = ">=1.2"
 langchain-core = ">=1.3"
 langchain-mcp-adapters = ">=0.2"
 globus-compute-endpoint = ">=3.7.0, <4"
+# Web server: FastAPI + uvicorn (ASGI) + python-socketio for WebSocket
+fastapi = ">=0.115,<0.120"
+uvicorn = {version = ">=0.32,<0.40", extras = ["standard"]}
+python-multipart = ">=0.0.9"        # for form data if needed
+python-socketio = ">=5.11,<6"       # ASGI Socket.IO server (mounted alongside FastAPI)
+aiosqlite = ">=0.20"                # for future async SQLite usage
 
 [tasks]
-run-app = "python src/app.py"
+# --reload-dir src is critical: --reload watches the whole working directory by default,
+# which causes uvicorn to restart whenever LAMMPS writes to runs/ during a simulation
+# (killing the in-flight subprocess + WebSocket). Limit watch to src/ only.
+run-app = "uvicorn src.app:socket_app --host 0.0.0.0 --port 2002 --reload --reload-dir src"

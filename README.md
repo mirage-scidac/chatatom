@@ -10,82 +10,69 @@ This project uses Conda for managing the environment and complex dependencies, a
 
 ### Pixi Quickstart
 
-The repository now includes a [`pixi.toml`](/data/programs/chatmd/pixi.toml) environment definition and generated lockfile. To create the environment and run the app:
+The repository includes a [`pixi.toml`](pixi.toml) environment definition and generated lockfile. To create the environment and run the app:
 
 ```bash
 pixi install
-pixi run python src/app.py
-```
-
-If you only want the predefined task:
-
-```bash
 pixi run run-app
 ```
 
+The application will be available at `http://localhost:2002`.
+API docs (auto-generated) at `http://localhost:2002/docs`.
+
+`run-app` is a pixi task that runs:
+
+```bash
+uvicorn src.app:socket_app --host 0.0.0.0 --port 2002 --reload --reload-dir src
+```
+
+`--reload-dir src` is important: `--reload` watches the working directory for code changes, but limiting it to `src/` prevents uvicorn from restarting when LAMMPS writes new files into `runs/` during a simulation (which would kill the in-flight subprocess + WebSocket connection).
+
 ### Prerequisites
 
-- **Miniconda/Anaconda**: For the `conda` package manager.
-- **uv**: The fast Python package installer. Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- **pixi**: Pixi manages the entire environment (Python, LAMMPS, KIM API, Python packages, etc.) via `pixi.toml` + `pixi.lock`. Install from https://pixi.sh.
 
-### 1. Create Environment
-
-Create and activate a Conda environment named `chatmd`.
+### 1. Install Environment
 
 ```bash
-conda create -n chatmd python=3.11 -y
-conda activate chatmd
+pixi install
 ```
 
-### 2. Install Dependencies
+That's it — pixi reads `pixi.toml` + `pixi.lock` and builds the complete environment with LAMMPS, KIM API, FastAPI, all Python packages, and dependencies.
 
-With the `chatmd` environment active, install the required packages.
+### 2. Install Fortran Compiler (Required for KIM Models)
 
-- **LAMMPS with KIM support (via Conda):**
-  ```bash
-  conda install -c conda-forge lammps -y
-  ```
-
-- **KIM API (Required for KIM potentials):**
-  ```bash
-  conda install -c conda-forge kim-api -y
-  ```
-
-- **Python Packages (via uv):**
-  ```bash
-  conda install uv pip
-  uv pip install ovito openai flask flask-socketio pytest requests
-  ```
-
-### 3. Install Fortran Compiler (Required for KIM Models)
-
-Many KIM potential models contain Fortran code that needs to be compiled during installation. Install gfortran via conda:
+Many KIM potential models contain Fortran code that needs to be compiled during installation. If pixi didn't pick one up automatically, install gfortran:
 
 ```bash
-conda install -c conda-forge gfortran -y
+# Easiest — use whatever your OS provides
+brew install gcc          # macOS
+apt-get install gfortran  # Debian/Ubuntu
 ```
 
-**Note**: You can skip this step if you already have a Fortran compiler (gfortran) installed on your system. To check if you have gfortran installed, run:
+To check if you already have gfortran:
 ```bash
 which gfortran
 ```
 
-### 4. Install KIM Models
+### 3. Install KIM Models
 
 Install commonly used KIM potential models:
 
 ```bash
-# Install verified working models
-kim-api-collections-management install user LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004
-kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
-kim-api-collections-management install user EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
-kim-api-collections-management install user EAM_Dynamo_FoilesBaskesDaw_1986Universal3_Cu__MO_666348409573_005
+# Install verified working models (use pixi run so the right kim-api binary is used)
+pixi run kim-api-collections-management install user LJ_Shifted_Bernardes_1958MedCutoff_Ar__MO_126566794224_004
+pixi run kim-api-collections-management install user SW_StillingerWeber_1985_Si__MO_405512056662_005
+pixi run kim-api-collections-management install user EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
+pixi run kim-api-collections-management install user EAM_Dynamo_FoilesBaskesDaw_1986Universal3_Cu__MO_666348409573_005
 ```
 
 **Note**: You can install additional KIM models as needed using:
 ```bash
-kim-api-collections-management install user <MODEL_ID>
+pixi run kim-api-collections-management install user <MODEL_ID>
 ```
+
+The chat UI also has a **KIM Potentials panel** for searching and downloading models with progress tracking — usually easier than the CLI.
 
 ## Configuration
 
@@ -117,10 +104,7 @@ The application supports parallel LAMMPS execution using MPI. To configure paral
    mpirun --version
    ```
 
-3. **Install LAMMPS with MPI support** (if not already done):
-   ```bash
-   conda install -c conda-forge lammps=*=mpi_* -y
-   ```
+3. **LAMMPS with MPI support** is included in the `pixi install` environment automatically (the `lammps` conda package on conda-forge ships an MPI build).
 
 The system will automatically:
 - Use serial execution (Python interface) for single core
@@ -130,13 +114,20 @@ The system will automatically:
 
 ## Running the Application
 
-With the `chatmd` environment active, run the Flask server:
+Run the FastAPI / uvicorn server (preferred — uses pixi's environment):
 
 ```bash
-python src/app.py
+pixi run run-app
+```
+
+Or with a manually-activated environment:
+
+```bash
+uvicorn src.app:socket_app --host 0.0.0.0 --port 2002 --reload --reload-dir src
 ```
 
 The application will be available at `http://localhost:2002`.
+Auto-generated API docs at `http://localhost:2002/docs`.
 
 ### Real-Time Features
 
@@ -171,15 +162,15 @@ kim-api-collections-management install user <MODEL_ID>
 To verify the installation and run the end-to-end tests for the agent workflow, use `pytest` from the project root:
 
 ```bash
-python -m pytest
+pixi run python -m pytest
 ```
 
 ## Troubleshooting
 
-- **`ModuleNotFoundError`**: Ensure the `chatmd` Conda environment is active (`conda activate chatmd`).
-- **KIM Model Not Found**: Install the required model using `kim-api-collections-management install user <MODEL_ID>`.
-- **KIM API Issues**: Ensure KIM API is properly installed with `conda install -c conda-forge kim-api`.
-- **LAMMPS KIM Support**: Verify LAMMPS was compiled with KIM support (should be automatic with conda installation).
+- **`ModuleNotFoundError`**: Run via `pixi run ...` so the pixi environment is active. Or run `pixi shell` to drop into an interactive shell with the env activated.
+- **KIM Model Not Found**: Install via `pixi run kim-api-collections-management install user <MODEL_ID>` — or use the KIM Potentials panel in the UI.
+- **KIM API Issues**: KIM API ships in the pixi environment automatically. If broken, try `pixi install` to refresh.
+- **LAMMPS KIM Support**: The conda-forge LAMMPS package includes KIM support by default; pixi pulls this version.
 - **OVITO License**: The `ovito` package requires a license. Place your `ovito.lic` file in a standard location (e.g., `~/.config/ovito/`) or in the project folder. See the OVITO documentation for more details.
 
 ## Documentation

@@ -301,7 +301,8 @@ def install_and_verify_kim_model(model_id: str, timeout: int = 120) -> Tuple[boo
             cmd = "kim-api-collections-management"
         else:
             cmd = KIM_API_CMD
-            
+        logger.info(f"Running command: {cmd} install user {model_id}")
+
         result = subprocess.run(
             [cmd, "install", "user", model_id],
             capture_output=True,
@@ -310,7 +311,15 @@ def install_and_verify_kim_model(model_id: str, timeout: int = 120) -> Tuple[boo
         )
         
         if result.returncode != 0:
-            error_msg = f"Installation failed: {result.stderr}"
+            # Many CLI tools write errors to stdout instead of stderr; include both
+            # so the failure is actually diagnosable. Truncate to 1 KB each so we
+            # don't dump megabytes into the chat.
+            stderr_text = (result.stderr or "").strip()[:1024]
+            stdout_text = (result.stdout or "").strip()[:1024]
+            error_msg = (
+                f"Installation failed (returncode={result.returncode}): "
+                f"stderr={stderr_text!r}, stdout={stdout_text!r}"
+            )
             logger.error(error_msg)
             return False, error_msg
         

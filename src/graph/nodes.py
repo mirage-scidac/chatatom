@@ -212,14 +212,10 @@ def intent_node(state: SimulationState) -> dict:
         print(f"[intent_node] explicit analysis keyword → forcing analyze")
         return {"intent": "analyze"}
 
-    # If HPC jobs exist and user replies with a bare affirmative (no analysis/simulation keywords),
-    # treat as hpc_status — classifier can't infer context without conversation_history
-    _analysis_keywords = {"analyze", "analysis", "results", "interpret", "show", "list", "runs", "simulate", "run", "cancel"}
-    if (state.get("hpc_jobs")
-            and _msg_lower in {"yes", "sure", "ok", "yeah", "yep", "please", "yes please", "go ahead"}
-            and not any(kw in _msg_lower for kw in _analysis_keywords)):
-        print(f"[intent_node] hpc_jobs present + bare affirmative → forcing hpc_status")
-        return {"intent": "hpc_status"}
+    # NOTE: Removed bare-affirmative HPC shortcut (used to force "yes/ok/sure" → hpc_status
+    # when hpc_jobs existed in state). Made obsolete by [Agent]-tagged conversation history
+    # + multi-turn classifier rule in ClassifyUserIntent — DSPy now correctly routes
+    # short replies like "yes" based on which agent asked the clarifying question.
 
     orchestrator = SmartOrchestrator()
     result = orchestrator.classify_intent(state["user_message"], state["workflow_stage"], state.get("conversation_history", []))

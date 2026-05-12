@@ -2030,8 +2030,8 @@
                 <div class="mt-3">
                     <div class="text-gray-400 text-xs font-semibold mb-1">OVITO Script (${ovitoLines} lines)</div>
                     <textarea id="editable-ovito-script"
-                        class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y"
-                        rows="8" spellcheck="false">${pendingOvitoScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                        class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y min-h-[320px]"
+                        rows="18" spellcheck="false">${pendingOvitoScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
                 </div>` : '';
 
             promptElement.innerHTML = `
@@ -2054,8 +2054,8 @@
                         <div id="script-edit-panel" class="hidden">
                             <div class="text-gray-400 text-xs font-semibold mb-1">LAMMPS Script (${lammpsLines} lines)</div>
                             <textarea id="editable-lammps-script"
-                                class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y"
-                                rows="12" spellcheck="false">${pendingScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                                class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y min-h-[420px]"
+                                rows="24" spellcheck="false">${pendingScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
                             ${ovitoSection}
                         </div>
                     </div>
@@ -2163,8 +2163,10 @@
                 <div class="flex items-start">
                     <span class="mr-2 text-lg">🖥️</span>
                     <div class="flex-1">
-                        <strong class="text-white">PBS Script — Review before submitting to HPC</strong>
-                        <pre class="mt-2 p-2 bg-black/50 text-xs font-mono text-white rounded overflow-x-auto whitespace-pre-wrap">${pbsScript.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+                        <strong class="text-white">PBS Script — Review (and edit if needed) before submitting to HPC</strong>
+                        <textarea id="editable-pbs-script"
+                            class="w-full mt-2 p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y min-h-[320px]"
+                            rows="18" spellcheck="false">${pbsScript.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
                         <div class="flex gap-2 mt-3">
                             <button onclick="confirmHPCSubmit('${runFolder.replace(/'/g,"\\'")}')"
                                 class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">
@@ -2183,6 +2185,8 @@
 
         async function confirmHPCSubmit(runFolder) {
             if (isStreaming) return;
+            const ta = document.getElementById('editable-pbs-script');
+            const editedPbs = ta ? ta.value : null;
             const card = document.getElementById('pbs-approval-card');
             if (card) card.remove();
 
@@ -2193,6 +2197,7 @@
                 command: 'confirm hpc submit',
                 session_id: currentSessionId,
                 workflow_stage: 'pbs_pending',
+                pbs_script: editedPbs,
             };
 
             await _hpcStream(body);

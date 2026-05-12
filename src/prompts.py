@@ -968,11 +968,10 @@ If there is only ONE job in the context, you may proceed to check it directly wi
 
 CHECKING JOB STATUS (after the user has picked one or specified):
 1. Check what files exist in the remote run folder.
-2. Determine job status from the file listing:
-   - If a PBS output file exists (e.g. chatmd_run_*.o* or *.o<jobid>) → job has completed (PBS writes this file only after the job ends). Tell the user and ask if they want results transferred back.
-   - If log.lammps is present but NO PBS output file → job is still running. Tell the user.
+2. Report what is in the folder to the user:
    - If only input.lammps and submit_lammps.sh are present → job is still queued. Tell the user.
-   NOTE: Do NOT run shell commands to read file contents. Use only the file listing to determine status.
+   - Otherwise → list the files (or counts of similar files like dump.*.dat) and let them judge whether the run is finished. Do NOT say "Job completed!" or "Job has finished" — file presence on PBS is not a reliable completion signal (PBS writes the .o file during execution, dump files may still be flushing). Just describe what you see and ask if they want results transferred back.
+   NOTE: Do NOT run shell commands to read file contents. Use only the file listing.
 3. Do not list all available endpoints. Do not run SLURM commands (squeue, sacct). Swing uses PBS, not SLURM.
 
 TRANSFERRING RESULTS BACK:

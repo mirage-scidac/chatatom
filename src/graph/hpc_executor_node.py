@@ -265,10 +265,12 @@ def hpc_executor_node(state: SimulationState) -> dict:
         run_folder = run_manager.create_run_folder()
         run_folder_name = os.path.basename(run_folder)
 
-        run_manager.save_lammps_script(run_folder, state["lammps_script"])
-        if state.get("ovito_script"):
+        script_to_save = state.get("pending_script") or state["lammps_script"]
+        run_manager.save_lammps_script(run_folder, script_to_save)
+        ovito_to_save = state.get("ovito_script_param") or state.get("ovito_script")
+        if ovito_to_save:
             with open(os.path.join(run_folder, "ovito_script.py"), "w") as f:
-                f.write(state["ovito_script"])
+                f.write(ovito_to_save)
 
         pbs_script = _generate_pbs_script(run_folder_name, kim_model=state.get("kim_model", ""))
         with open(os.path.join(run_folder, "submit_lammps.sh"), "w") as f:
@@ -293,6 +295,10 @@ def hpc_executor_node(state: SimulationState) -> dict:
     # ── Phase 2: Globus submission ────────────────────────────────────────────
     if workflow_stage == "pbs_pending":
         run_folder = state.get("hpc_run_folder_pending", "")
+        edited_pbs = state.get("pbs_script_edited")
+        if edited_pbs:
+            with open(os.path.join(run_folder, "submit_lammps.sh"), "w") as f:
+                f.write(edited_pbs)
         run_folder_name = os.path.basename(run_folder)
         hpc_remote_dir = f"{config.HPC_RUN_BASE_DIR}/{run_folder_name}"
         description = f"{state.get('material', '')} {state.get('temperature', '')}K".strip()

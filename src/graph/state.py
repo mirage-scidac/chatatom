@@ -11,6 +11,7 @@ class SimulationState(TypedDict):
     conversation_history: List[Dict]
     pending_script: Optional[str]         # script carried over from previous turn
     ovito_script_param: Optional[str]     # ovito script from previous turn
+    pbs_script_edited: Optional[str]      # PBS script edited by user in approval card (Phase 2)
 
     # ── Classification ────────────────────────────────────────────────────────
     intent: Optional[str]                 # "execute" | "modify" | "cancel" | "question" | "new_simulation"
