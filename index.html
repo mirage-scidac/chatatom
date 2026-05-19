@@ -42,10 +42,7 @@
 
         .logo-text {
             font-family: 'Orbitron', sans-serif;
-            background: linear-gradient(to right, var(--neon-blue), var(--neon-purple), var(--neon-pink));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            filter: drop-shadow(0 0 4px rgba(139, 92, 246, 0.5));
+            color: #3b82f6;
             letter-spacing: 2px;
         }
 
@@ -121,6 +118,131 @@
             }
         }
 
+        /* Chat bubble — accent stripe only, no fill (Claude-style) */
+        .chat-bubble {
+            background-color: transparent !important;
+            padding-left: 0.875rem !important;
+            padding-right: 0.5rem !important;
+            border-radius: 0 !important;
+            border-left-width: 3px !important;
+        }
+
+        /* Script editor — matches the intermediate code-block look */
+        .script-editor {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace !important;
+            font-size: 0.875rem !important;
+            line-height: 1.6 !important;
+            padding: 1rem !important;
+            background-color: #1e1e1e !important;
+            color: #d4d4d4 !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            border-radius: 0.5rem !important;
+        }
+        .script-editor:focus {
+            outline: none !important;
+            border-color: #3b82f6 !important;
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5) !important;
+        }
+
+        /* Editor wrapper with line-number gutter (no syntax colors) */
+        .editor-wrap {
+            display: flex;
+            background-color: #1e1e1e;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        .editor-wrap:focus-within {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5);
+        }
+        .line-gutter {
+            flex: 0 0 auto;
+            min-width: 2.75rem;
+            padding: 1rem 0.5rem 1rem 0.75rem;
+            background-color: #1e1e1e;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+            user-select: none;
+        }
+        .line-gutter-inner {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            color: #6b7280;
+            text-align: right;
+            white-space: pre;
+            will-change: transform;
+        }
+        .editor-wrap .script-editor {
+            flex: 1 1 auto;
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+        }
+        .editor-wrap .script-editor:focus {
+            border: none !important;
+            box-shadow: none !important;
+        }
+
+        /* ── Light theme overrides (toggled via [data-theme="light"] on <html>) ── */
+        [data-theme="light"] {
+            --bg-dark: #f9fafb;
+            --panel-bg: rgba(255, 255, 255, 0.92);
+            --border-color: rgba(15, 23, 42, 0.08);
+        }
+        [data-theme="light"] body { background-color: #f9fafb !important; color: #1f2937 !important; }
+
+        /* Backgrounds — exclude code editors / 3D viewer so they stay dark for readability */
+        [data-theme="light"] .bg-gray-900:not(pre):not(textarea):not(code) { background-color: #f9fafb !important; }
+        [data-theme="light"] .bg-gray-800 { background-color: #ffffff !important; }
+        [data-theme="light"] .bg-gray-800\/50 { background-color: rgba(255, 255, 255, 0.7) !important; }
+        [data-theme="light"] .bg-gray-700 { background-color: #f3f4f6 !important; }
+        [data-theme="light"] .bg-gray-700\/50 { background-color: rgba(243, 244, 246, 0.7) !important; }
+        [data-theme="light"] .bg-gray-600 { background-color: #e5e7eb !important; }
+        [data-theme="light"] .bg-black\/40 { background-color: rgba(249, 250, 251, 0.6) !important; }
+        /* Keep thermodynamic plot container dark in light mode — Chart.js lines
+           are tuned for dark backgrounds; light bg makes them illegible */
+        [data-theme="light"] #plot-container { background-color: #1e1e1e !important; border-color: rgba(255, 255, 255, 0.1) !important; }
+        /* Each chart wrapper inside plot-container also stays dark */
+        [data-theme="light"] #plot-container .bg-gray-800 { background-color: #1e1e1e !important; }
+        [data-theme="light"] .bg-black\/30 { background-color: rgba(249, 250, 251, 0.5) !important; }
+        [data-theme="light"] .bg-black\/50 { background-color: rgba(243, 244, 246, 0.7) !important; }
+        /* bg-black/90 = 3D viewer canvas — kept dark intentionally */
+
+        /* Approval / feedback cards */
+        [data-theme="light"] .bg-indigo-900 { background-color: #eef2ff !important; }
+        [data-theme="light"] .bg-indigo-900\/60 { background-color: rgba(238, 242, 255, 0.85) !important; }
+        [data-theme="light"] .bg-blue-900 { background-color: #eff6ff !important; }
+        [data-theme="light"] .bg-purple-900 { background-color: #faf5ff !important; }
+
+        /* Hover states */
+        [data-theme="light"] .hover\:bg-gray-700:hover { background-color: #e5e7eb !important; }
+        [data-theme="light"] .hover\:bg-gray-600:hover { background-color: #d1d5db !important; }
+        [data-theme="light"] .hover\:bg-gray-700\/50:hover { background-color: rgba(229, 231, 235, 0.7) !important; }
+        [data-theme="light"] .hover\:bg-gray-500:hover { background-color: #9ca3af !important; }
+
+        /* Text colors */
+        [data-theme="light"] .text-white { color: #1f2937 !important; }
+        [data-theme="light"] .text-gray-100 { color: #1f2937 !important; }
+        [data-theme="light"] .text-gray-200 { color: #374151 !important; }
+        [data-theme="light"] .text-gray-300 { color: #4b5563 !important; }
+        [data-theme="light"] .text-gray-400 { color: #6b7280 !important; }
+        [data-theme="light"] .text-gray-500 { color: #9ca3af !important; }
+        [data-theme="light"] .text-blue-400 { color: #2563eb !important; }
+        [data-theme="light"] .text-blue-300 { color: #3b82f6 !important; }
+
+        /* Borders */
+        [data-theme="light"] .border-gray-700 { border-color: #e5e7eb !important; }
+        [data-theme="light"] .border-gray-700\/30 { border-color: rgba(229, 231, 235, 0.7) !important; }
+        [data-theme="light"] .border-gray-700\/50 { border-color: rgba(229, 231, 235, 0.85) !important; }
+        [data-theme="light"] .border-gray-700\/60 { border-color: rgba(229, 231, 235, 0.95) !important; }
+        [data-theme="light"] .border-gray-600 { border-color: #d1d5db !important; }
+
+        /* Inputs — placeholder visibility */
+        [data-theme="light"] input::placeholder,
+        [data-theme="light"] textarea::placeholder { color: #9ca3af !important; }
+
         /* Enhanced typography and readability */
         .agent-message {
             line-height: 1.6;
@@ -157,11 +279,29 @@
         }
 
         .agent-message code {
-            background-color: rgba(0, 0, 0, 0.3);
-            padding: 0.125rem 0.375rem;
-            border-radius: 0.25rem;
-            font-family: 'Courier New', monospace;
+            background-color: rgba(15, 23, 42, 0.85);
+            color: #fbbf24;             /* amber-400 — same yellow as bold */
+            padding: 0.15rem 0.45rem;
+            border-radius: 0.3rem;
+            border: 1px solid rgba(251, 191, 36, 0.25);
+            font-family: 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
             font-size: 0.875rem;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        /* Inline code inside <pre> blocks resets — only style standalone inline code */
+        .agent-message pre code {
+            background: transparent !important;
+            color: inherit !important;
+            border: none !important;
+            padding: 0 !important;
+            white-space: pre !important;
+        }
+        /* Light mode: darker amber on a soft amber background for legibility on white */
+        [data-theme="light"] .agent-message code {
+            background-color: #fef3c7 !important;       /* amber-100 */
+            color: #b45309 !important;                  /* amber-700 */
+            border-color: rgba(180, 83, 9, 0.25) !important;
         }
 
         .agent-message blockquote {
@@ -323,9 +463,13 @@
 <body class="bg-gray-900 text-white h-screen overflow-hidden flex">
 
     <!-- Sessions Sidebar -->
-    <div id="sessions-sidebar" class="w-52 flex-shrink-0 bg-gray-800 border-r border-gray-700/60 flex flex-col overflow-hidden">
+    <div id="sessions-sidebar" class="w-52 flex-shrink-0 bg-gray-800 border-r border-gray-700/60 flex flex-col overflow-hidden transition-all duration-200">
         <div class="p-3 border-b border-gray-700/60">
-            <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Sessions</div>
+            <div class="flex items-center justify-between mb-2">
+                <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Sessions</div>
+                <button onclick="toggleSessionsSidebar()" title="Hide sidebar"
+                    class="text-gray-400 hover:text-gray-200 text-lg leading-none px-1">‹</button>
+            </div>
             <button onclick="createNewSession()"
                 class="w-full text-left text-sm px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 flex items-center gap-2 transition-colors">
                 <span class="text-base leading-none">+</span> New Session
@@ -334,22 +478,32 @@
         <div id="sessions-list" class="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
             <!-- populated by loadSessions() -->
         </div>
+        <div class="p-3 border-t border-gray-700/60">
+            <button id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark theme"
+                class="w-full text-left text-sm px-3 py-2 rounded hover:bg-gray-700 text-gray-300 flex items-center gap-2 transition-colors">
+                <span id="theme-toggle-icon" class="text-base leading-none">☀</span>
+                <span id="theme-toggle-label">Light mode</span>
+            </button>
+        </div>
     </div>
 
     <!-- Main Content -->
-    <div class="flex-1 p-4 h-full grid grid-rows-[auto_auto_1fr] gap-4 overflow-hidden min-w-0">
-        <h1 class="text-4xl font-bold logo-text mb-2">ChatMD</h1>
-
-        <!-- Tab Navigation -->
-        <div class="flex gap-2 border-b border-gray-700/50 mb-4">
-            <button id="chat-tab-btn"
-                class="px-6 py-3 font-semibold border-b-2 border-blue-500 text-blue-400 hover:text-blue-300 transition-colors">
-                Chat
-            </button>
-            <button id="kim-tab-btn"
-                class="px-6 py-3 font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 transition-colors">
-                KIM Potentials
-            </button>
+    <div class="flex-1 px-4 pt-2 pb-4 h-full grid grid-rows-[auto_1fr] gap-2 overflow-hidden min-w-0">
+        <!-- Combined header: logo + tabs on one row -->
+        <div class="flex items-center gap-4 border-b border-gray-700/50">
+            <button id="sessions-reopen-btn" onclick="toggleSessionsSidebar()" title="Show sidebar"
+                class="hidden text-gray-300 hover:text-white text-xl leading-none px-2 py-1 rounded hover:bg-gray-700/50 transition-colors">☰</button>
+            <h1 class="text-3xl font-bold logo-text">ChatMD</h1>
+            <div class="flex gap-1 ml-4">
+                <button id="chat-tab-btn"
+                    class="px-4 py-2 text-base font-semibold border-b-2 border-blue-500 text-blue-400 hover:text-blue-300 transition-colors -mb-px">
+                    Chat
+                </button>
+                <button id="kim-tab-btn"
+                    class="px-4 py-2 text-base font-semibold border-b-2 border-transparent text-gray-400 hover:text-gray-200 transition-colors -mb-px">
+                    KIM Potentials
+                </button>
+            </div>
         </div>
 
         <!-- Chat Tab Content -->
@@ -358,7 +512,13 @@
             <div class="flex flex-col gap-4 min-h-0">
                 <!-- Chat panel -->
                 <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr_auto] gap-3 flex-1 min-h-0">
-                    <h2 class="text-xl font-orbitron font-semibold text-blue-400">Chat Interface</h2>
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-xl font-orbitron font-semibold text-blue-400">Chat Interface</h2>
+                        <button id="viz-toggle-btn" onclick="toggleVizPanel()" title="Toggle visualization panel"
+                            class="text-gray-400 hover:text-gray-200 text-base px-3 py-1.5 rounded hover:bg-gray-700/50 transition-colors flex items-center gap-1.5 font-medium">
+                            <span id="viz-toggle-icon">▶</span><span class="hidden sm:inline">Hide viz</span>
+                        </button>
+                    </div>
                     <div id="chat-container"
                         class="overflow-y-auto bg-black/40 p-4 rounded-lg min-h-0 border border-gray-700/30">
                         <!-- Chat messages will appear here -->
@@ -391,7 +551,7 @@
             </div>
 
             <!-- Right column: Thermodynamic plots and 3D visualization -->
-            <div class="flex flex-col gap-4 min-h-0">
+            <div id="viz-column" class="flex flex-col gap-4 min-h-0">
                 <!-- Thermodynamic plots -->
                 <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr] gap-3 flex-1 min-h-0">
                     <h2 class="text-xl font-orbitron font-semibold text-blue-400">Thermodynamics</h2>
@@ -839,7 +999,7 @@
             chatMessages.push({ role: sender === 'You' ? 'user' : 'agent', sender, content: message });
             const chatContainer = document.getElementById('chat-container');
             const messageElement = document.createElement('div');
-            messageElement.classList.add('mb-3', 'p-2', 'rounded');
+            messageElement.classList.add('mb-3', 'p-2', 'rounded', 'chat-bubble');
 
             // Check if this is a user message
             if (sender === 'You') {
@@ -866,7 +1026,7 @@
         function addConversationMessage(agent, content, type) {
             const chatContainer = document.getElementById('chat-container');
             const messageElement = document.createElement('div');
-            messageElement.classList.add('mb-3', 'p-2', 'rounded');
+            messageElement.classList.add('mb-3', 'p-2', 'rounded', 'chat-bubble');
 
             // Color coding for different agents
             let colorClass = '';
@@ -1471,7 +1631,7 @@
         function addTypingIndicator(agent) {
             const chatContainer = document.getElementById('chat-container');
             const typingElement = document.createElement('div');
-            typingElement.classList.add('mb-3', 'p-2', 'rounded');
+            typingElement.classList.add('mb-3', 'p-2', 'rounded', 'chat-bubble');
             typingElement.id = `typing-${agent}`;
 
             let colorClass = '';
@@ -1602,7 +1762,7 @@
 
                 const chatContainer = document.getElementById('chat-container');
                 messageElement = document.createElement('div');
-                messageElement.classList.add('mb-3', 'p-2', 'rounded');
+                messageElement.classList.add('mb-3', 'p-2', 'rounded', 'chat-bubble');
                 messageElement.id = messageId;
 
                 let colorClass = '';
@@ -1680,11 +1840,11 @@
                     let language = 'python';
 
                     if (formattedContent.includes('from ovito') || formattedContent.includes('import ovito')) {
-                        title = 'OVITO Visualization Script';
-                        language = 'python';
+                        title = messageType === 'script_trace' ? 'OVITO Visualization Script (Intermediate)' : 'OVITO Visualization Script';
+                        language = 'none';
                     } else if (formattedContent.includes('kim init') || formattedContent.includes('pair_style kim')) {
                         title = messageType === 'script_trace' ? 'LAMMPS Script (Intermediate)' : 'LAMMPS Simulation Script';
-                        language = 'lammps';
+                        language = 'none';
                     }
 
                     formattedContent = createCodeBlock(formattedContent, title, language);
@@ -1901,12 +2061,92 @@
             });
         }
 
+        // ── Collapsible side/viz panels (Claude-style) ─────────────────────
+        function toggleSessionsSidebar() {
+            const sidebar = document.getElementById('sessions-sidebar');
+            const reopenBtn = document.getElementById('sessions-reopen-btn');
+            const isCollapsing = !sidebar.classList.contains('w-0');
+            if (isCollapsing) {
+                sidebar.classList.remove('w-52');
+                sidebar.classList.add('w-0');
+                reopenBtn.classList.remove('hidden');
+            } else {
+                sidebar.classList.remove('w-0');
+                sidebar.classList.add('w-52');
+                reopenBtn.classList.add('hidden');
+            }
+            try { localStorage.setItem('sessionsCollapsed', isCollapsing ? '1' : '0'); } catch (e) {}
+        }
+
+        function toggleVizPanel() {
+            const grid = document.getElementById('chat-tab-content');
+            const viz = document.getElementById('viz-column');
+            const icon = document.getElementById('viz-toggle-icon');
+            const label = document.querySelector('#viz-toggle-btn span:last-child');
+            const isCollapsing = !viz.classList.contains('hidden');
+            if (isCollapsing) {
+                viz.classList.add('hidden');
+                grid.classList.remove('lg:grid-cols-2');
+                if (icon) icon.textContent = '◀';
+                if (label) label.textContent = 'Show viz';
+            } else {
+                viz.classList.remove('hidden');
+                grid.classList.add('lg:grid-cols-2');
+                if (icon) icon.textContent = '▶';
+                if (label) label.textContent = 'Hide viz';
+            }
+            try { localStorage.setItem('vizCollapsed', isCollapsing ? '1' : '0'); } catch (e) {}
+            // Repaint Chart.js so charts adapt to the new container size
+            if (window.thermoCharts) {
+                setTimeout(() => window.thermoCharts.forEach(c => c && c.resize && c.resize()), 220);
+            }
+        }
+
+        function restorePanelState() {
+            try {
+                if (localStorage.getItem('sessionsCollapsed') === '1') toggleSessionsSidebar();
+                if (localStorage.getItem('vizCollapsed') === '1') toggleVizPanel();
+            } catch (e) {}
+        }
+
+        // ── Theme toggle (dark / soft off-white) ───────────────────────────
+        function toggleTheme() {
+            const html = document.documentElement;
+            const current = html.getAttribute('data-theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', next);
+            updateThemeButton(next);
+            try { localStorage.setItem('theme', next); } catch (e) {}
+        }
+
+        function updateThemeButton(theme) {
+            const icon = document.getElementById('theme-toggle-icon');
+            const label = document.getElementById('theme-toggle-label');
+            if (theme === 'light') {
+                if (icon) icon.textContent = '🌙';
+                if (label) label.textContent = 'Dark mode';
+            } else {
+                if (icon) icon.textContent = '☀';
+                if (label) label.textContent = 'Light mode';
+            }
+        }
+
+        function restoreTheme() {
+            try {
+                const saved = localStorage.getItem('theme') || 'dark';
+                document.documentElement.setAttribute('data-theme', saved);
+                updateThemeButton(saved);
+            } catch (e) {}
+        }
+
         // Initialize the application when page loads
         document.addEventListener('DOMContentLoaded', function () {
             initializeSocket();
             initializeTrajectoryViewer();
             initializeKimWebSocket();
             loadSessions();
+            restoreTheme();
+            restorePanelState();
             updateStatus('Initializing connection...');
 
             // Tab switching event listeners
@@ -2016,7 +2256,7 @@
         function showScriptReviewPrompt() {
             const chatContainer = document.getElementById('chat-container');
             const promptElement = document.createElement('div');
-            promptElement.classList.add('mb-3', 'p-3', 'rounded', 'bg-teal-900', 'border-l-4', 'border-teal-400');
+            promptElement.classList.add('mb-3', 'p-3', 'rounded', 'bg-teal-900', 'border-l-4', 'border-teal-400', 'chat-bubble');
             promptElement.id = 'script-review-prompt';
 
             const lammpsLines = pendingScript ? pendingScript.split('\n').length : 0;
@@ -2029,9 +2269,12 @@
             const ovitoSection = pendingOvitoScript ? `
                 <div class="mt-3">
                     <div class="text-gray-400 text-xs font-semibold mb-1">OVITO Script (${ovitoLines} lines)</div>
-                    <textarea id="editable-ovito-script"
-                        class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y min-h-[320px]"
-                        rows="18" spellcheck="false">${pendingOvitoScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                    <div class="editor-wrap w-full resize-y min-h-[320px]">
+                        <div class="line-gutter"><div class="line-gutter-inner"></div></div>
+                        <textarea id="editable-ovito-script"
+                            class="script-editor w-full"
+                            rows="18" spellcheck="false">${pendingOvitoScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                    </div>
                 </div>` : '';
 
             promptElement.innerHTML = `
@@ -2053,9 +2296,12 @@
                         </div>
                         <div id="script-edit-panel" class="hidden">
                             <div class="text-gray-400 text-xs font-semibold mb-1">LAMMPS Script (${lammpsLines} lines)</div>
-                            <textarea id="editable-lammps-script"
-                                class="w-full p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y min-h-[420px]"
-                                rows="24" spellcheck="false">${pendingScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                            <div class="editor-wrap w-full resize-y min-h-[420px]">
+                                <div class="line-gutter"><div class="line-gutter-inner"></div></div>
+                                <textarea id="editable-lammps-script"
+                                    class="script-editor w-full"
+                                    rows="24" spellcheck="false">${pendingScript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                            </div>
                             ${ovitoSection}
                         </div>
                     </div>
@@ -2064,6 +2310,25 @@
 
             chatContainer.appendChild(promptElement);
             chatContainer.scrollTop = chatContainer.scrollHeight;
+            attachLineNumbers('editable-lammps-script');
+            attachLineNumbers('editable-ovito-script');
+        }
+
+        function attachLineNumbers(textareaId) {
+            const ta = document.getElementById(textareaId);
+            if (!ta) return;
+            const inner = ta.parentElement.querySelector('.line-gutter-inner');
+            if (!inner) return;
+            const update = () => {
+                const lines = (ta.value.match(/\n/g) || []).length + 1;
+                let s = '';
+                for (let i = 1; i <= lines; i++) s += i + '\n';
+                inner.textContent = s;
+            };
+            const sync = () => { inner.style.transform = 'translateY(-' + ta.scrollTop + 'px)'; };
+            ta.addEventListener('input', update);
+            ta.addEventListener('scroll', sync);
+            update();
         }
 
         function toggleScriptEdit(btn) {
@@ -2164,9 +2429,12 @@
                     <span class="mr-2 text-lg">🖥️</span>
                     <div class="flex-1">
                         <strong class="text-white">PBS Script — Review (and edit if needed) before submitting to HPC</strong>
-                        <textarea id="editable-pbs-script"
-                            class="w-full mt-2 p-2 bg-gray-900 text-white text-xs font-mono rounded border border-gray-600 resize-y min-h-[320px]"
-                            rows="18" spellcheck="false">${pbsScript.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+                        <div class="editor-wrap w-full mt-2 resize-y min-h-[320px]">
+                            <div class="line-gutter"><div class="line-gutter-inner"></div></div>
+                            <textarea id="editable-pbs-script"
+                                class="script-editor w-full"
+                                rows="18" spellcheck="false">${pbsScript.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+                        </div>
                         <div class="flex gap-2 mt-3">
                             <button onclick="confirmHPCSubmit('${runFolder.replace(/'/g,"\\'")}')"
                                 class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">
@@ -2181,6 +2449,7 @@
                 </div>`;
             chatContainer.appendChild(card);
             chatContainer.scrollTop = chatContainer.scrollHeight;
+            attachLineNumbers('editable-pbs-script');
         }
 
         async function confirmHPCSubmit(runFolder) {

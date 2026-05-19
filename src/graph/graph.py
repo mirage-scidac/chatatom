@@ -81,7 +81,7 @@ def build_simulation_graph():
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     # check_same_thread=False needed because app uses multiple threads
     conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=DELETE")  # no .wal/.shm files
+    conn.execute("PRAGMA journal_mode=DELETE")  # no .wal/.shm files 
     conn.execute("PRAGMA wal_autocheckpoint=0")  # disable WAL checkpointing
     checkpointer = SqliteSaver(conn)
     return g.compile(checkpointer=checkpointer)

@@ -205,12 +205,12 @@ def intent_node(state: SimulationState) -> dict:
     if state.get("workflow_stage") == "pbs_pending":
         return {}  # routing already handles pbs_pending; don't let classifier overwrite it
 
-    _msg_lower = state["user_message"].strip().lower()
-
-    # Explicit analysis keywords — always route to analyst regardless of hpc_jobs
-    if any(kw in _msg_lower for kw in {"analyze", "analysis", "interpret", "list runs", "show runs"}):
-        print(f"[intent_node] explicit analysis keyword → forcing analyze")
-        return {"intent": "analyze"}
+    # TEMP: short-circuit disabled — testing whether DSPy classify_intent handles
+    # explicit analysis requests correctly on its own. Restore if misrouting returns.
+    # _msg_lower = state["user_message"].strip().lower()
+    # if any(kw in _msg_lower for kw in {"analyze", "analysis", "interpret", "list runs", "show runs"}):
+    #     print(f"[intent_node] explicit analysis keyword → forcing analyze")
+    #     return {"intent": "analyze"}
 
     # NOTE: Removed bare-affirmative HPC shortcut (used to force "yes/ok/sure" → hpc_status
     # when hpc_jobs existed in state). Made obsolete by [Agent]-tagged conversation history
@@ -428,10 +428,9 @@ def generate_ovito_node(state: SimulationState) -> dict:
             _q(state, {"type": "status", "message": f"Generating OVITO script (attempt {attempt}/{max_attempts})..."})
         elif stage == "script_generated":
             script_text = kwargs.get("script", "")
-            viz_msg = f"**Custom Visualization Requested**\n\n**Generated OVITO Script (attempt {attempt}):**\n```python\n{script_text}\n```"
             _q(state, {"type": "agent_start", "agent": "Visualization"})
-            _q(state, {"type": "agent_content", "agent": "Visualization", "content": viz_msg,
-                       "message_type": "visualization", "attempt": attempt})
+            _q(state, {"type": "agent_content", "agent": "Visualization", "content": script_text,
+                       "message_type": "script_trace", "attempt": attempt})
             _q(state, {"type": "agent_complete", "agent": "Visualization"})
         elif stage == "reviewing":
             _q(state, {"type": "status", "message": f"Reviewing OVITO script (attempt {attempt}/{max_attempts})..."})
