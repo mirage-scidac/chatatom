@@ -15,6 +15,13 @@ from openai import OpenAI
 # Keeps sse_queue out of LangGraph state (not serializable by SqliteSaver)
 SESSION_QUEUES: Dict[str, queue.Queue] = {}
 
+# Campaign completion signaling: chat_session_id → threading.Event
+# campaign_executor_node creates the event; CampaignManager sets it when
+# campaign_complete fires; app.py waits on it before closing the SSE stream.
+# Lives here (not in app.py) so worker threads can access it without
+# triggering app.py's top-level dspy.configure() side effects.
+CAMPAIGN_COMPLETION_EVENTS: Dict[str, threading.Event] = {}
+
 import sys
 import os
 import glob
@@ -90,7 +97,13 @@ def chat_node(state: SimulationState) -> dict:
     """
     _q(state, {"type": "agent_start", "agent": "Orchestrator"})
 
-    messages = [{"role": "system", "content": _build_orchestrator_prompt()}]
+    # Pass session_id + user_message + history so the orchestrator prompt can
+    # inject the campaign addendum when in campaign context.
+    messages = [{"role": "system", "content": _build_orchestrator_prompt(
+        session_id=state.get("session_id"),
+        user_message=state.get("user_message", ""),
+        conversation_history=state.get("conversation_history"),
+    )}]
 
     trimmed = state.get("conversation_history", [])[-(config.MAX_CONVERSATION_TURNS * 2):]
     for msg in trimmed:
@@ -195,7 +208,124 @@ def chat_node(state: SimulationState) -> dict:
     analysis = "".join(response_chunks)
     _q(state, {"type": "agent_complete", "agent": "Orchestrator"})
     print(f"[chat_node] response length={len(analysis)}  registry_fetched={'yes' if registry_context else 'no'}")
-    return {"analysis": analysis, "registry_context": registry_context}
+
+    # ── Campaign mode: parse CAMPAIGN PARAMETERS: block (if present) ────────
+    # If the orchestrator emitted a structured CAMPAIGN PARAMETERS: block,
+    # extract n_iterations/bounds/target and persist to state. These survive
+    # in the SqliteSaver checkpoint so the next turn (user says "yes") can
+    # be classified as campaign_start and campaign_executor can read them.
+    campaign_fields = _parse_campaign_parameters_block(analysis)
+
+    result = {"analysis": analysis, "registry_context": registry_context}
+    if campaign_fields:
+        # Remember the original user message that started this campaign setup,
+        # so iteration 1's synthesized prompt is the user's natural language.
+        if "campaign_original_message" not in campaign_fields:
+            # Walk backwards through history to find the FIRST user msg that
+            # mentioned "campaign" (most reliable indicator)
+            from benchmark.campaign_prompts import CAMPAIGN_TRIGGER_PHRASES
+            history = state.get("conversation_history") or []
+            for msg in history:
+                if msg.get("role") == "user":
+                    content_lower = (msg.get("content") or "").lower()
+                    if any(p in content_lower for p in CAMPAIGN_TRIGGER_PHRASES):
+                        campaign_fields["campaign_original_message"] = msg["content"]
+                        break
+            # Fallback: current user message
+            if "campaign_original_message" not in campaign_fields:
+                cur = state.get("user_message", "")
+                cur_lower = cur.lower()
+                if any(p in cur_lower for p in CAMPAIGN_TRIGGER_PHRASES):
+                    campaign_fields["campaign_original_message"] = cur
+
+        result.update(campaign_fields)
+        print(f"[chat_node] parsed CAMPAIGN PARAMETERS block: "
+              f"n_iter={campaign_fields.get('campaign_n_iterations')}, "
+              f"target={campaign_fields.get('campaign_target')}")
+
+    return result
+
+
+def _parse_campaign_parameters_block(text: str) -> dict:
+    """Extract campaign settings from the orchestrator's CAMPAIGN PARAMETERS: block.
+
+    Looks for a block of the form:
+        CAMPAIGN PARAMETERS:
+        n_iterations: 20
+        strain_rate_range: [1e-3, 2e-2]
+        temperature_range: [100, 600]
+        crack_length_frac_range: [0.1, 0.6]
+        crack_width_a0_range: [2, 8]
+        target: minimize delta_a
+
+    Returns a dict with keys campaign_n_iterations, campaign_target,
+    campaign_bounds (only the keys actually present). Empty dict if the
+    block is not found.
+    """
+    import re
+
+    if "CAMPAIGN PARAMETERS:" not in text:
+        return {}
+
+    # Take just the block (until blank line or end of text)
+    block_start = text.index("CAMPAIGN PARAMETERS:")
+    block = text[block_start:]
+    # Stop at the first double-newline after the header (end of block)
+    end_match = re.search(r"\n\s*\n", block)
+    if end_match:
+        block = block[:end_match.start()]
+
+    fields: dict = {}
+
+    # n_iterations: 20
+    m = re.search(r"n_iterations\s*:\s*(\d+)", block)
+    if m:
+        fields["campaign_n_iterations"] = int(m.group(1))
+
+    # target: minimize delta_a
+    m = re.search(r"target\s*:\s*(.+?)(?:\n|$)", block)
+    if m:
+        fields["campaign_target"] = m.group(1).strip()
+
+    # Knob ranges: e.g., "strain_rate_range: [1e-3, 2e-2]"
+    bounds = {}
+    for knob in ("strain_rate", "temperature", "crack_length_frac", "crack_width_a0"):
+        m = re.search(
+            rf"{knob}_range\s*:\s*\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*\]",
+            block,
+        )
+        if m:
+            bounds[knob] = [float(m.group(1)), float(m.group(2))]
+    if bounds:
+        fields["campaign_bounds"] = bounds
+
+    # Locked template fields — extract whichever ones the agent emitted.
+    # Stored as a string dict so the iteration prompts can include them verbatim.
+    template: dict = {}
+
+    # Dynamically discover any phase_<N> keys in the block (phase_1, phase_2,
+    # ..., phase_5, phase_10, etc.). Sort numerically so phase_10 comes after
+    # phase_2, not before. Handles bullets, dashes, varying whitespace.
+    phase_keys = sorted(
+        set(re.findall(r"^[\s\-•*]*(phase_\d+)\s*[:=]", block, re.MULTILINE | re.IGNORECASE)),
+        key=lambda k: int(k.split("_")[1]),
+    )
+
+    template_keys = [
+        "material", "system_size", "kim_model", "timestep_ps",
+        *phase_keys,                                   # dynamically discovered
+        "dump_freq_steps", "cna_cutoff_a",
+        "ovito_colors", "camera",
+    ]
+
+    for template_key in template_keys:
+        m = re.search(rf"{template_key}\s*:\s*(.+?)(?:\n|$)", block, re.IGNORECASE)
+        if m:
+            template[template_key] = m.group(1).strip()
+    if template:
+        fields["campaign_template"] = template
+
+    return fields
 
 
 # ─── Node 2: intent ───────────────────────────────────────────────────────────
@@ -220,6 +350,22 @@ def intent_node(state: SimulationState) -> dict:
     orchestrator = SmartOrchestrator()
     result = orchestrator.classify_intent(state["user_message"], state["workflow_stage"], state.get("conversation_history", []))
     print(f"[intent_node] intent={result['intent']}  confidence={result['confidence']}")
+
+    # Hard guard: campaign_start MUST have a CAMPAIGN PARAMETERS block visible
+    # in conversation_history (LLM classifier sometimes ignores this rule).
+    # Without the block, campaign_n_iterations isn't set and the campaign would
+    # launch with default values. Demote to chat_agent so Phase 2 can fire.
+    if result["intent"] == "campaign_start":
+        history = state.get("conversation_history") or []
+        block_seen = False
+        for msg in reversed(history):
+            if msg.get("role") == "assistant" and "CAMPAIGN PARAMETERS:" in (msg.get("content") or ""):
+                block_seen = True
+                break
+        if not block_seen:
+            print("[intent_node] WARNING: campaign_start without CAMPAIGN PARAMETERS block in history — demoting to chat_agent so Phase 2 can fire")
+            return {"intent": "modify"}  # routes to chat_agent
+
     if result["intent"] == "execute_hpc":
         return {"intent": "execute_hpc", "execution_target": "hpc", "workflow_stage": "script_ready"}
     return {"intent": result["intent"]}
@@ -229,6 +375,17 @@ def intent_node(state: SimulationState) -> dict:
 
 def extract_params_node(state: SimulationState) -> dict:
     _q(state, {"type": "status", "message": "Extracting parameters..."})
+
+    # ── Campaign setup short-circuit ────────────────────────────────────────
+    # If chat_node just emitted a CAMPAIGN PARAMETERS: block, this is a
+    # campaign-mode SETUP turn (not a simulation request). Skip extraction
+    # entirely so we don't trigger generate_lammps + scripts_ready_for_review
+    # — the script-approval card during setup confused users into accidentally
+    # spawning a standalone (non-campaign) simulation outside the campaign folder.
+    analysis = state.get("analysis") or ""
+    if "CAMPAIGN PARAMETERS:" in analysis:
+        print("[extract_params] skipping — chat response is a CAMPAIGN PARAMETERS block (setup turn)")
+        return {"has_parameters": False}
 
     print(f"[extract_params] analysis text: {state['analysis']}")
     orchestrator = SmartOrchestrator()
@@ -726,4 +883,138 @@ def analyze_results_node(state: SimulationState) -> dict:
 
     _q(state, {"type": "agent_complete", "agent": "Analyst"})
     print("[analyze_results] done")
+    return {}
+
+
+# ── Node: campaign_executor — launches background CampaignManager ────────────
+
+def campaign_executor_node(state: SimulationState) -> dict:
+    """Launcher node: spawns CampaignManager.run() in a daemon thread
+    and returns immediately. The actual N-iteration loop runs asynchronously
+    in the background, streaming SSE events through SESSION_QUEUES.
+    """
+    from datetime import datetime
+    from benchmark.campaign import CampaignManager
+
+    # Pull campaign params from checkpoint state (set by chat_node during setup)
+    n_iter = state.get("campaign_n_iterations")
+    target = state.get("campaign_target") or "minimize delta_a"
+    original_msg = state.get("campaign_original_message")
+    template = state.get("campaign_template") or {}
+    bounds = state.get("campaign_bounds") or {}
+
+    # Fallback: try to extract n_iter from conversation history if not in state.
+    # Looks for patterns like "with 2 iterations", "5 iterations", "10 iter"
+    # in past user messages (most recent first).
+    if not n_iter:
+        import re
+        history = state.get("conversation_history") or []
+        for msg in reversed(history):
+            if msg.get("role") == "user":
+                m = re.search(r"\b(\d+)\s*iter", (msg.get("content") or ""), re.IGNORECASE)
+                if m:
+                    n_iter = int(m.group(1))
+                    print(f"[campaign_executor] extracted n_iter={n_iter} from user history (fallback)")
+                    break
+    if not n_iter:
+        n_iter = 20
+        print(f"[campaign_executor] defaulting n_iter=20 (no value in state or history)")
+
+    # Fallback: walk conversation_history to find the user msg that triggered the campaign
+    if not original_msg:
+        for msg in state.get("conversation_history", []) or []:
+            if msg.get("role") == "user":
+                content = (msg.get("content") or "").lower()
+                if any(p in content for p in (
+                    "run a campaign", "benchmark campaign", "closed-loop campaign",
+                    "autonomous campaign", "start a campaign", "begin a campaign",
+                )):
+                    original_msg = msg["content"]
+                    break
+    if not original_msg:
+        original_msg = state.get("user_message", "")
+
+    # Create a dedicated campaign_id (also serves as LangGraph thread_id for iterations)
+    campaign_id = f"benchmark_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+
+    # Dual-emit: forward ALL events to BOTH the campaign queue and the user's
+    # chat session queue (so the open browser SSE connection sees live progress
+    # — including agent_content from chat_node, generate_lammps progress,
+    # trajectory_frame, etc., not just the high-level campaign_* events).
+    chat_sid = state.get("session_id")
+    chat_q = SESSION_QUEUES.get(chat_sid) if chat_sid else None
+    campaign_q = queue.Queue()
+
+    # Completion signal: app.py waits on this Event to keep the SSE open until
+    # campaign_complete fires. Without this, the SSE closes when graph returns.
+    completion_event = threading.Event()
+    if chat_sid:
+        CAMPAIGN_COMPLETION_EVENTS[chat_sid] = completion_event
+
+    class _DualQueue:
+        """Tee: putting an event onto this queue mirrors it to both queues.
+        Also sets the completion_event when a campaign_complete event flows by."""
+        def __init__(self, primary, secondary, completion_event):
+            self.primary = primary
+            self.secondary = secondary
+            self.completion_event = completion_event
+            self._tee_count = 0
+
+        def put(self, item, *args, **kwargs):
+            try:
+                self.primary.put(item)
+            except Exception as e:
+                print(f"[DualQueue] primary.put FAILED: {e}")
+            if self.secondary is not None and self.secondary is not self.primary:
+                try:
+                    self.secondary.put(item)
+                    self._tee_count += 1
+                    # Log first few tee operations + every 50th, so we can confirm events flow
+                    if self._tee_count <= 5 or self._tee_count % 50 == 0:
+                        evt_type = item.get("type") if isinstance(item, dict) else "?"
+                        print(f"[DualQueue] teed #{self._tee_count} type={evt_type} to chat queue")
+                except Exception as e:
+                    print(f"[DualQueue] secondary.put FAILED: {e}")
+            else:
+                if isinstance(item, dict):
+                    evt_type = item.get("type")
+                    if evt_type and evt_type.startswith("campaign_"):
+                        print(f"[DualQueue] WARNING: no secondary queue; campaign event '{evt_type}' won't reach chat browser")
+            # Signal completion AFTER queues have been written so SSE generator
+            # has a chance to drain the campaign_complete event.
+            if isinstance(item, dict) and item.get("type") == "campaign_complete":
+                self.completion_event.set()
+
+    dual_q = _DualQueue(campaign_q, chat_q, completion_event)
+
+    # CRITICAL: register dual_q (NOT plain campaign_q) under campaign_id, so
+    # graph nodes that fire inside iterations (using session_id=campaign_id)
+    # also tee their events to the user's chat queue. Otherwise chat_node's
+    # agent_content, generate_lammps progress, etc. would only land on
+    # SESSION_QUEUES[campaign_id] which nobody is draining.
+    SESSION_QUEUES[campaign_id] = dual_q
+
+    manager = CampaignManager(
+        campaign_id=campaign_id,
+        n_iterations=n_iter,
+        original_user_message=original_msg,
+        sse_q=dual_q,
+        num_cores=config.LAMMPS_CORES,
+        target=target,
+        template=template,
+        bounds=bounds,
+    )
+
+    t = threading.Thread(target=manager.run, daemon=True)
+    t.start()
+
+    _q(state, {
+        "type": "campaign_started",
+        "campaign_id": campaign_id,
+        "n_iterations": n_iter,
+        "target": target,
+    })
+    print(f"[campaign_executor] spawned campaign thread: {campaign_id}, "
+          f"n_iter={n_iter}, target={target}")
+
     return {}

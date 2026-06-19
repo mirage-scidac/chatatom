@@ -23,6 +23,7 @@ from graph.nodes import (
     detect_viz_node,
     generate_ovito_node,
     analyze_results_node,
+    campaign_executor_node,
 )
 from graph.hpc_executor_node import hpc_executor_node
 from graph.routing import (
@@ -37,14 +38,15 @@ def build_simulation_graph():
     g = StateGraph(SimulationState)
 
     # ── Register nodes ────────────────────────────────────────────────────────
-    g.add_node("chat_agent",       chat_node)
-    g.add_node("classify_intent",  intent_node)
-    g.add_node("extract_params",   extract_params_node)
-    g.add_node("generate_lammps",  generate_lammps_node)
-    g.add_node("detect_viz",       detect_viz_node)
-    g.add_node("generate_ovito",   generate_ovito_node)
-    g.add_node("analyze_results",  analyze_results_node)
-    g.add_node("hpc_executor",     hpc_executor_node)
+    g.add_node("chat_agent",         chat_node)
+    g.add_node("classify_intent",    intent_node)
+    g.add_node("extract_params",     extract_params_node)
+    g.add_node("generate_lammps",    generate_lammps_node)
+    g.add_node("detect_viz",         detect_viz_node)
+    g.add_node("generate_ovito",     generate_ovito_node)
+    g.add_node("analyze_results",    analyze_results_node)
+    g.add_node("hpc_executor",       hpc_executor_node)
+    g.add_node("campaign_executor",  campaign_executor_node)
 
     # ── Wire edges ────────────────────────────────────────────────────────────
     g.add_edge(START, "classify_intent")
@@ -52,7 +54,8 @@ def build_simulation_graph():
     g.add_conditional_edges(
         "classify_intent", route_after_intent,
         {"chat_agent": "chat_agent", "analyze_results": "analyze_results",
-         "hpc_executor": "hpc_executor", END: END}
+         "hpc_executor": "hpc_executor",
+         "campaign_executor": "campaign_executor", END: END}
     )
 
     g.add_edge("chat_agent", "extract_params")
@@ -76,6 +79,7 @@ def build_simulation_graph():
 
     g.add_edge("generate_ovito", END)
     g.add_edge("hpc_executor", END)
+    g.add_edge("campaign_executor", END)
 
     db_path = getattr(config, "SESSION_DB_PATH", "data/sessions.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)

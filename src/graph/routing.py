@@ -16,6 +16,7 @@ def route_after_intent(state: SimulationState) -> str:
     - hpc_status                    → hpc_executor (status query)
     - execute + script_ready        → END (app.py fires local executor directly)
     - analyze                       → analyze_results (skip chat entirely)
+    - campaign_start                → campaign_executor (launch background loop)
     - everything else               → chat_agent
     """
     intent = state.get("intent", "question")
@@ -34,6 +35,8 @@ def route_after_intent(state: SimulationState) -> str:
         return END
     if intent == "analyze":
         return "analyze_results"
+    if intent == "campaign_start":
+        return "campaign_executor"
     return "chat_agent"
 
 

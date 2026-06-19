@@ -629,7 +629,8 @@ def rendering_worker(frame_queue: Queue, ovito_script: Optional[str],
 
 def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, Any]] = None,
                           data_callback: Optional[Callable] = None,
-                          num_cores: Optional[int] = None) -> Tuple[Dict[str, str], List[Dict[str, Any]], List[Dict]]:
+                          num_cores: Optional[int] = None,
+                          parent_dir: Optional[str] = None) -> Tuple[Dict[str, str], List[Dict[str, Any]], List[Dict]]:
     """
     Execute MPI-based LAMMPS simulation with real-time streaming and async rendering.
     
@@ -663,8 +664,8 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
                 break
         script_string = '\n'.join(lines)
 
-    # Create run folder
-    run_folder = run_manager.create_run_folder()
+    # Create run folder (nested under parent_dir if provided, e.g., a campaign folder)
+    run_folder = run_manager.create_run_folder(parent_dir=parent_dir)
     print(f"Created run folder: {run_folder}")
     
     # Save script and metadata

@@ -11,24 +11,31 @@ from typing import Optional
 RUNS_BASE_DIR = "runs"
 
 
-def create_run_folder() -> str:
+def create_run_folder(parent_dir: Optional[str] = None) -> str:
     """
     Create a timestamped run folder for organizing simulation outputs.
-    
+
+    Args:
+        parent_dir: Optional parent directory. If provided, the run folder is
+                    created inside it (e.g., a campaign folder). Defaults to
+                    RUNS_BASE_DIR for normal (non-campaign) simulations.
+
     Returns:
         str: Absolute path to the created run folder
     """
-    # Ensure base runs directory exists
-    os.makedirs(RUNS_BASE_DIR, exist_ok=True)
-    
+    base = parent_dir or RUNS_BASE_DIR
+
+    # Ensure base directory exists
+    os.makedirs(base, exist_ok=True)
+
     # Create timestamped folder name
     timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
     run_folder_name = f"run_{timestamp}"
-    run_folder_path = os.path.join(RUNS_BASE_DIR, run_folder_name)
-    
+    run_folder_path = os.path.join(base, run_folder_name)
+
     # Create the run folder
     os.makedirs(run_folder_path, exist_ok=True)
-    
+
     # Return absolute path
     return os.path.abspath(run_folder_path)
 

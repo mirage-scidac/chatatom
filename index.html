@@ -1416,6 +1416,81 @@
         let playbackInterval = null;
         let playbackSpeed = 1;
 
+        // ── Campaign mode state ─────────────────────────────────────────────
+        // activeCampaign = { id, total, target, completed, bestSoFar, iterations: [...] }
+        let activeCampaign = null;
+
+        function formatDelta(d) {
+            if (d === null || d === undefined || Number.isNaN(d)) return 'n/a';
+            const v = Number(d);
+            return (v >= 0 ? '+' : '') + v.toFixed(2);
+        }
+
+        function showCampaignBanner() {
+            // Lazily create the banner DOM if not present
+            let banner = document.getElementById('campaign-banner');
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.id = 'campaign-banner';
+                banner.className = 'sticky top-0 z-30 mb-2 px-3 py-2 rounded bg-purple-900/80 border border-purple-500 text-purple-100 text-sm font-mono';
+                const chatContainer = document.getElementById('chat-container');
+                if (chatContainer && chatContainer.parentNode) {
+                    chatContainer.parentNode.insertBefore(banner, chatContainer);
+                }
+            }
+            banner.classList.remove('hidden');
+            if (activeCampaign) {
+                banner.innerHTML = `<span class="font-bold">🎯 Campaign ${activeCampaign.id}</span> &nbsp;|&nbsp; ` +
+                                   `0/${activeCampaign.total} iterations &nbsp;|&nbsp; target: ${activeCampaign.target}`;
+            }
+        }
+
+        function updateCampaignBanner(statusLine) {
+            const banner = document.getElementById('campaign-banner');
+            if (!banner || !activeCampaign) return;
+            banner.innerHTML = `<span class="font-bold">🎯 ${activeCampaign.id}</span> &nbsp;|&nbsp; ` +
+                               `${activeCampaign.completed}/${activeCampaign.total} done &nbsp;|&nbsp; ` +
+                               `${statusLine}`;
+        }
+
+        function updateCampaignProgressTable() {
+            // Build/refresh a small collapsible table of iteration results below the banner
+            let tableWrap = document.getElementById('campaign-progress-wrap');
+            if (!tableWrap) {
+                tableWrap = document.createElement('details');
+                tableWrap.id = 'campaign-progress-wrap';
+                tableWrap.className = 'mb-2 px-3 py-2 rounded bg-zinc-900/70 border border-zinc-700 text-xs font-mono text-zinc-200';
+                tableWrap.open = true;
+                tableWrap.innerHTML = '<summary class="cursor-pointer text-zinc-300 mb-1">📊 Campaign progress</summary><div id="campaign-progress-body"></div>';
+                const banner = document.getElementById('campaign-banner');
+                if (banner && banner.parentNode) {
+                    banner.parentNode.insertBefore(tableWrap, banner.nextSibling);
+                }
+            }
+            const body = document.getElementById('campaign-progress-body');
+            if (!body || !activeCampaign) return;
+
+            const rows = activeCampaign.iterations.map(it => {
+                if (it.failed) {
+                    return `<tr class="text-red-400"><td class="pr-3">${it.iteration}</td><td colspan="3">FAILED: ${it.reason || 'unknown'}</td></tr>`;
+                }
+                const isBest = activeCampaign.bestSoFar !== null && it.delta_a === activeCampaign.bestSoFar;
+                const rowCls = isBest ? 'text-green-300 font-bold' : '';
+                return `<tr class="${rowCls}"><td class="pr-3">${it.iteration}</td>` +
+                       `<td class="pr-3">${it.params_text || '-'}</td>` +
+                       `<td class="pr-3">${formatDelta(it.delta_a)}</td>` +
+                       `<td class="pr-3">${formatDelta(it.best_so_far)}</td></tr>`;
+            }).join('');
+
+            body.innerHTML =
+                '<table class="w-full"><thead><tr class="text-zinc-400 border-b border-zinc-700">' +
+                '<th class="text-left pr-3">Iter</th>' +
+                '<th class="text-left pr-3">Params</th>' +
+                '<th class="text-left pr-3">Δa (Å)</th>' +
+                '<th class="text-left pr-3">Best (Å)</th>' +
+                '</tr></thead><tbody>' + rows + '</tbody></table>';
+        }
+
         // 3D Trajectory Viewer Functions
         function initializeTrajectoryViewer() {
             const playPauseBtn = document.getElementById('play-pause-btn');
@@ -2870,6 +2945,23 @@
                     }
                     break;
 
+                // ── Live simulation events forwarded via SSE (used by campaign mode)
+                // Standalone simulations get these via Socket.IO; in campaign mode
+                // CampaignManager passes the data via the SSE dual_q since it calls
+                // run_lammps_simulation() directly (no Socket.IO handshake).
+                case 'thermo_data_point':
+                    streamingData.push(data);
+                    updateStreamingPlots(data);
+                    break;
+
+                case 'trajectory_frame':
+                    handleTrajectoryFrame(data);
+                    break;
+
+                case 'trajectory_complete':
+                    handleTrajectoryComplete(data);
+                    break;
+
                 case 'load_trajectory':
                     trajectoryFrames = [];
                     currentFrameIndex = 0;
@@ -2942,6 +3034,131 @@
                         refreshSessions();
                     }
                     isStreaming = false;
+                    break;
+
+                // ── Campaign mode (autonomous benchmarking) ─────────────────
+                case 'campaign_started':
+                    activeCampaign = {
+                        id: data.campaign_id,
+                        total: data.n_iterations,
+                        target: data.target || 'minimize delta_a',
+                        completed: 0,
+                        bestSoFar: null,
+                        iterations: [],
+                    };
+                    showCampaignBanner();
+                    updateStatus(`Campaign started: ${data.campaign_id} (${data.n_iterations} iterations)`);
+                    addConversationMessage(
+                        'System',
+                        `🚀 Campaign **${data.campaign_id}** launched — ${data.n_iterations} iterations targeting *${activeCampaign.target}*.`,
+                        'info'
+                    );
+                    break;
+
+                case 'campaign_iteration_start':
+                    if (activeCampaign) {
+                        updateCampaignBanner(`Iteration ${data.iteration}/${activeCampaign.total} running...`);
+                    }
+                    // Each iteration gets a fresh viz + thermo view
+                    trajectoryFrames = [];
+                    currentFrameIndex = 0;
+                    isPlaying = false;
+                    if (playbackInterval) {
+                        clearInterval(playbackInterval);
+                        playbackInterval = null;
+                    }
+                    hideTrajectoryViewer();
+                    clearPlots();
+
+                    // CRITICAL — fresh bubble keys + enable streaming-plot updates:
+                    //   1) streamingSessionId++ → each iteration's agent_content
+                    //      (Orchestrator hypothesis, Generator script, Reviewer)
+                    //      gets a NEW chat bubble instead of appending to the
+                    //      stale bubble from the user's "yes" turn.
+                    //   2) isStreamingSimulation=true → updateStreamingPlots()
+                    //      otherwise early-returns (it's gated on the Socket.IO
+                    //      simulation_started flag which we never emit).
+                    //   3) reset streamingData/streamingGroups so plot init runs
+                    //      fresh on the first thermo_data_point of this iter.
+                    streamingSessionId++;
+                    isStreamingSimulation = true;
+                    streamingData = [];
+                    streamingGroups = [];
+                    currentAgentMessages = {};
+
+                    addConversationMessage(
+                        'System',
+                        `▶️ Iteration ${data.iteration}/${data.total || '?'} starting...`,
+                        'info'
+                    );
+                    break;
+
+                case 'campaign_iteration_complete':
+                    if (activeCampaign) {
+                        activeCampaign.completed += 1;
+                        if (data.best_so_far !== null && data.best_so_far !== undefined) {
+                            activeCampaign.bestSoFar = data.best_so_far;
+                        }
+                        activeCampaign.iterations.push({
+                            iteration: data.iteration,
+                            params_text: data.params_text,
+                            delta_a: data.delta_a,
+                            best_so_far: data.best_so_far,
+                            run_folder: data.run_folder,
+                        });
+                        updateCampaignBanner(
+                            `Iteration ${data.iteration}/${activeCampaign.total} done — Δa=${formatDelta(data.delta_a)} Å` +
+                            (activeCampaign.bestSoFar !== null
+                                ? ` | best=${formatDelta(activeCampaign.bestSoFar)} Å`
+                                : '')
+                        );
+                        updateCampaignProgressTable();
+                    }
+                    addConversationMessage(
+                        'System',
+                        `✅ Iteration ${data.iteration} complete: ${data.params_text || ''} → **Δa=${formatDelta(data.delta_a)} Å**` +
+                        (data.wall_clock_s ? ` _(${data.wall_clock_s}s)_` : ''),
+                        'info'
+                    );
+                    break;
+
+                case 'campaign_iteration_failed':
+                    if (activeCampaign) {
+                        activeCampaign.completed += 1;
+                        activeCampaign.iterations.push({
+                            iteration: data.iteration,
+                            failed: true,
+                            reason: data.reason,
+                        });
+                        updateCampaignBanner(
+                            `Iteration ${data.iteration}/${activeCampaign.total} failed (${data.reason || 'unknown'})`
+                        );
+                        updateCampaignProgressTable();
+                    }
+                    addConversationMessage(
+                        'System',
+                        `❌ Iteration ${data.iteration} failed: ${data.reason || 'unknown reason'}`,
+                        'info'
+                    );
+                    break;
+
+                case 'campaign_complete':
+                    if (activeCampaign) {
+                        const bestStr = activeCampaign.bestSoFar !== null
+                            ? `${formatDelta(activeCampaign.bestSoFar)} Å`
+                            : 'n/a';
+                        updateCampaignBanner(
+                            `✅ Campaign complete — best Δa=${bestStr} across ${activeCampaign.completed} iterations`
+                        );
+                    }
+                    updateStatus('Campaign complete');
+                    addConversationMessage(
+                        'System',
+                        `🎉 Campaign **${data.campaign_id}** finished. Best Δa: **${activeCampaign && activeCampaign.bestSoFar !== null ? formatDelta(activeCampaign.bestSoFar) : 'n/a'} Å**.\n\n` +
+                        `📂 Log: \`${data.log_path || 'runs/' + data.campaign_id + '/campaign_log.md'}\`\n` +
+                        `📊 Summary: \`${data.summary_path || 'runs/' + data.campaign_id + '/summary.json'}\``,
+                        'info'
+                    );
                     break;
 
                 case 'run_list':

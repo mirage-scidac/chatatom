@@ -7,7 +7,7 @@ making them easier to maintain, version, and test independently.
 It also contains DSPy signatures for the agentic workflow.
 """
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 import config
 import dspy
 
@@ -192,6 +192,18 @@ class ClassifyUserIntent(dspy.Signature):
         (b) Asking follow-up questions about THIS run's thermodynamic data: "why did temperature fluctuate?", "tell me more about the pressure", "was the system equilibrated?", "explain the energy convergence", "what does the data show?", "tell me more"
         (c) Listing/browsing runs: "list my runs", "show recent runs", "show all runs"
         IMPORTANT: prefer 'analyze' over 'question' whenever the message references temperature, pressure, energy, equilibration, convergence, or simulation results — even if phrased as a question.
+    - 'campaign_start': User has CONFIRMED launching a previously-discussed benchmark campaign.
+        STRICT TRIGGER: ALL THREE conditions must hold —
+        (1) The MOST RECENT assistant message contains a 'CAMPAIGN PARAMETERS:' block
+            (literal substring, case-sensitive), AND
+        (2) The user's current message is a clear confirmation: 'yes', 'go ahead',
+            'start', 'confirm', 'run it', 'proceed', 'looks good', 'sounds good',
+            'launch', AND
+        (3) The user does NOT request any modification (e.g., "yes but change temperature
+            to 400" is 'modify', not 'campaign_start').
+        If condition (1) fails (no CAMPAIGN PARAMETERS: block in last assistant msg),
+        do NOT use 'campaign_start' — use 'execute' or 'modify' as appropriate.
+        Mirrors the existing 'execute' confirmation rule but specifically for campaigns.
 
     MULTI-TURN AGENT CONVERSATIONS — CRITICAL:
     Each ASSISTANT message in conversation_history is tagged with the agent that produced it,
@@ -237,11 +249,12 @@ class ClassifyUserIntent(dspy.Signature):
     workflow_stage: str = dspy.InputField(desc="Current workflow stage: 'initial', 'parameters_proposed', or 'script_ready'")
     conversation_history: str = dspy.InputField(desc="Recent conversation history as a formatted string. Use this to understand context — e.g. if the last assistant message was an analysis of simulation results, follow-up questions about that data should be classified as 'analyze'.")
 
-    intent: Literal['execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status'] = dspy.OutputField(
-        desc="Exactly one of: 'execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status'. "
+    intent: Literal['execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status', 'campaign_start'] = dspy.OutputField(
+        desc="Exactly one of: 'execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status', 'campaign_start'. "
              "Use 'execute_hpc' when user explicitly wants to run on HPC: 'run on HPC', 'use hpc agent', 'submit to swing', 'run on cluster'. "
              "Use 'analyze' for results analysis, follow-up questions about simulation data (temperature, pressure, energy, equilibration), or listing runs. "
              "Use 'hpc_status' when user asks about HPC job status OR wants to transfer/download HPC results: 'what happened to my job', 'is my simulation done', 'check HPC job', 'status of my run on HPC', 'transfer results', 'download results', 'yes transfer', 'yes please transfer', 'bring results back'. "
+             "Use 'campaign_start' ONLY when the most recent assistant message contains 'CAMPAIGN PARAMETERS:' AND the user replies with a clean confirmation ('yes', 'go ahead', 'start', 'confirm', 'proceed', 'launch') with NO modification request. If user requests changes, use 'modify' instead. "
              "Use 'question' ONLY for general MD theory unrelated to a specific run's output."
     )
     confidence: float = dspy.OutputField(desc="Confidence score 0.0-1.0")
@@ -404,6 +417,10 @@ color compatibility:
   import numpy as np
   cna_values = data.particles['Structure Type'][...]
   structure_type = np.where(cna_values >= 5, 0, cna_values)
+  # WRITE BACK with create_property (NOT [...] which fails for auto-imported properties):
+  data.particles_.create_property('Structure Type', data=structure_type)
+  # WRONG (raises in some OVITO versions, breaks coloring silently):
+  # data.particles_['Structure Type'][...] = structure_type
 
 Without this remapping, OVITO will treat LAMMPS value 5 (unknown) as an
 unrecognized type, and filters like 'StructureType == 0' will not match.
@@ -640,9 +657,27 @@ dump_filename_pattern as 'dump.*.*' so the monitor finds files from all phases.
 # IMPORTANT: Use ≈ (not ~) for approximations to avoid markdown rendering issues. Do NOT use ~~strikethrough~~ formatting."""
 
 
-def _build_orchestrator_prompt() -> str:
+def _build_orchestrator_prompt(
+    session_id: Optional[str] = None,
+    user_message: str = "",
+    conversation_history: Optional[List[Dict]] = None,
+) -> str:
+    """Build the orchestrator's system prompt.
+
+    Args:
+        session_id: Current session ID. If it starts with "benchmark_",
+                    campaign mode is active and the addendum is appended.
+        user_message: Current user message. Phrase-matched against campaign
+                      trigger phrases to detect setup conversations.
+        conversation_history: Recent conversation. Checked for prior
+                              CAMPAIGN PARAMETERS: block or trigger phrases.
+
+    All three arguments are optional — when omitted (e.g., from tests or
+    legacy callers), the function behaves identically to the pre-campaign
+    version.
+    """
     max_frames = getattr(config, 'MAX_TRAJECTORY_FRAMES', 50)
-    return """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
+    base_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
 
 PHASE 1 - ANALYSIS AND PROPOSAL:
 When analyzing an initial user request, your role is to:
@@ -786,13 +821,13 @@ Required parameters to extract for crack simulations:
 - Material/Element (e.g., Cu, Al, Fe)
 - Temperature (default: 300 K)
 - Pre-stress pressure targets (default: 1.0 bar in x and y)
-- Crack geometry: length fraction (default: 0.3 of box), width (default: 4 lattice parameters)
+- Crack geometry: length fraction (default: 0.3 of L_y), width (default: 4 lattice parameters in x)
 - System size: minimum 20x20x5 unit cells (crack simulations need large boxes)
 
 Additional parameters for fatigue:
 - Strain amplitude (default: 0.25%)
 - Loading period (default: 100 ps)
-- Loading direction (default: x)
+- Loading direction: normal to the crack plane (Mode I tensile opening) — for the default crack geometry, this is x
 - Number of cycles or total cycling duration
 
 Crack simulation multi-phase description template:
@@ -863,6 +898,10 @@ If visualization preferences are detected, add a section:
 
 IMPORTANT: Always include the FRAME SAMPLING STRATEGY section in your Phase 2 output. This is critical for the visualization pipeline to know which frames to render during the simulation.
 
+NOTE: When greeting the user, you can also run closed-loop campaigns where you iterate over a parameter
+space (e.g., strain rate, temperature, crack geometry) across multiple
+LAMMPS runs to optimize a target metric such as crack growth Δa.
+
 ANALYSIS AND RUN-LISTING REQUESTS — CRITICAL:
 If the user asks to analyze thermodynamic data, read simulation logs, interpret numerical results, list runs, show recent runs, or browse past simulation data, respond with ONE short sentence only (e.g. "Sure, pulling up your recent runs." or "Looking at your simulation results now."). Do NOT say you cannot do it. Do NOT explain your limitations. A dedicated analysis agent handles these requests automatically after you respond.
 
@@ -870,6 +909,21 @@ RECAP AND HISTORY QUESTIONS:
 If the user asks "what did you just do?", "what was the simulation?", "what material did we use?", "what happened?" or any question answerable from the current conversation — answer it directly and completely from the conversation history. Do NOT defer these to the analysis agent.
 
 Be helpful, educational, and conversational in your responses.""".replace('{max_frames}', str(max_frames))
+
+    # ── Campaign mode: append addendum if in campaign context ─────────────────
+    # Imported lazily to avoid circular imports at module-load time.
+    try:
+        from benchmark.campaign_prompts import (
+            is_campaign_context,
+            get_campaign_system_prompt_addendum,
+        )
+        if is_campaign_context(session_id, user_message, conversation_history):
+            base_prompt = base_prompt + "\n\n" + get_campaign_system_prompt_addendum()
+    except ImportError:
+        # benchmark package not available — silently skip (fresh-sim behavior)
+        pass
+
+    return base_prompt
 
 
 ANALYST_SYSTEM_PROMPT = """You are a LAMMPS molecular dynamics simulation results expert.

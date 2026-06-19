@@ -53,6 +53,14 @@ class SimulationState(TypedDict):
     hpc_jobs: Optional[List[Dict]]        # [{globus_task_id, hpc_run_folder, submitted_at, description}]
     hpc_run_folder_pending: Optional[str] # temp: local run_folder between Phase 1 (preview) and Phase 2 (submit)
 
+    # ── Campaign mode (benchmark) ─────────────────────────────────────────────
+    campaign_n_iterations: Optional[int]       # extracted from CAMPAIGN PARAMETERS: block during setup
+    campaign_target: Optional[str]             # e.g. "minimize delta_a"
+    campaign_original_message: Optional[str]   # user's first message that triggered the campaign (used as iter-1 prompt)
+    campaign_bounds: Optional[Dict]            # user-customized knob ranges, e.g. {"strain_rate": [1e-3, 2e-2], ...}
+    campaign_template: Optional[Dict]          # locked template inferred by agent + user-edited:
+                                                # {material, system_size, kim_model, phase_1, phase_2, ..., ovito_colors, camera}
+
     # ── Control ───────────────────────────────────────────────────────────────
     error: Optional[str]
     session_id: Optional[str]             # used to look up sse_queue from SESSION_QUEUES in nodes.py

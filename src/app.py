@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from agents import configure_dspy_lm
 from graph.graph import simulation_graph
-from graph.nodes import SESSION_QUEUES
+from graph.nodes import SESSION_QUEUES, CAMPAIGN_COMPLETION_EVENTS
 
 # Configure DSPy LM once at module load (main thread). DSPy 3.x locks settings
 # to the thread that first calls dspy.configure(), so this must happen here —
@@ -396,10 +396,19 @@ async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
     falls through to a plain workflow_complete."""
 
     # Auto-title session from first simulation parameters
-    if final.get("material"):
-        title_parts = [final["material"]]
-        if final.get("temperature"):
-            title_parts.append(f"{final['temperature']}K")
+    mat = final.get("material")
+    temp = final.get("temperature")
+
+    # Campaign mode: material lives inside campaign_template, not at top level
+    if not mat and final.get("campaign_template"):
+        mat = final["campaign_template"].get("material")
+
+    if mat:
+        title_parts = [mat]
+        if temp:
+            title_parts.append(f"{temp}K")
+        if final.get("intent") == "campaign_start":
+            title_parts.append("(campaign)")
         new_title = " ".join(str(p) for p in title_parts)
         _conn = _get_sessions_db()
         _conn.execute(
@@ -485,6 +494,7 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
     """Run the LangGraph in a thread (sync invoke) and emit events via the queue.
     Always pushes a sentinel (None) in finally so the SSE generator exits cleanly,
     and removes the session_id from SESSION_QUEUES."""
+    
     try:
         # Snapshot hpc_jobs count before invoke so the cascade can detect a fresh submit
         prior_hpc_count = 0
@@ -515,6 +525,23 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
 
         await run_cascade(final, sse_q, session_id, prior_hpc_count, body)
 
+        # ── Campaign mode: keep SSE open until background loop signals completion
+        # The campaign_executor_node spawned a daemon thread that emits events into
+        # SESSION_QUEUES via a DualQueue. Without this wait, the finally below
+        # would close the SSE immediately and the frontend would miss every
+        # campaign_iteration_* / campaign_complete event.
+        if final.get("intent") == "campaign_start":
+            print("[POST-GRAPH] campaign launched — keeping SSE open until campaign_complete")
+            ev = _take_campaign_completion_event(session_id)
+            if ev is not None:
+                # Wait up to 3 hours; on signal, give SSE generator a grace period
+                completed = await asyncio.to_thread(ev.wait, 3 * 3600)
+                if completed:
+                    await asyncio.sleep(0.5)  # let final SSE events flush
+                    print("[POST-GRAPH] campaign_complete signaled — closing SSE")
+                else:
+                    print("[POST-GRAPH] campaign SSE wait timed out")
+
     except Exception as e:
         traceback.print_exc()
         parts = _flatten(e) or [repr(e)]
@@ -523,6 +550,16 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
     finally:
         sse_q.put(None)  # sentinel — SSE generator stops
         SESSION_QUEUES.pop(session_id, None)
+
+
+def _take_campaign_completion_event(chat_session_id: str):
+    """Pop and return the completion event for this chat session, if registered.
+
+    CAMPAIGN_COMPLETION_EVENTS is defined in graph.nodes (not here) so worker
+    threads can access it without triggering app.py's top-level
+    dspy.configure() side effect on a fresh import.
+    """
+    return CAMPAIGN_COMPLETION_EVENTS.pop(chat_session_id, None)
 
 
 @app.post("/api/llm-stream-live")

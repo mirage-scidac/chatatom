@@ -23,8 +23,16 @@ from memory import get_memory_backend, MemoryEntry
 # DSPy-Based Agentic Modules
 # =============================================================================
 
+# Module-level singleton — the LM configured at app startup.
+# Worker threads (e.g., CampaignManager) reference this to wrap their
+# DSPy calls in `with dspy.context(lm=CONFIGURED_LM):` since DSPy 3.x
+# locks dspy.settings to the thread that called dspy.configure().
+CONFIGURED_LM = None
+
+
 def configure_dspy_lm():
     """Configure DSPy to use the Argonne API endpoint."""
+    global CONFIGURED_LM
     lm = dspy.LM(
         model=f'openai/{config.DEFAULT_MODEL}',
         api_base=config.API_BASE_URL,
@@ -32,6 +40,7 @@ def configure_dspy_lm():
         temperature=0.1
     )
     dspy.configure(lm=lm)
+    CONFIGURED_LM = lm
     return lm
 
 
@@ -469,7 +478,7 @@ class SmartOrchestrator(dspy.Module):
         # With Literal type constraint, the LLM should return a valid value.
         # Minimal fallback in case of unexpected output.
         intent = str(result.intent).strip().lower()
-        valid_intents = {'execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status'}
+        valid_intents = {'execute', 'execute_hpc', 'modify', 'cancel', 'question', 'new_simulation', 'analyze', 'hpc_status', 'campaign_start'}
         if intent not in valid_intents:
             print(f"[INTENT] WARNING: unexpected intent '{intent}', defaulting to 'question'")
             intent = 'question'
