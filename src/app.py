@@ -34,13 +34,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from agents import configure_dspy_lm
-from graph.graph import simulation_graph
 from graph.nodes import SESSION_QUEUES, CAMPAIGN_COMPLETION_EVENTS
 
 # Configure DSPy LM once at module load (main thread). DSPy 3.x locks settings
 # to the thread that first calls dspy.configure(), so this must happen here —
 # NEVER inside request handlers or background threads.
 configure_dspy_lm()
+
+
+# Bound by the startup handler below once the event loop is running
+# (AsyncSqliteSaver must be instantiated inside an event loop).
+ACTIVE_GRAPH = None
 
 
 # ─── App setup ───────────────────────────────────────────────────────────────
@@ -58,6 +62,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _wire_orchestrator() -> None:
+    """Build the orchestrator graph with an AsyncSqliteSaver here, inside
+    the running event loop (AsyncSqliteSaver requires one)."""
+    global ACTIVE_GRAPH
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from orchestrator.agent import build_orchestrator_graph, ORCHESTRATOR_DB_PATH
+    os.makedirs(os.path.dirname(ORCHESTRATOR_DB_PATH) or ".", exist_ok=True)
+    cm = AsyncSqliteSaver.from_conn_string(ORCHESTRATOR_DB_PATH)
+    checkpointer = await cm.__aenter__()
+    # Keep a reference so the connection isn't GC'd; on shutdown FastAPI will
+    # let it close naturally — fine for our single-process dev server.
+    app.state._orchestrator_checkpointer_cm = cm
+    ACTIVE_GRAPH = build_orchestrator_graph(checkpointer=checkpointer)
+    print(f"[app] orchestrator_graph wired with AsyncSqliteSaver at {ORCHESTRATOR_DB_PATH}")
 
 # Resolve index.html relative to project root (one level up from src/)
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -166,6 +187,38 @@ async def create_session() -> CreateSessionResponse:
         "INSERT INTO sessions (session_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
         (session_id, "New Session", now, now),
     )
+
+    # LRU eviction: keep only the MAX_SESSIONS most-recently-updated sessions.
+    # Older sessions are dropped from sessions.db AND their orchestrator
+    # checkpoints are dropped too. Simulation outputs in runs/run_<ts>/ are
+    # NOT deleted — those persist independently and remain queryable via
+    # analyze_runs even after the session is evicted.
+    max_sessions = getattr(config, "MAX_SESSIONS", 20)
+    rows = conn.execute(
+        """
+        SELECT session_id FROM sessions
+        WHERE session_id NOT IN (
+            SELECT session_id FROM sessions
+            ORDER BY updated_at DESC
+            LIMIT ?
+        )
+        """,
+        (max_sessions,),
+    ).fetchall()
+    for row in rows:
+        evicted_sid = row["session_id"]
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (evicted_sid,))
+        print(f"[session-eviction] dropped {evicted_sid} (LRU; over MAX_SESSIONS={max_sessions} cap)")
+        # Best-effort: drop the orchestrator checkpoint for this session too.
+        # No-op if the checkpointer hasn't been built yet (e.g. tests).
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+            cp = getattr(ACTIVE_GRAPH, "checkpointer", None)
+            if cp is not None and hasattr(cp, "delete_thread"):
+                await cp.delete_thread(evicted_sid)
+        except Exception as e:
+            print(f"[session-eviction] checkpoint delete failed for {evicted_sid}: {e}")
+
     conn.commit()
     conn.close()
     return CreateSessionResponse(session_id=session_id, title="New Session", created_at=now)
@@ -390,7 +443,8 @@ async def sse_event_stream(sse_q: _queue.Queue, request: Request):
 
 
 async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
-                       prior_hpc_count: int, body: "LLMStreamRequest") -> None:
+                       prior_hpc_count: int, body: "LLMStreamRequest",
+                       simulate_called_this_turn: bool = False) -> None:
     """Post-graph cascade — decides which terminal SSE event(s) to emit based
     on the final state. Branches return early once a match fires; otherwise
     falls through to a plain workflow_complete."""
@@ -426,8 +480,11 @@ async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
         return
 
     # Branch 2: Direct execution path — script already approved
-    if final.get("workflow_stage") == "script_ready" and final.get("intent") == "execute":
-        print("[CASCADE] branch=direct_execute (script_ready + execute)")
+    # Orchestrator path doesn't set `intent`; gate on workflow_stage +
+    # pending_script presence (frontend POSTs pending_script when user
+    # clicks Approve & Run for local execution).
+    if final.get("workflow_stage") == "script_ready" and final.get("pending_script"):
+        print("[CASCADE] branch=direct_execute (script_ready + pending_script)")
         sse_q.put({"type": "agent_start", "agent": "System"})
         sse_q.put({"type": "agent_content", "agent": "System",
                    "content": "Starting live streaming simulation...", "message_type": "info"})
@@ -439,14 +496,33 @@ async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
         sse_q.put({"type": "workflow_complete", "session_id": session_id})
         return
 
-    # Branch 3: No simulation parameters extracted — ask for clarification
-    if (not final.get("has_parameters") and final.get("analysis")
+    # Branch 3: nothing concrete came out of this turn — ask for clarification.
+    # Gate on absence of lammps_script so we don't shadow the script-ready
+    # branch below (the orchestrator path never sets has_parameters).
+    if (not final.get("lammps_script")
+            and not final.get("has_parameters")
+            and final.get("analysis")
             and final.get("intent") not in ("analyze", "question", "cancel")):
         event_type = "needs_more_info" if body.history else "awaiting_confirmation"
-        print(f"[CASCADE] branch={event_type} (no params + analysis present + intent not analyze/question/cancel)")
+        print(f"[CASCADE] branch={event_type} (no script + analysis present)")
         sse_q.put({"type": event_type, "analysis": final["analysis"]})
         sse_q.put({"type": "workflow_complete", "session_id": session_id})
         return
+
+    # Stale-script guard: orchestrator checkpointer persists OrchestratorState
+    # across turns, so a chat-only turn AFTER a simulation still has
+    # lammps_script + review_passed set in `final`. The Run/Approve card
+    # (Branch 6) and friends must only fire on the turn the simulate
+    # tool was actually invoked. The flag is set by run_graph_async when
+    # on_tool_start fires for "simulate" during astream_events. Avoids
+    # false negatives that script-content comparison would produce when
+    # a repeat-simulate yields a byte-identical script.
+    if not simulate_called_this_turn:
+        # Strip script fields from `final` so the branches below see no
+        # script and fall through to plain workflow_complete. We don't
+        # mutate the checkpoint — only this dict used by the cascade.
+        final = {**final, "lammps_script": None, "ovito_script": None,
+                 "review_passed": None, "has_custom_viz": None}
 
     # Branch 4: LAMMPS review failed (Fix #2 — only fire on actual reviewer rejection)
     if (final.get("lammps_script")
@@ -471,9 +547,13 @@ async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
     # Frame sampling reads from dump files at runtime — no precompute needed
     target_timesteps = None
 
-    # Branch 6: Scripts ready for user approval
-    if final.get("lammps_script") and final.get("review_passed"):
-        print("[CASCADE] branch=scripts_ready_for_review (script + review_passed)")
+    # Branch 6: Scripts ready for user approval — but NOT for campaign
+    # iterations (auto_approve=True), where CampaignManager runs the script
+    # directly without user intervention. The orchestrator's `simulate` tool
+    # sets auto_approve on the orchestrator state.
+    if (final.get("lammps_script") and final.get("review_passed")
+            and not final.get("auto_approve")):
+        print("[CASCADE] branch=scripts_ready_for_review (script + review_passed + not auto_approve)")
         sse_q.put({
             "type":                  "scripts_ready_for_review",
             "lammps_script":         final["lammps_script"],
@@ -496,11 +576,13 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
     and removes the session_id from SESSION_QUEUES."""
     
     try:
-        # Snapshot hpc_jobs count before invoke so the cascade can detect a fresh submit
+        # Snapshot pre-invoke state. The orchestrator checkpointer carries
+        # OrchestratorState carries hpc_jobs across turns; the cascade needs
+        # the prior count to detect a fresh HPC submission this turn.
         prior_hpc_count = 0
         try:
             prior_state = await asyncio.to_thread(
-                simulation_graph.get_state,
+                ACTIVE_GRAPH.get_state,
                 {"configurable": {"thread_id": session_id}},
             )
             if prior_state and prior_state.values:
@@ -508,12 +590,115 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
         except Exception as e:
             print(f"[POST-GRAPH] get_state failed (likely fresh session): {e}")
 
-        print("[POST-GRAPH] calling simulation_graph.invoke()...")
-        final = await asyncio.to_thread(
-            simulation_graph.invoke,
-            initial_state,
+        # Convert the flat HTTP body into the orchestrator's MessagesState shape.
+        from langchain_core.messages import HumanMessage, AIMessage
+        history_msgs = []
+        for msg in initial_state.get("conversation_history") or []:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "user":
+                history_msgs.append(HumanMessage(content=content))
+            elif role == "assistant":
+                history_msgs.append(AIMessage(content=content))
+
+        current_user_text = initial_state["user_message"]
+
+        # HPC Phase 2 nudge: when the frontend POSTs after the user has
+        # approved/edited the PBS script, append a short hint so the LLM
+        # knows to re-call hpc_submit (which will read the edited PBS
+        # from state.pbs_script_edited). No need to paste the script
+        # into the message — it's already in state.
+        if initial_state.get("pbs_script_edited") and initial_state.get("workflow_stage") == "pbs_pending":
+            current_user_text = (
+                f"{current_user_text}\n\n"
+                f"[SYSTEM: User has approved the PBS script. Call hpc_submit "
+                f"again with the same material/temperature/kim_model to complete "
+                f"the Globus submission. The edited PBS is in state.]"
+            )
+
+        graph_input = {
+            "messages": history_msgs + [HumanMessage(content=current_user_text)],
+            "session_id": initial_state.get("session_id"),
+            "execution_target": initial_state.get("execution_target"),
+            "workflow_stage": initial_state.get("workflow_stage"),
+            # User-edited textarea content from the approve cards. Threaded
+            # into state so tools (hpc_submit, etc.) can read the real
+            # user-edited script via runtime.state instead of asking the
+            # LLM to retype 50+ lines as a tool arg (unreliable).
+            "pending_script":     initial_state.get("pending_script"),
+            "ovito_script_param": initial_state.get("ovito_script_param"),
+            "pbs_script_edited":  initial_state.get("pbs_script_edited"),
+        }
+
+        print("[POST-GRAPH] streaming orchestrator_graph via astream_events()...")
+        sse_q.put({"type": "agent_start", "agent": "Orchestrator"})
+        reply_chunks: list[str] = []
+        final = None
+        # Track whether `simulate` was actually invoked this turn. The cascade
+        # uses this (not script-content comparison) to decide whether to
+        # re-fire scripts_ready_for_review. Avoids false negatives when the
+        # LLM produces a byte-identical script on a repeat-simulate request.
+        simulate_called_this_turn = False
+        async for ev in ACTIVE_GRAPH.astream_events(
+            graph_input,
             config={"configurable": {"thread_id": session_id}},
-        )
+            version="v2",
+        ):
+            etype = ev.get("event")
+            if etype == "on_chat_model_stream":
+                chunk = ev.get("data", {}).get("chunk")
+                token = getattr(chunk, "content", "") if chunk is not None else ""
+                if isinstance(token, str) and token:
+                    reply_chunks.append(token)
+                    sse_q.put({
+                        "type": "agent_content",
+                        "agent": "Orchestrator",
+                        "content": token,
+                        "message_type": "analysis",
+                    })
+            elif etype == "on_tool_start":
+                tool_name = ev.get("name", "tool")
+                tool_args = (ev.get("data") or {}).get("input") or {}
+                print(f"[ORCH] tool: {tool_name}({', '.join(tool_args.keys())})")
+                # When simulate fires, dump simulation_details + knob args so
+                # we can see exactly what the LLM is passing.
+                if tool_name == "simulate":
+                    simulate_called_this_turn = True
+                    sd = tool_args.get("simulation_details") or ""
+                    print(f"[ORCH] simulate.simulation_details ({len(sd)} chars):")
+                    print(sd)
+                    knob_keys = ("strain_rate", "strain_amplitude",
+                                 "crack_length_frac", "crack_width_a0",
+                                 "temperature", "auto_approve")
+                    knobs = {k: tool_args.get(k) for k in knob_keys
+                             if tool_args.get(k) is not None}
+                    print(f"[ORCH] simulate knobs: {knobs}")
+                # Surface tool calls via the lightweight status channel
+                # (rendered in the small status bar / progress panel, NOT
+                # the chat thread) so the chat stays free of system noise.
+                sse_q.put({
+                    "type": "status",
+                    "message": f"🛠 Calling {tool_name}(...)",
+                })
+            elif etype == "on_chain_end" and ev.get("name") == "chatmd_orchestrator":
+                # Top-level graph end — matches the name= passed to
+                # create_react_agent in orchestrator.agent.
+                final = (ev.get("data") or {}).get("output") or {}
+
+        sse_q.put({"type": "agent_complete", "agent": "Orchestrator"})
+
+        # Defensive: if we never caught the chatmd_orchestrator on_chain_end
+        # event, fall back to a get_state read from the checkpointer.
+        if final is None:
+            snap = await asyncio.to_thread(
+                ACTIVE_GRAPH.get_state,
+                {"configurable": {"thread_id": session_id}},
+            )
+            final = (snap.values if snap else {}) or {}
+
+        # Backfill `analysis` so the cascade's "needs_more_info" branch
+        # can detect a no-params orchestrator reply.
+        final["analysis"] = "".join(reply_chunks)
         print(f"[POST-GRAPH] invoke returned. "
               f"intent={final.get('intent')!r}  "
               f"workflow_stage={final.get('workflow_stage')!r}  "
@@ -523,14 +708,20 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
               f"has_script={'yes' if final.get('lammps_script') else 'no'}  "
               f"hpc_jobs_count={len(final.get('hpc_jobs') or [])}")
 
-        await run_cascade(final, sse_q, session_id, prior_hpc_count, body)
+        await run_cascade(final, sse_q, session_id, prior_hpc_count, body,
+                          simulate_called_this_turn=simulate_called_this_turn)
 
         # ── Campaign mode: keep SSE open until background loop signals completion
-        # The campaign_executor_node spawned a daemon thread that emits events into
+        # The start_campaign tool spawned a daemon thread that emits events into
         # SESSION_QUEUES via a DualQueue. Without this wait, the finally below
         # would close the SSE immediately and the frontend would miss every
-        # campaign_iteration_* / campaign_complete event.
-        if final.get("intent") == "campaign_start":
+        # campaign_iteration_* / campaign_complete event. The completion signal
+        # is the CAMPAIGN_COMPLETION_EVENTS entry registered by start_campaign.
+        campaign_launched = (
+            final.get("intent") == "campaign_start"
+            or session_id in CAMPAIGN_COMPLETION_EVENTS
+        )
+        if campaign_launched:
             print("[POST-GRAPH] campaign launched — keeping SSE open until campaign_complete")
             ev = _take_campaign_completion_event(session_id)
             if ev is not None:
@@ -564,7 +755,7 @@ def _take_campaign_completion_event(chat_session_id: str):
 
 @app.post("/api/llm-stream-live")
 async def llm_stream_live(request: Request, body: LLMStreamRequest) -> StreamingResponse:
-    """Streaming chat endpoint — delegates to LangGraph simulation_graph.
+    """Streaming chat endpoint — delegates to the orchestrator graph.
 
     Returns an SSE stream of agent events as the graph executes. The graph
     runs sync (via asyncio.to_thread); event delivery is async via

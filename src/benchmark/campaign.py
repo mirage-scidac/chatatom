@@ -1,14 +1,15 @@
 """
 CampaignManager — closed-loop benchmarking driver.
 
-Runs N iterations of the simulation_graph in a background thread:
+Runs N iterations of the orchestrator graph in a background thread:
   for each iteration:
     1. Build synthesized "user message" with past results
-    2. Invoke simulation_graph (chat → extract → lammps → viz)
+    2. Invoke orchestrator_graph (LLM proposes hypothesis + knobs,
+       calls simulate(auto_approve=True), which runs the LAMMPS subgraph)
     3. Auto-run LAMMPS (no human approval)
     4. Measure Δa from dump files
     5. Append to campaign_log.md + update summary.json
-    6. Emit SSE events for live frontend updates
+    6. Emit SSE events for live frontend updates (via _DualQueue tee)
 
 Storage layout per campaign:
   runs/benchmark_<id>/
@@ -90,14 +91,20 @@ class CampaignManager:
 
         DSPy 3.x locks dspy.settings to the thread that called dspy.configure().
         Since this runs in a background thread, we MUST wrap the loop in
-        dspy.context(lm=...) so DSPy modules (intent_node, generate_lammps_node,
-        etc.) can use the LM from this thread.
+        dspy.context(lm=...) so DSPy modules (still used inside
+        generate_lammps_node via the simulate_subgraph) can use the LM from
+        this thread.
         """
-        # Import here to avoid circular imports at module load
+        # Import here to avoid circular imports at module load.
+        # Phase 2a: campaign iterations now go through the orchestrator graph
+        # (with no checkpointer — each iteration is self-contained; past
+        # results live in self.past_runs and get baked into user_message).
         import dspy
-        from graph.graph import simulation_graph
+        from orchestrator.agent import build_orchestrator_graph
         from tools import run_lammps_simulation
         from agents import CONFIGURED_LM
+
+        iter_graph = build_orchestrator_graph(checkpointer=None)
 
         self._write_log_header()
         self._update_summary()
@@ -112,7 +119,7 @@ class CampaignManager:
         with ctx:
             for i in range(1, self.n_iterations + 1):
                 try:
-                    self._run_one_iteration(i, simulation_graph, run_lammps_simulation)
+                    self._run_one_iteration(i, iter_graph, run_lammps_simulation)
                 except Exception as e:
                     print(f"[CampaignManager] iteration {i} crashed: {e}")
                     traceback.print_exc()
@@ -132,8 +139,17 @@ class CampaignManager:
     # ─── One iteration ──────────────────────────────────────────────────────
 
     def _run_one_iteration(
-        self, i: int, simulation_graph, run_lammps_simulation
+        self, i: int, iter_graph, run_lammps_simulation
     ) -> None:
+        """Run one iteration through the orchestrator graph.
+
+        The synthesized user_message is wrapped as a HumanMessage; the
+        orchestrator-LLM loads the campaign skill (iteration-mode trigger
+        fires on "Propose iteration N" + "Past attempts:"), proposes
+        knobs + hypothesis, then calls simulate(..., auto_approve=True).
+        The simulate tool writes lammps_script + review_passed back into
+        OrchestratorState — we read those fields from final_state.
+        """
         self._emit("campaign_iteration_start", {
             "iteration": i,
             "total": self.n_iterations,
@@ -177,20 +193,37 @@ class CampaignManager:
                 f"Stay within the locked template and knob bounds above."
             )
 
-        # Step 2: invoke graph — checkpoint loads prior iteration state by thread_id
-        state = {
-            "user_message": user_message,
-            "session_id": self.campaign_id,
-            "workflow_stage": "initial",
-            "execution_target": "local",
-            "conversation_history": [],
-        }
-        final_state = simulation_graph.invoke(
-            state,
-            config={"configurable": {"thread_id": self.campaign_id}},
-        )
+        # Step 2: stream the orchestrator for this iteration.
+        # No checkpointer on iter_graph — each iteration is self-contained;
+        # past results live in self.past_runs and are baked into user_message.
+        #
+        # We stream via astream_events so the LLM's hypothesis/spec prose
+        # surfaces live in the user's chat (forwarded through self.sse_q,
+        # which is the DualQueue that tees to both campaign + chat queues).
+        # Without streaming, the user sees nothing until the orchestrator
+        # finishes — feels like the iteration jumped straight to LAMMPS.
+        from langchain_core.messages import HumanMessage, AIMessage
 
-        chat_response = final_state.get("analysis", "") or ""
+        state = {
+            "messages":         [HumanMessage(content=user_message)],
+            "session_id":       self.campaign_id,
+            "workflow_stage":   "initial",
+            "execution_target": "local",
+        }
+
+        final_state = self._stream_iteration_via_orchestrator(iter_graph, state, i)
+
+        # Pull the LLM's hypothesis/spec text. The simulate tool call comes
+        # from the AIMessage whose content is the hypothesis prose — walk
+        # reversed and take the first non-empty AIMessage content.
+        chat_response = ""
+        for m in reversed(final_state.get("messages") or []):
+            if isinstance(m, AIMessage) and isinstance(m.content, str) and m.content.strip():
+                chat_response = m.content
+                break
+
+        # simulate tool wrote these via Command(update=...) — same field
+        # names as before, just on OrchestratorState instead of SimulationState.
         lammps_script = final_state.get("lammps_script", "") or ""
         review_passed = bool(final_state.get("review_passed"))
 
@@ -238,7 +271,14 @@ class CampaignManager:
             self.best_delta_a = delta_a
 
         # Step 6: persist
-        params_text = self._extract_params_text(chat_response)
+        # Prefer typed knob values from the simulate tool call (echoed onto
+        # OrchestratorState by the simulate tool's Command(update=...)).
+        # Falls back to the prose-parse path if the LLM forgot to pass them.
+        campaign_knobs = final_state.get("campaign_knobs") or {}
+        if campaign_knobs:
+            params_text = self._format_knobs(campaign_knobs)
+        else:
+            params_text = self._extract_params_text(chat_response)
         record = {
             "iteration": i,
             "params_text": params_text,
@@ -273,6 +313,64 @@ class CampaignManager:
         })
 
     # ─── Helpers ────────────────────────────────────────────────────────────
+
+    def _stream_iteration_via_orchestrator(self, iter_graph, state: Dict, i: int) -> Dict:
+        """Run one iteration of the orchestrator with live token streaming.
+
+        Forwards orchestrator-LLM tokens (`on_chat_model_stream`) and tool
+        start events (`on_tool_start`) to self.sse_q so the user sees the
+        LLM's hypothesis/spec prose live in the chat before LAMMPS starts.
+
+        Subgraph nodes (Generator/Reviewer/OVITO) push their own SSE via
+        the existing `_q` helper inside their bodies — that path is
+        unchanged. This helper only adds the missing top-level orchestrator
+        emission that the campaign daemon was previously dropping.
+
+        astream_events is async; CampaignManager runs sync in a daemon
+        thread. Spin up a fresh event loop in a worker so the rest of
+        _run_one_iteration stays synchronous.
+        """
+        import asyncio
+        import concurrent.futures
+
+        async def _drain() -> Dict:
+            final_state: Dict = {}
+            self.sse_q.put({"type": "agent_start", "agent": "Orchestrator"})
+            try:
+                async for ev in iter_graph.astream_events(
+                    state,
+                    config={"configurable": {"thread_id": self.campaign_id}},
+                    version="v2",
+                ):
+                    etype = ev.get("event")
+                    if etype == "on_chat_model_stream":
+                        chunk = ev.get("data", {}).get("chunk")
+                        token = getattr(chunk, "content", "") if chunk is not None else ""
+                        if isinstance(token, str) and token:
+                            self.sse_q.put({
+                                "type":         "agent_content",
+                                "agent":        "Orchestrator",
+                                "content":      token,
+                                "message_type": "analysis",
+                            })
+                    elif etype == "on_tool_start":
+                        tool_name = ev.get("name", "tool")
+                        self.sse_q.put({
+                            "type":    "status",
+                            "message": f"Calling {tool_name}(...)",
+                        })
+                    elif etype == "on_chain_end" and ev.get("name") == "chatmd_orchestrator":
+                        # Top-level graph end (matches the name= passed to
+                        # create_react_agent in orchestrator.agent). NOT
+                        # "LangGraph" — that's a different default that
+                        # doesn't fire for named graphs.
+                        final_state = (ev.get("data") or {}).get("output") or {}
+            finally:
+                self.sse_q.put({"type": "agent_complete", "agent": "Orchestrator"})
+            return final_state
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _drain()).result()
 
     def _invoke_lammps(self, run_lammps_simulation, script: str, final_state: Dict):
         """Call run_lammps_simulation, passing parent_dir if the function supports it."""
@@ -367,6 +465,36 @@ class CampaignManager:
                 lines.append(f"  - {knob}: [{rng[0]}, {rng[1]}]")
         lines.append("")
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _format_knobs(knobs: Dict[str, Any]) -> str:
+        """Format typed knob values from the simulate tool call into the
+        compact summary line that goes into params_text + next iteration's
+        "Past attempts:" message. Uses short display names (T, strain,
+        crack_len, crack_w) so the LLM's history view stays readable.
+        """
+        short = {
+            "strain_rate":       "strain_rate",
+            "strain_amplitude":  "strain_amp",
+            "temperature":       "T",
+            "crack_length_frac": "crack_len",
+            "crack_width_a0":    "crack_w",
+        }
+        parts = []
+        for key, label in short.items():
+            v = knobs.get(key)
+            if v is None:
+                continue
+            # Compact formatting per knob type
+            if key in ("temperature",):
+                parts.append(f"{label}={v:g}")
+            elif key in ("crack_length_frac",):
+                parts.append(f"{label}={v*100:.0f}%")
+            elif key in ("crack_width_a0",):
+                parts.append(f"{label}={v:g}a₀")
+            else:
+                parts.append(f"{label}={v:g}")
+        return ", ".join(parts) if parts else "<no knobs in tool call>"
 
     @staticmethod
     def _extract_params_text(chat_response: str) -> str:

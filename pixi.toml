@@ -29,6 +29,7 @@ uvicorn = {version = ">=0.32,<0.40", extras = ["standard"]}
 python-multipart = ">=0.0.9"        # for form data if needed
 python-socketio = ">=5.11,<6"       # ASGI Socket.IO server (mounted alongside FastAPI)
 aiosqlite = ">=0.20"                # for future async SQLite usage
+pyyaml = ">=6.0,<7"                 # parse YAML frontmatter in orchestrator skill files
 
 [tasks]
 # --reload-dir src is critical: --reload watches the whole working directory by default,

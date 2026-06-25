@@ -1,27 +1,23 @@
 """
-LangGraph state definition for the ChatMD simulation pipeline.
+SimulationState — TypedDict used by the simulate subgraph nodes and the
+analyze_results_node. Populated by the orchestrator tools that wrap them.
+
+Most top-level orchestrator concerns (hpc_jobs, execution_target,
+workflow_stage, lammps_script as cross-turn state, etc.) live on
+OrchestratorState in src/orchestrator/agent.py. This state is per-tool-call.
 """
 from typing import TypedDict, Optional, List, Dict
 
 
 class SimulationState(TypedDict):
-    # ── Input (from HTTP request) ─────────────────────────────────────────────
-    user_message: str
-    workflow_stage: str                   # "initial" | "parameters_proposed" | "script_ready"
-    conversation_history: List[Dict]
-    pending_script: Optional[str]         # script carried over from previous turn
-    ovito_script_param: Optional[str]     # ovito script from previous turn
-    pbs_script_edited: Optional[str]      # PBS script edited by user in approval card (Phase 2)
+    # ── Per-tool-call input ──────────────────────────────────────────────────
+    user_message: str                     # raw prose context (proposal text)
+    session_id: Optional[str]             # SSE queue lookup key
+    conversation_history: List[Dict]      # analyst tool reads recent context
+    analysis: Optional[str]               # generate_lammps reads this as the
+                                           #   simulation_details prose
 
-    # ── Classification ────────────────────────────────────────────────────────
-    intent: Optional[str]                 # "execute" | "modify" | "cancel" | "question" | "new_simulation"
-
-    # ── Orchestrator context ──────────────────────────────────────────────────
-    registry_context: Optional[str]       # KIM registry string injected into prompt
-    analysis: Optional[str]              # full conversational LLM text response
-
-    # ── Extracted simulation parameters ──────────────────────────────────────
-    has_parameters: Optional[bool]
+    # ── Extracted simulation parameters (set by simulate tool args) ──────────
     material: Optional[str]
     kim_model: Optional[str]
     temperature: Optional[float]
@@ -31,7 +27,7 @@ class SimulationState(TypedDict):
     visualization_notes: Optional[str]
     camera_angle: Optional[str]
 
-    # ── LAMMPS generation outputs ─────────────────────────────────────────────
+    # ── LAMMPS generation outputs (set by generate_lammps_node) ──────────────
     lammps_script: Optional[str]
     dump_filename_pattern: Optional[str]
     total_steps: Optional[int]
@@ -40,27 +36,19 @@ class SimulationState(TypedDict):
     review_issues: Optional[List[str]]
     review_suggestions: Optional[List[str]]
 
-    # ── Visualization outputs ─────────────────────────────────────────────────
+    # ── Visualization outputs (set by detect_viz_node + generate_ovito_node) ─
     has_custom_viz: Optional[bool]
     viz_request: Optional[str]
     precomputed_properties: Optional[Dict]
-    simulation_context: Optional[Dict]    # context dict passed to OVITO generator
+    simulation_context: Optional[Dict]
     ovito_script: Optional[str]
-    target_timesteps: Optional[List[int]]
 
-    # ── HPC Execution ─────────────────────────────────────────────────────────
-    execution_target: Optional[str]       # "local" | "hpc" — set from POST body by app.py
-    hpc_jobs: Optional[List[Dict]]        # [{globus_task_id, hpc_run_folder, submitted_at, description}]
-    hpc_run_folder_pending: Optional[str] # temp: local run_folder between Phase 1 (preview) and Phase 2 (submit)
-
-    # ── Campaign mode (benchmark) ─────────────────────────────────────────────
-    campaign_n_iterations: Optional[int]       # extracted from CAMPAIGN PARAMETERS: block during setup
-    campaign_target: Optional[str]             # e.g. "minimize delta_a"
-    campaign_original_message: Optional[str]   # user's first message that triggered the campaign (used as iter-1 prompt)
-    campaign_bounds: Optional[Dict]            # user-customized knob ranges, e.g. {"strain_rate": [1e-3, 2e-2], ...}
-    campaign_template: Optional[Dict]          # locked template inferred by agent + user-edited:
-                                                # {material, system_size, kim_model, phase_1, phase_2, ..., ovito_colors, camera}
-
-    # ── Control ───────────────────────────────────────────────────────────────
-    error: Optional[str]
-    session_id: Optional[str]             # used to look up sse_queue from SESSION_QUEUES in nodes.py
+    # ── HPC: read by hpc_executor_node helpers ──────────────────────────────
+    # hpc_submit tool builds a minimal SimulationState dict with these for
+    # the hpc_executor_node helpers (_run_hpc_submit, _generate_pbs_script).
+    execution_target: Optional[str]
+    hpc_jobs: Optional[List[Dict]]
+    hpc_run_folder_pending: Optional[str]
+    pending_script: Optional[str]
+    ovito_script_param: Optional[str]
+    pbs_script_edited: Optional[str]

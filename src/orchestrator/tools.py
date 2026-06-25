@@ -1,0 +1,703 @@
+"""Orchestrator tools for the ChatMD create_react_agent.
+
+NOTE: this file is `src/orchestrator/tools.py` — distinct from `src/tools.py`
+(which contains LAMMPS execution helpers like run_lammps_simulation, dump
+monitoring, OVITO rendering). The orchestrator tools live under the
+orchestrator/ package; the LAMMPS helpers stay at src/ root.
+
+Phase 1b status (current):
+  - get_kim_models  ✅ real (wraps kim_utils.build_registry_context_for_command)
+  - load_skill      ✅ real (reads skills/<name>.md, strips frontmatter, returns body)
+  - simulate        ✅ real (invokes simulate_subgraph, returns Command(update=...))
+  - analyze_runs    ⏳ stub (Phase 1c)
+  - start_campaign  ⏳ stub (Phase 1d)
+  - hpc_submit      ⏳ stub (Phase 1e)
+  - hpc_status      ⏳ stub (Phase 1e)
+
+Each stub returns a clear string the orchestrator-LLM will relay to the
+user, so users get a useful "not implemented yet" message instead of an
+exception during the incremental rollout.
+"""
+import os
+import sys
+from typing import Literal
+
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
+from langgraph.types import Command
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import kim_utils
+
+
+SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Return everything AFTER the closing `---` of YAML frontmatter.
+    If no frontmatter is present, return text unchanged.
+    """
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 4)
+    if end == -1:
+        return text
+    body_start = end + len("\n---")
+    if body_start < len(text) and text[body_start] == "\n":
+        body_start += 1
+    return text[body_start:]
+
+
+# ── Phase 1a: real tools ─────────────────────────────────────────────────────
+
+@tool
+def load_skill(name: str) -> str:
+    """Load a skill's instructions into the conversation for this turn.
+
+    Reads src/orchestrator/skills/<name>.md, strips YAML frontmatter, and
+    returns the body as a string. The orchestrator's next LLM turn will see
+    the skill instructions in the tool-result message.
+
+    Args:
+        name: Skill name (e.g. "campaign"). Must match the filename without
+              the .md extension.
+
+    Returns:
+        The skill body, or an error message if the file does not exist.
+    """
+    safe_name = os.path.basename(name).removesuffix(".md")
+    path = os.path.join(SKILLS_DIR, f"{safe_name}.md")
+    if not os.path.exists(path):
+        return f"Skill '{safe_name}' not found at {path}."
+    try:
+        with open(path, "r") as f:
+            text = f.read()
+    except OSError as e:
+        return f"Could not read skill '{safe_name}': {e}"
+    return _strip_frontmatter(text)
+
+
+@tool
+def get_kim_models(element: str) -> str:
+    """Fetch available KIM interatomic potentials for an element.
+
+    Args:
+        element: Chemical symbol (e.g. "Cu", "Al", "Fe").
+
+    Returns:
+        Formatted registry string (✅ = downloaded, ⬇️ = needs download),
+        or a message if no models are found locally.
+    """
+    result = kim_utils.build_registry_context_for_command(element)
+    if result:
+        return result
+    return f"No KIM models found in local registry for element '{element}'."
+
+
+# ── Phase 1b-1e: stubs ───────────────────────────────────────────────────────
+
+@tool
+def simulate(
+    material: str,
+    temperature: float,
+    ensemble: str,
+    duration_ps: float,
+    system_size: int,
+    kim_model: str,
+    simulation_details: str,
+    visualization_notes: str | None = None,
+    camera_angle: Literal["top", "side", "default"] = "default",
+    execution_target: str = "local",
+    auto_approve: bool = False,
+    # ── Campaign-only optional knob args (set ONLY inside a campaign
+    # iteration loop). For chat-driven simulations, leave all of these as
+    # None — they will be ignored. The campaign skill instructs the LLM
+    # to populate them per iteration so CampaignManager can read typed
+    # knob values straight from the tool args (no regex on prose).
+    strain_rate: float | None = None,
+    strain_amplitude: float | None = None,
+    crack_length_frac: float | None = None,
+    crack_width_a0: float | None = None,
+    # ToolRuntime is auto-injected by parameter name `runtime`; no
+    # Annotated wrapper needed. The LLM-visible schema automatically
+    # excludes this parameter.
+    runtime: ToolRuntime = None,
+) -> Command:
+    """Generate LAMMPS + OVITO scripts for a simulation.
+
+    Internally invokes the slim simulate_subgraph (generate_lammps →
+    detect_viz → generate_ovito), seeded with the structured args + the
+    full simulation_details prose. Returns a Command(update=...) that
+    writes the script fields onto the orchestrator's state — the cascade
+    in app.py reads them to fire `scripts_ready_for_review`.
+
+    Args:
+        material: Element symbol (e.g. "Al", "Cu").
+        temperature: Target temperature in K.
+        ensemble: "NVE", "NVT", or "NPT".
+        duration_ps: Simulation duration in picoseconds.
+        system_size: Number of unit cells per dimension (cubic box).
+        kim_model: Exact KIM model ID.
+        simulation_details: Full proposal prose — phase definitions, pressure
+                            targets, crack geometry, special conditions. The
+                            downstream generator parses this for multi-phase
+                            / crack / fatigue setups.
+        visualization_notes: Optional viz preferences (free-form).
+        camera_angle: One of "top", "side", or "default" ONLY.
+            - "top"     = top-down / bird's-eye view down the +z axis
+                          (best for crack plane in xy, layered defects).
+            - "side"    = side view down the +x axis
+                          (best for layered systems, profile views).
+            - "default" = isometric 3/4 perspective (general 3D view).
+            Translate user descriptions to these 3 values before passing:
+              "+z" / "down +z" / "from above" / "bird's-eye" / "top-down"  → "top"
+              "+x" / "from the side" / "side view"                          → "side"
+              anything else / unspecified                                   → "default"
+        execution_target: "local" or "hpc". Phase 1 wires only "local".
+        auto_approve: True only for campaign iterations — suppresses the
+                      user Approve prompt in the cascade.
+
+    Returns:
+        Command writing lammps_script, ovito_script, dump_filename_pattern,
+        review_passed, has_custom_viz, auto_approve, execution_target,
+        camera_angle, and target_timesteps onto the orchestrator's state.
+        The tool result message contains a short status string for the LLM.
+    """
+    # Import here to avoid circular imports at module load (graph imports
+    # nodes.py which imports kim_utils which... etc.)
+    from graph.graph import simulate_subgraph
+
+    state = runtime.state if runtime else {}
+    tool_call_id = runtime.tool_call_id if runtime else ""
+    session_id = (state or {}).get("session_id")
+
+    # DEBUG: print the EXACT simulation_details prose the LLM passed
+    # to the tool. Compare against what's visible in the chat to confirm
+    # whether the LLM is sending the same full text or a summary.
+    print("=" * 80)
+    print(f"[simulate] simulation_details ({len(simulation_details)} chars):")
+    print("-" * 80)
+    print(simulation_details)
+    print("=" * 80)
+    
+
+
+    # Seed the subgraph's SimulationState with everything generate_lammps_node
+    # would read. We skip extract_params_node by setting has_parameters=True
+    # and pre-populating the structured fields — avoids a redundant DSPy call.
+    subgraph_state = {
+        "user_message":         simulation_details,
+        "session_id":           session_id,
+        "analysis":             simulation_details,
+        "has_parameters":       True,
+        "material":             material,
+        "kim_model":            kim_model,
+        "temperature":          temperature,
+        "ensemble":             ensemble,
+        "duration_ps":          duration_ps,
+        "system_size":          system_size,
+        "visualization_notes":  visualization_notes,
+        "camera_angle":         camera_angle,
+        "execution_target":     execution_target,
+        "workflow_stage":       "initial",
+        "conversation_history": [],
+    }
+
+    final = simulate_subgraph.invoke(subgraph_state)
+
+    lammps_script = final.get("lammps_script")
+    review_passed = bool(final.get("review_passed"))
+
+    if not lammps_script:
+        msg = "Script generation failed: no script produced. Tell the user something went wrong upstream."
+    elif not review_passed:
+        issues = final.get("review_issues") or []
+        msg = (
+            f"Script generated but reviewer flagged issues: {'; '.join(issues[:3])}. "
+            f"Tell the user the simulation needs adjustment before running."
+        )
+    elif auto_approve:
+        msg = "Script generated and auto-approved (campaign iteration). Tell the user iteration is starting."
+    else:
+        msg = (
+            "Script generated and reviewed successfully. The Run/Approve card "
+            "will appear in the chat. Briefly tell the user the script is ready."
+        )
+
+    # Echo any campaign-only knob args the LLM passed back into state.
+    # CampaignManager pulls campaign_knobs from final_state to build the
+    # per-iteration record (params_text + the "Past attempts:" line in the
+    # next iteration's synthesized message). All-None for chat-driven sims.
+    campaign_knobs = {
+        k: v for k, v in {
+            "strain_rate":       strain_rate,
+            "strain_amplitude":  strain_amplitude,
+            "crack_length_frac": crack_length_frac,
+            "crack_width_a0":    crack_width_a0,
+            "temperature":       temperature,
+        }.items() if v is not None
+    }
+
+    # Mirror script + viz fields onto OrchestratorState so the cascade can
+    # decide what terminal SSE to emit. auto_approve gates the Run/Approve
+    # card (campaign iterations skip it).
+    return Command(
+        update={
+            "lammps_script":         lammps_script,
+            "ovito_script":          final.get("ovito_script"),
+            "dump_filename_pattern": final.get("dump_filename_pattern"),
+            "target_timesteps":      final.get("target_timesteps"),
+            "camera_angle":          final.get("camera_angle") or camera_angle,
+            "execution_target":      execution_target,
+            "auto_approve":          auto_approve,
+            "review_passed":         review_passed,
+            "review_issues":         final.get("review_issues"),
+            "review_suggestions":    final.get("review_suggestions"),
+            "has_custom_viz":        final.get("has_custom_viz"),
+            "campaign_knobs":        campaign_knobs or None,
+            # Echo the simulate args back into state so the cascade can
+            # auto-title the session ("Cu 300K") and so follow-up turns
+            # can read these without walking the message history.
+            "material":              material,
+            "temperature":           temperature,
+            "ensemble":              ensemble,
+            "duration_ps":           duration_ps,
+            "system_size":           system_size,
+            "kim_model":             kim_model,
+            # ToolMessage with the REAL tool_call_id satisfies langgraph's
+            # invariant: every AIMessage tool_call needs a matching ToolMessage.
+            "messages": [ToolMessage(content=msg, tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool(return_direct=True)
+def analyze_runs(
+    query: str,
+    runtime: ToolRuntime = None,
+) -> str:
+    """List past simulation runs or read their logs to answer questions.
+
+    Internally invokes `analyze_results_node` (tool-calling Analyst agent
+    with list_recent_runs + get_run_log). All output streams directly to
+    the user via the existing SSE pipeline (Analyst typing indicator + text).
+
+    `return_direct=True`: create_react_agent ends the orchestrator's turn
+    immediately after this tool returns — no follow-up LLM call that would
+    restate what the Analyst already showed.
+
+    For follow-up analysis questions ("was it equilibrated?", "analyze
+    run 4"), the orchestrator will call analyze_runs again on the next
+    turn. The conversation_history passed in lets the inside-Analyst
+    answer from context without re-loading.
+
+    Args:
+        query: Natural-language question or instruction
+               (e.g. "list recent runs", "analyze run 2", "what was the
+               final temperature in the latest Al run?").
+    """
+    from graph.nodes import analyze_results_node
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = runtime.state if runtime else {}
+    session_id = (state or {}).get("session_id")
+
+    # Convert orchestrator's LangChain messages → role/content dicts the
+    # Analyst agent expects. This lets it see prior listings ("Here are
+    # 5 runs: 1. Cu_500K | 2. Al_300K | ...") so follow-ups like "analyze
+    # run 2" resolve without re-calling list_recent_runs. Cap at last 12
+    # messages to keep the Analyst's prompt bounded.
+    orch_messages = (state or {}).get("messages") or []
+    history = []
+    for m in orch_messages[-12:]:
+        if isinstance(m, HumanMessage) and isinstance(m.content, str):
+            history.append({"role": "user", "content": m.content})
+        elif isinstance(m, AIMessage) and isinstance(m.content, str) and m.content.strip():
+            history.append({"role": "assistant", "content": m.content})
+
+    analyst_state = {
+        "user_message":         query,
+        "session_id":           session_id,
+        "conversation_history": history,
+    }
+
+    analyze_results_node(analyst_state)
+
+    # Return value satisfies the assistant→ToolMessage invariant. Because
+    # return_direct=True, the graph ends immediately after this — the LLM
+    # does NOT see this content, so it can be anything.
+    return "Analysis streamed via Analyst agent."
+
+
+@tool(return_direct=True)
+def start_campaign(
+    template: dict,
+    bounds: dict,
+    n_iterations: int,
+    target: str,
+    original_user_message: str,
+    runtime: ToolRuntime = None,
+) -> str:
+    """Launch a benchmark campaign as a background daemon thread.
+
+    Call this AFTER the campaign skill's Phase 1 setup conversation, once
+    the user has confirmed the template + knob bounds + iteration count.
+    Sets up a _DualQueue tee (campaign_q + chat_q), registers a
+    CAMPAIGN_COMPLETION_EVENTS entry so app.py keeps the SSE stream open
+    until the campaign finishes, and spawns CampaignManager.run() in a
+    daemon thread.
+
+    return_direct=True: orchestrator's turn ends after launch. Subsequent
+    iterations re-enter the orchestrator via their own thread_id (the
+    campaign_id), with the campaign skill re-loaded by the LLM on each
+    iteration's "Propose iteration N. Past attempts:..." message.
+
+    Args:
+        template: Locked simulation spec (material, system_size, kim_model,
+                  timestep_ps, phase_1..N, dump_freq_steps, cna_cutoff_a,
+                  ovito_colors, camera).
+        bounds: Per-knob ranges, e.g. {"strain_rate": [1e-3, 2e-2],
+                "temperature": [100, 600], ...}.
+        n_iterations: How many iterations to run.
+        target: Optimization target, e.g. "minimize delta_a".
+        original_user_message: User's original campaign request, used as the
+                               iteration-1 prompt (CampaignManager passes it
+                               in verbatim with locked template + bounds).
+    """
+    import queue
+    import threading
+    from datetime import datetime
+
+    from benchmark.campaign import CampaignManager
+    from graph.nodes import (
+        SESSION_QUEUES,
+        CAMPAIGN_COMPLETION_EVENTS,
+        _q,
+    )
+    import config
+
+    state = runtime.state if runtime else {}
+    chat_sid = (state or {}).get("session_id")
+
+    # campaign_id doubles as LangGraph thread_id for iterations
+    campaign_id = f"benchmark_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+
+    # _DualQueue tee — events written by inside-iteration nodes via
+    # _q(SESSION_QUEUES[campaign_id], ...) get mirrored to the user's chat
+    # queue so the browser sees live progress (campaign_iteration_start,
+    # agent_content, etc.).
+    chat_q = SESSION_QUEUES.get(chat_sid) if chat_sid else None
+    campaign_q: queue.Queue = queue.Queue()
+
+    # CAMPAIGN_COMPLETION_EVENTS signals app.py's run_graph_async to keep
+    # the SSE stream open until campaign_complete fires (otherwise the
+    # finally block closes SSE the moment the orchestrator turn ends, and
+    # the frontend would miss every campaign_iteration_* / _complete event).
+    completion_event = threading.Event()
+    if chat_sid:
+        CAMPAIGN_COMPLETION_EVENTS[chat_sid] = completion_event
+
+    class _DualQueue:
+        """Tee: put(item) writes to both primary and secondary queues, and
+        sets completion_event when campaign_complete flows by."""
+        def __init__(self, primary, secondary, completion_event):
+            self.primary = primary
+            self.secondary = secondary
+            self.completion_event = completion_event
+
+        def put(self, item, *args, **kwargs):
+            try:
+                self.primary.put(item)
+            except Exception as e:
+                print(f"[DualQueue] primary.put FAILED: {e}")
+            if self.secondary is not None and self.secondary is not self.primary:
+                try:
+                    self.secondary.put(item)
+                except Exception as e:
+                    print(f"[DualQueue] secondary.put FAILED: {e}")
+            if isinstance(item, dict) and item.get("type") == "campaign_complete":
+                self.completion_event.set()
+
+    dual_q = _DualQueue(campaign_q, chat_q, completion_event)
+
+    # CRITICAL: register dual_q (NOT plain campaign_q) under campaign_id —
+    # inside-iteration nodes write to SESSION_QUEUES[campaign_id], so this
+    # is what tees their events to the user's chat queue.
+    SESSION_QUEUES[campaign_id] = dual_q
+
+    manager = CampaignManager(
+        campaign_id=campaign_id,
+        n_iterations=n_iterations,
+        original_user_message=original_user_message,
+        sse_q=dual_q,
+        num_cores=config.LAMMPS_CORES,
+        target=target,
+        template=template,
+        bounds=bounds,
+    )
+
+    t = threading.Thread(target=manager.run, daemon=True)
+    t.start()
+
+    # Emit campaign_started on the user's chat session.
+    _q({"session_id": chat_sid}, {
+        "type": "campaign_started",
+        "campaign_id": campaign_id,
+        "n_iterations": n_iterations,
+        "target": target,
+    })
+
+    # TODO: auto-title the chat session ("Al campaign (N iters)") if still
+    # default. Initial attempt failed because importing _get_sessions_db
+    # from app.py re-triggers dspy.configure in this thread. Will revisit
+    # alongside the campaign-mode architecture rework.
+
+    print(f"[start_campaign] spawned campaign thread: {campaign_id}, "
+          f"n_iter={n_iterations}, target={target}")
+
+    # Return value satisfies tool→ToolMessage invariant. return_direct=True
+    # means the LLM does NOT see this content — frontend sees campaign_started
+    # SSE + iteration progress via the daemon thread instead.
+    return f"Campaign {campaign_id} launched ({n_iterations} iterations, target: {target})."
+
+
+@tool(return_direct=True)
+def hpc_submit(
+    material: str,
+    temperature: float,
+    kim_model: str = "",
+    runtime: ToolRuntime = None,
+) -> Command:
+    """Submit a LAMMPS job to HPC via Globus — two-phase pattern.
+
+    All script content (LAMMPS, OVITO, edited PBS) is read from
+    runtime.state, NOT from LLM-typed tool args. The frontend POSTs the
+    user-edited textarea content; app.py threads it into OrchestratorState
+    as pending_script / ovito_script_param / pbs_script_edited. This tool
+    reads those fields directly — the LLM only needs to provide the
+    structured metadata (material, temperature, kim_model).
+
+    PHASE 1 (state.pbs_script_edited is empty — first call):
+      - Creates a run folder, writes pending_script as input.lammps.
+      - Writes ovito_script_param (if any) as ovito_script.py.
+      - Generates default PBS script and writes submit_lammps.sh.
+      - Emits "pbs_preview" SSE so the frontend shows the editable card.
+      - Returns workflow_stage="pbs_pending" + hpc_run_folder_pending.
+        The user edits the PBS, hits Approve, frontend re-POSTs with
+        body.pbs_script. app.py threads it into state.pbs_script_edited.
+
+    PHASE 2 (state.pbs_script_edited is set — second call):
+      - Reads state.hpc_run_folder_pending to find the saved scripts.
+      - Overwrites submit_lammps.sh with the user's edits.
+      - Calls _run_hpc_submit (Globus MCP via create_react_agent in
+        graph/hpc_executor_node.py).
+      - Appends a new hpc_jobs entry with the Globus task ID.
+
+    return_direct=True for both phases — orchestrator turn ends after the
+    tool runs. PBS preview / Globus submission output streams directly to
+    the user via the existing _q SSE plumbing.
+
+    Args:
+        material: For naming + the job description.
+        temperature: For the job description.
+        kim_model: Optional KIM model ID — added to the PBS script's
+                   kim-api install command so HPC has the potential.
+    """
+    import os
+    from datetime import datetime
+
+    from graph.hpc_executor_node import (
+        _generate_pbs_script,
+        _run_hpc_submit,
+    )
+    import run_manager
+    import config
+    from graph.nodes import _q
+
+    state = runtime.state if runtime else {}
+    session_id = (state or {}).get("session_id")
+    tool_call_id = runtime.tool_call_id if runtime else ""
+
+    # Read user-edited scripts from state (set by app.py from frontend body).
+    # Falls back to state.lammps_script / state.ovito_script if the user
+    # didn't edit (the originals from the most recent simulate call).
+    lammps_script = (
+        (state or {}).get("pending_script")
+        or (state or {}).get("lammps_script")
+    )
+    ovito_script = (
+        (state or {}).get("ovito_script_param")
+        or (state or {}).get("ovito_script")
+    )
+    pbs_script_edited = (state or {}).get("pbs_script_edited")
+
+    if not lammps_script:
+        ack = (
+            "ERROR: no LAMMPS script in state. Run simulate(...) first to "
+            "generate a script, then ask to submit to HPC."
+        )
+        return Command(update={"messages": [ToolMessage(content=ack, tool_call_id=tool_call_id)]})
+
+    # ── Phase 2: user has approved + edited the PBS, submit via Globus ───
+    if pbs_script_edited:
+        run_folder = (state or {}).get("hpc_run_folder_pending") or ""
+        if not run_folder:
+            ack = "ERROR: no run_folder_pending in state — call hpc_submit without pbs_script_edited first to set up the run."
+            return Command(update={"messages": [ToolMessage(content=ack, tool_call_id=tool_call_id)]})
+
+        with open(os.path.join(run_folder, "submit_lammps.sh"), "w") as f:
+            f.write(pbs_script_edited)
+
+        run_folder_name = os.path.basename(run_folder)
+        hpc_remote_dir = f"{config.HPC_RUN_BASE_DIR}/{run_folder_name}"
+        description = f"{material} {temperature}K".strip()
+
+        # _run_hpc_submit reads state for _q(state, ...) SSE forwarding —
+        # build a minimal compatible dict.
+        submit_state = {
+            "session_id": session_id,
+            "material":   material,
+            "temperature": temperature,
+        }
+        globus_task_id = _run_hpc_submit(submit_state, run_folder, hpc_remote_dir)
+
+        new_job = {
+            "globus_task_id": globus_task_id or "unknown",
+            "hpc_run_folder": run_folder,
+            "submitted_at":   datetime.now().isoformat(),
+            "description":    description,
+        }
+        existing_jobs = (state or {}).get("hpc_jobs") or []
+        ack = f"Submitted to HPC. Globus task ID: {globus_task_id or 'unknown'}."
+        return Command(update={
+            "messages":               [ToolMessage(content=ack, tool_call_id=tool_call_id)],
+            "hpc_jobs":               existing_jobs + [new_job],
+            "workflow_stage":         "initial",
+            "hpc_run_folder_pending": None,
+            "pbs_script_edited":      None,    # consumed — clear for next submit
+        })
+
+    # ── Phase 1: write scripts, emit PBS preview, await user edit ────────
+    run_folder = run_manager.create_run_folder()
+    run_folder_name = os.path.basename(run_folder)
+    run_manager.save_lammps_script(run_folder, lammps_script)
+    if ovito_script:
+        with open(os.path.join(run_folder, "ovito_script.py"), "w") as f:
+            f.write(ovito_script)
+
+    pbs_script = _generate_pbs_script(run_folder_name, kim_model=kim_model)
+    with open(os.path.join(run_folder, "submit_lammps.sh"), "w") as f:
+        f.write(pbs_script)
+
+    # SSE: pbs_preview goes to the frontend's editable card.
+    sse_state = {"session_id": session_id}
+    _q(sse_state, {
+        "type":        "pbs_preview",
+        "pbs_script":  pbs_script,
+        "run_folder":  run_folder,
+    })
+    _q(sse_state, {
+        "type":    "agent_content",
+        "agent":   "HPC",
+        "content": "Here is the PBS script that will be submitted. Review it and confirm to proceed.",
+    })
+
+    ack = f"PBS preview emitted for run_folder={run_folder}. Awaiting user edit/approval — turn ends."
+    return Command(update={
+        "messages":               [ToolMessage(content=ack, tool_call_id=tool_call_id)],
+        "workflow_stage":         "pbs_pending",
+        "hpc_run_folder_pending": run_folder,
+    })
+
+
+@tool(return_direct=True)
+def hpc_status(
+    query: str = "check status of my HPC jobs",
+    runtime: ToolRuntime = None,
+) -> str:
+    """Check status of previously-submitted HPC jobs (and optionally
+    transfer results back from HPC to the local Globus endpoint).
+
+    Wraps `_run_hpc_status_async` (create_react_agent + Globus MCP
+    setup). Streams the HPC agent's reasoning + tool calls directly to
+    the user via the existing SSE pipeline (HPC agent persona).
+
+    return_direct=True: orchestrator's turn ends after the HPC agent
+    finishes streaming. The HPC agent does the user-facing speaking.
+
+    Args:
+        query: Natural-language status/transfer request
+               (e.g. "check status", "are my jobs done?",
+               "transfer the results back").
+    """
+    import os
+    from graph.hpc_executor_node import _run_hpc_status
+    from langchain_core.messages import AIMessage, HumanMessage
+    import config
+
+    state = runtime.state if runtime else {}
+    session_id = (state or {}).get("session_id")
+    hpc_jobs = (state or {}).get("hpc_jobs") or []
+
+    if not hpc_jobs:
+        sse_state = {"session_id": session_id}
+        from graph.nodes import _q
+        _q(sse_state, {
+            "type": "agent_content",
+            "agent": "HPC",
+            "content": "No HPC jobs found for this session.",
+        })
+        return "No HPC jobs to check."
+
+    jobs_summary = "\n".join(
+        f"- {j.get('description', 'job')}: "
+        f"globus_task_id={j['globus_task_id']}, "
+        f"local_run_folder={j['hpc_run_folder']}, "
+        f"remote_run_folder={config.HPC_RUN_BASE_DIR}/{os.path.basename(j['hpc_run_folder'])}, "
+        f"submitted={j['submitted_at']}"
+        for j in hpc_jobs
+    )
+
+    # Build recent conversation context (capped) so HPC agent can resolve
+    # multi-turn references like "yes transfer it".
+    orch_messages = (state or {}).get("messages") or []
+    history_lines = []
+    for m in orch_messages[-6:]:
+        if isinstance(m, HumanMessage) and isinstance(m.content, str):
+            history_lines.append(f"USER: {m.content[:400]}")
+        elif isinstance(m, AIMessage) and isinstance(m.content, str) and m.content.strip():
+            history_lines.append(f"ASSISTANT: {m.content[:400]}")
+    history_block = (
+        f"Recent conversation (most recent at bottom):\n{chr(10).join(history_lines)}\n\n"
+        if history_lines else ""
+    )
+
+    user_msg = (
+        f"{history_block}"
+        f"User request: {query}\n\n"
+        f"HPC jobs submitted in this session:\n{jobs_summary}\n\n"
+        f"Local Globus endpoint: {config.GLOBUS_LOCAL_ENDPOINT}\n"
+        f"HPC Globus endpoint: {config.GLOBUS_HPC_ENDPOINT}\n\n"
+        f"If the user wants to transfer results back, transfer the entire "
+        f"remote_run_folder to the corresponding local_run_folder."
+    )
+
+    status_state = {"session_id": session_id}
+    _run_hpc_status(status_state, user_msg)
+
+    return "HPC status streamed to user via HPC agent."
+
+
+# ── Exported list for create_react_agent ─────────────────────────────────────
+
+ORCHESTRATOR_TOOLS = [
+    load_skill,
+    get_kim_models,
+    simulate,
+    analyze_runs,
+    start_campaign,
+    hpc_submit,
+    hpc_status,
+]

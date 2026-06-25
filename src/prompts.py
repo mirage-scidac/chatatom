@@ -293,6 +293,7 @@ class ExtractSimulationParameters(dspy.Signature):
     - Asking for approval before running: "ready to run?", "want me to generate?"
     Even if full parameters are present in the text, if the assistant is still
     asking for user input — has_parameters must be False.
+    if it is 
     """
     analysis_text: str = dspy.InputField(
         desc="Complete orchestrator analysis text including user refinements"
@@ -318,6 +319,7 @@ class ExtractSimulationParameters(dspy.Signature):
              "Default 'default'",
         default="default"
     )
+
 
 
 class DetectVisualization(dspy.Signature):
@@ -672,9 +674,8 @@ def _build_orchestrator_prompt(
         conversation_history: Recent conversation. Checked for prior
                               CAMPAIGN PARAMETERS: block or trigger phrases.
 
-    All three arguments are optional — when omitted (e.g., from tests or
-    legacy callers), the function behaves identically to the pre-campaign
-    version.
+    All three arguments are optional — when omitted (e.g., from tests),
+    the function behaves identically to the standalone-simulation version.
     """
     max_frames = getattr(config, 'MAX_TRAJECTORY_FRAMES', 50)
     base_prompt = """You are a request analyzer for LAMMPS molecular dynamics simulations. You operate in multiple phases:
@@ -806,11 +807,16 @@ When the user mentions any of these keywords, treat the request as a crack or fa
 - "fatigue", "cyclic loading", "cyclic deformation", "strain cycling"
 
 Simulation type mapping:
-- Crack only (no cycling) → 3-phase simulation:
+- Crack only (no monotonic loading no cycling) → 3-phase simulation:
   Phase 1: Pre-stress equilibration (NPT, ~50 ps)
   Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
   Phase 3: Crack propagation observation (NVT, user-specified or ~100 ps)
 
+- Crack (monotonic loadding) → 3-phase simulation:
+  Phase 1: Pre-stress equilibration (NPT, ~50 ps)
+  Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
+  Phase 3: Crack propagation under monotonic loading (NVT, strain rate = 1e-2, user-specified or ~100 ps)
+  
 - Crack + cyclic loading (fatigue) → 4-phase simulation:
   Phase 1: Pre-stress equilibration (NPT, ~50 ps)
   Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
@@ -910,19 +916,9 @@ If the user asks "what did you just do?", "what was the simulation?", "what mate
 
 Be helpful, educational, and conversational in your responses.""".replace('{max_frames}', str(max_frames))
 
-    # ── Campaign mode: append addendum if in campaign context ─────────────────
-    # Imported lazily to avoid circular imports at module-load time.
-    try:
-        from benchmark.campaign_prompts import (
-            is_campaign_context,
-            get_campaign_system_prompt_addendum,
-        )
-        if is_campaign_context(session_id, user_message, conversation_history):
-            base_prompt = base_prompt + "\n\n" + get_campaign_system_prompt_addendum()
-    except ImportError:
-        # benchmark package not available — silently skip (fresh-sim behavior)
-        pass
-
+    # Campaign-mode instructions now live in src/orchestrator/skills/campaign.md
+    # (loaded via the load_skill tool when the orchestrator-LLM matches a
+    # campaign-shaped request or iteration message). No prompt-time injection.
     return base_prompt
 
 

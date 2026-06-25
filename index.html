@@ -2694,6 +2694,31 @@
         }
 
 
+        function resetSessionVisuals() {
+            // 3D trajectory viewer
+            trajectoryFrames = [];
+            currentFrameIndex = 0;
+            isPlaying = false;
+            if (playbackInterval) {
+                clearInterval(playbackInterval);
+                playbackInterval = null;
+            }
+            hideTrajectoryViewer();
+
+            // Thermo plots
+            clearPlots();
+            streamingData = [];
+            streamingGroups = [];
+            isStreamingSimulation = false;
+
+            // Campaign banner + progress table
+            activeCampaign = null;
+            const banner = document.getElementById('campaign-banner');
+            if (banner) banner.remove();
+            const tableWrap = document.getElementById('campaign-progress-wrap');
+            if (tableWrap) tableWrap.remove();
+        }
+
         async function createNewSession() {
             try {
                 const res = await fetch('/api/sessions', { method: 'POST' });
@@ -2706,6 +2731,7 @@
                 if (chatContainer) chatContainer.innerHTML = '';
                 pendingScript = null;
                 pendingOvitoScript = null;
+                resetSessionVisuals();
                 await refreshSessions();
             } catch (e) {
                 console.error('Failed to create session:', e);
@@ -2736,13 +2762,23 @@
             const chatContainer = document.getElementById('chat-container');
             if (chatContainer) chatContainer.innerHTML = '';
 
-            // Restore messages from SQLite
+            // Restore messages from SQLite. Backend stores `messages` as a
+            // JSON-serialized string; parse it back to an array before
+            // iterating. Defensive: handles both string (current) and array
+            // (if backend ever changes to return parsed JSON directly).
             try {
                 const res = await fetch(`/api/sessions/${sessionId}`);
                 const session = await res.json();
-                const saved = session.messages || [];
+                let saved = session.messages;
+                if (typeof saved === 'string') {
+                    try { saved = JSON.parse(saved); }
+                    catch { saved = []; }
+                }
+                saved = Array.isArray(saved) ? saved : [];
                 saved.forEach(m => {
-                    addMessage(m.sender, m.content);
+                    if (m && m.sender && m.content) {
+                        addMessage(m.sender, m.content);
+                    }
                 });
                 chatMessages = saved;
             } catch (e) {
@@ -3053,6 +3089,9 @@
                         `🚀 Campaign **${data.campaign_id}** launched — ${data.n_iterations} iterations targeting *${activeCampaign.target}*.`,
                         'info'
                     );
+                    // Pick up the session title that start_campaign just wrote
+                    // to SQLite ("Al campaign (5 iters)").
+                    refreshSessions();
                     break;
 
                 case 'campaign_iteration_start':
