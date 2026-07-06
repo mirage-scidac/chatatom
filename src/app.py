@@ -283,11 +283,11 @@ async def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
     Sync DSPy call wrapped with asyncio.to_thread so the event loop stays free.
     Phase 4 will switch to native async if DSPy supports it.
     """
-    from agents import SmartOrchestrator
+    from agents import SimulationHelpers
 
-    orchestrator = SmartOrchestrator()
+    helpers = SimulationHelpers()
     result = await asyncio.to_thread(
-        orchestrator.process_feedback, body.feedback, body.simulation_summary
+        helpers.process_feedback, body.feedback, body.simulation_summary
     )
     return FeedbackResponse(
         category=result["category"],
@@ -989,7 +989,7 @@ async def replay_trajectory(sid, data):
                     "dump_file":        f,
                     "ovito_script":     ovito_script,
                     "file_frame_index": 0,
-                    "camera_angle":     "default",
+                    "camera_angle":     "top",
                     "render_size":      [600, 450],
                 })
                 if result.get("status") == "ok":

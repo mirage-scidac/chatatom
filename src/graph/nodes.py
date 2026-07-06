@@ -32,7 +32,7 @@ import run_manager
 from agents import (
     IterativeLammpsGeneration,
     IterativeOVITOGeneration,
-    SmartOrchestrator,
+    SimulationHelpers,
     detect_precomputed_properties,
 )
 from prompts import ANALYST_SYSTEM_PROMPT
@@ -168,8 +168,8 @@ def detect_viz_node(state: SimulationState) -> dict:
     if precomputed:
         simulation_context["precomputed_properties"] = precomputed
 
-    orchestrator = SmartOrchestrator()
-    has_custom_viz = orchestrator.detect_visualization(viz_request)
+    helpers = SimulationHelpers()
+    has_custom_viz = helpers.detect_visualization(viz_request)
     print(f"[detect_viz] has_custom_viz={has_custom_viz}")
 
     return {

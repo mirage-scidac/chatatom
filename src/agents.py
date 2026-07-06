@@ -381,22 +381,47 @@ def detect_precomputed_properties(lammps_script: str) -> Dict[str, str]:
     return properties
 
 
-class SmartOrchestrator(dspy.Module):
+class SimulationHelpers(dspy.Module):
     """
-    DSPy module for intelligent request analysis and tool selection.
+    Small DSPy-backed helpers used by the simulate subgraph and the
+    /api/feedback endpoint. NOT an orchestrator — the real orchestrator
+    is the ReAct LangGraph agent in src/orchestrator/agent.py.
 
-    Analyzes user requests, extracts parameters, and determines
-    what tools/actions are needed. Also classifies user intent
-    using LLM instead of string matching.
+    Active helpers:
+      - detect_visualization  → used by graph.nodes.detect_viz_node
+      - process_feedback      → used by /api/feedback endpoint (app.py)
+
+    Legacy helpers (extract_parameters, classify_intent) are commented out
+    below. They belong to the pre-ReAct flat-router era and are no longer
+    wired anywhere. Kept as reference during the cleanup pass — safe to
+    delete after testing confirms nothing regresses.
     """
 
     def __init__(self):
         super().__init__()
-        self.intent_classifier = dspy.ChainOfThought(ClassifyUserIntent)
+        # Legacy sub-modules — nothing calls them. Kept commented for reference.
+        # self.intent_classifier = dspy.ChainOfThought(ClassifyUserIntent)
+        # self.param_extractor = dspy.ChainOfThought(ExtractSimulationParameters)
         self.feedback_extractor = dspy.ChainOfThought(ExtractFeedback)
-        self.param_extractor = dspy.ChainOfThought(ExtractSimulationParameters)
         self.viz_detector = dspy.Predict(DetectVisualization)
 
+    # ── LEGACY (dead — kept in a string block so the class stays syntactically
+    #    valid without needing to prefix every line with #). Both methods
+    #    below are unreachable in the current codebase:
+    #
+    #    - extract_parameters: replaced by the ReAct orchestrator asking the
+    #      LLM to fill simulate(...) tool args directly. Same 8 parameters
+    #      (material, kim_model, temperature, ensemble, duration_ps,
+    #      system_size, visualization_notes, camera_angle) are still collected,
+    #      just via tool-calling instead of free-text-then-parse.
+    #
+    #    - classify_intent: replaced by the ReAct orchestrator itself — it
+    #      picks a tool (or replies in prose) instead of emitting an intent
+    #      label. No caller in the current codebase.
+    #
+    #    Safe to delete after regression testing confirms the two remaining
+    #    live methods (detect_visualization, process_feedback) still work.
+    _LEGACY_DEAD_CODE = '''
     def extract_parameters(self, analysis_text: str) -> Dict[str, Any]:
         """Extract structured simulation parameters from orchestrator analysis text.
 
@@ -465,7 +490,7 @@ class SmartOrchestrator(dspy.Module):
         history_str = ""
         if conversation_history:
             recent = conversation_history[-(6):]  # last 3 turns
-            history_str = "\n".join(
+            history_str = "\\n".join(
                 f"{m['role'].upper()}: {m['content'][:300]}" for m in recent
             )
 
@@ -493,6 +518,7 @@ class SmartOrchestrator(dspy.Module):
             "confidence": confidence,
             "modifications": str(result.extracted_modifications).strip() if result.extracted_modifications else ""
         }
+    '''
 
     def detect_visualization(self, user_request: str) -> bool:
         """Use LLM to determine if request contains custom visualization intent."""
