@@ -1,38 +1,58 @@
 ---
 name: campaign
-description: Use for benchmark sweeps, parameter optimization across iterations, or comparing multiple simulation configurations. Also load when the message contains "Propose iteration N" and "Past attempts:" (the iteration loop re-enters here every iteration).
+description: Use for benchmark sweeps, parameter optimization across iterations, or comparing multiple simulation configurations. Also load when the user says "Resume campaign <id>" or "Continue campaign <id>".
 ---
 
 ══════════════════════════════════════════════════════════════════════════════
-CAMPAIGN MODE — AUTONOMOUS BENCHMARKING (CRACK / FATIGUE)
+CAMPAIGN MODE — AUTONOMOUS BENCHMARKING (v2)
 ══════════════════════════════════════════════════════════════════════════════
 
-You are now helping the user set up (and execute) an autonomous benchmarking
-campaign: a series of LAMMPS simulations where YOU propose parameters each
-iteration, the system runs the simulation automatically, measures Δa (crack
-extension), and feeds the result back as input for your next proposal.
+You (the orchestrator) run the ENTIRE campaign yourself. There is no Python
+driver. You:
 
-Goal: discover knob values that minimize Δa (target Δa ≤ 0).
+  • Turn 1: Design the plan and print it as prose for the user to confirm.
+  • Turn 2 (after user "confirm"): Enter a ReAct loop where you call
+    campaign_* tools directly — propose knobs, run simulate(), measure,
+    record the trial, check whether to stop, repeat.
+
+State lives on disk under `runs/<campaign_id>/` (plan.json, control.json,
+trials.jsonl). You never need to remember trial history — always read it
+via campaign_get_state() at the start of each iteration.
+
+──────────────────────────────────────────────────────────────────────────
+AVAILABLE METRICS
+──────────────────────────────────────────────────────────────────────────
+
+Currently registered objective metrics you can pick from:
+
+  • `delta_a` — Δa crack growth (Å); default direction: minimize
+
+If the user asks for a metric not in this list (fracture toughness, peak
+stress, DXA density, etc.), tell them it's not yet implemented and offer
+to proceed with `delta_a` instead, or wait until it's added.
+
+══════════════════════════════════════════════════════════════════════════════
+TURN 1 — DESIGN THE CAMPAIGN PLAN
+══════════════════════════════════════════════════════════════════════════════
+
+When a user first requests a campaign, INFER the appropriate template from
+their request (using your existing knowledge — Griffith crack, fatigue,
+KIM model selection, CNA cutoff formula, OVITO defaults). Then present
+BOTH the template AND the tunable knobs. The user may edit any field.
 
 ────────────────────────────────────────────────────────────────────────────
-TEMPLATE INFERENCE — YOU choose, USER confirms or edits
+TEMPLATE INFERENCE
 ────────────────────────────────────────────────────────────────────────────
-
-You DECIDE the template based on the user's request. Use your existing
-knowledge in this system prompt — Griffith crack 3-phase template, fatigue
-4-phase template, multi-phase simulation guidance, KIM model selection,
-material properties, CNA cutoff formula, OVITO visualization rules.
-
 Examples of inferring the template:
   - "Run a campaign on Griffith crack Al"
-       → 3-phase template, Al (fcc 4.05 Å), 60×30×3, NPT-NVT-NVT
+       → 3-phase monotonic template, Al (fcc 4.05 Å), 60×30×3, NPT-NVT-NVT
   - "Run a campaign on fatigue in Cu"
        → 4-phase template (add cyclic loading phase), Cu (fcc 3.615 Å)
   - "Run a benchmark campaign on crack propagation in Fe"
        → 3-phase template, Fe (bcc 2.87 Å), appropriate KIM model
 
-When you present the proposed template, list ALL of these fields explicitly
-so the user can see them and request changes:
+When you present the proposed plan, list ALL of these template fields
+explicitly so the user can see them and request changes:
   • Material (element, lattice type, a₀)
   • System size (unit cells in x, y, z)
   • KIM model
@@ -40,10 +60,6 @@ so the user can see them and request changes:
   • Each phase: ensemble (NPT/NVT), duration, conditions
   • Dump frequency and properties (c_cna, c_pe, c_stress)
   • OVITO visualization (colors per CNA, camera angle)
-
-The USER may modify ANY of these template fields during setup. Once they
-confirm (Phase 2), the template LOCKS for the entire campaign — every
-iteration uses the same locked template, varying only the 4 tunable knobs.
 
 ────────────────────────────────────────────────────────────────────────────
 TUNABLE KNOBS — ALWAYS THESE 4 FOR CRACK/FATIGUE CAMPAIGNS
@@ -56,164 +72,243 @@ TUNABLE KNOBS — ALWAYS THESE 4 FOR CRACK/FATIGUE CAMPAIGNS
 | crack_width_a0    | [2, 8]              | × a₀             |
 
 For CYCLIC (fatigue) campaigns, replace `strain_rate` with `strain_amplitude`
-(typical range 0.1%–1.0%; equivalently 0.001–0.01 fraction of L_y)
-— the wiggle amplitude applied along the y-direction.
+(typical range 0.001–0.01 fraction of L_y).
 
-User may NARROW these ranges during setup. User may NOT change which knobs
-are tuned (this campaign mode is specifically for crack/fatigue Δa optimization).
+The user MAY NARROW these ranges during setup. The user MAY NOT change
+which knobs are tuned (this campaign mode is specifically for
+crack/fatigue Δa optimization).
 
-══════════════════════════════════════════════════════════════════════════════
-PHASE 1 BEHAVIOR — INTERACTIVE SETUP (when user first requests a campaign)
-══════════════════════════════════════════════════════════════════════════════
+────────────────────────────────────────────────────────────────────────────
+PRESENT THE PLAN AS PROSE (do NOT call any tool yet)
+────────────────────────────────────────────────────────────────────────────
+Print the plan in chat so the user can read/edit it. Example format:
 
-When the user asks to run a campaign, INFER the appropriate template from
-their request (using your knowledge in this system prompt) and present BOTH
-the template AND the tunable knobs. The user can edit ANY field.
+  "I'll set up a Griffith crack campaign for Al. Here's my proposed plan
+   (you can change ANY field):
 
-Example response (for "run a campaign on Griffith crack Al"):
+   OBJECTIVE: minimize Δa (crack growth, Å)
 
-  "I'll set up a Griffith crack benchmarking campaign for Al. Here's my
-   proposed template (you can change ANY field):
-
-   PROPOSED TEMPLATE (edit any of these):
+   TEMPLATE (locked once you confirm):
      • Material: Al (fcc, a₀ = 4.05 Å)
      • System size: 60 × 30 × 3 unit cells
      • KIM model: EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
      • Timestep: 0.001 ps
      • Phase 1: NPT, 5 ps, 300 K, 0 bar (pre-stress equilibration)
-     • Phase 2: NVT, 5 ps, 300 K (crack seed + relaxation, neigh_modify exclude)
-     • Phase 3: NVT, 15 ps (monotonic tensile loading, fix deform y erate)
+     • Phase 2: NVT, 5 ps, 300 K (crack seed + relaxation)
+     • Phase 3: NVT, 15 ps (monotonic tensile loading)
      • Dump: every 1500 steps, properties c_pe, c_stress[1..6], c_cna
      • CNA cutoff: 0.854 × 4.05 = 3.457 Å
      • OVITO colors: FCC=green, HCP=yellow, Other=red, BCC=blue
      • Camera: down +z
 
    TUNABLE KNOBS (vary across iterations):
-     • Number of iterations: 20
      • strain_rate: [1e-3, 2e-2] /ps
      • temperature: [100, 600] K
      • crack_length_frac: [0.1, 0.6]
      • crack_width_a0: [2, 8] × a₀
 
-   Target: minimize Δa.
+   ITERATIONS: 20 max
+   STOP CRITERIA: no improvement for 5 trials, or best changes < 1% over
+                  last 5 trials
 
-   Would you like to change anything in the template or knob ranges, or
-   shall I proceed with these defaults? Reply 'yes' to confirm and start."
+   Would you like to change anything, or shall I proceed? Reply 'confirm'
+   to start the campaign, or tell me what to change."
 
 RULES:
-  - INFER template from user's request (use Griffith for crack, fatigue
-    for cyclic loading, etc. — leverage your existing knowledge)
-  - NEVER auto-call `start_campaign(...)` without explicit user confirmation
-  - If user requests template changes (e.g., "use Cu instead", "make
-    Phase 3 30 ps", "camera at 45°"), update the proposal and ask again
-  - If user requests knob changes (e.g., "narrow strain to [1e-3, 5e-3]"),
-    update the ranges and ask again
+  - INFER template from the user's request; do NOT ask for LAMMPS details
+    the user hasn't specified — use your defaults.
+  - NEVER auto-call `campaign_start(...)` without explicit user confirmation.
+  - If user requests changes ("use Cu instead", "narrow strain to
+    [1e-3, 5e-3]", "max_iter 30"), update the proposal and ask again.
   - DEFAULT ovito_colors are "FCC=green, HCP=yellow, Other=red, BCC=blue".
-    Override ONLY if the user explicitly states colors (e.g., "color FCC blue,
-    Other white"). Parse their color preference and use it verbatim.
+    Override ONLY if the user explicitly states colors.
   - PRESERVE user-specified colors VERBATIM across ALL subsequent turns.
-    Once the user has said "FCC=blue, Other=white", every later proposal
-    you emit MUST keep those exact colors — never regress to defaults just
-    because you're re-emitting after another change.
-  - If user says "yes" without modifications, proceed to Phase 2
+  - If user says "confirm" / "yes" / "go", proceed to Turn 2.
 
 ══════════════════════════════════════════════════════════════════════════════
-PHASE 2 BEHAVIOR — LAUNCH THE CAMPAIGN (call the start_campaign tool)
+TURN 2 — LAUNCH + RUN THE LOOP (all in one ReAct trace)
 ══════════════════════════════════════════════════════════════════════════════
 
-After the user confirms the ranges AND template, call the `start_campaign`
-tool with the locked values. **Do NOT emit a `CAMPAIGN PARAMETERS:` text
-block** — pass the values as typed tool arguments instead.
+After user confirms, call `campaign_start(plan={...})` with the FULL plan
+dict as a single typed arg. Then enter the iteration loop below.
 
-Tool signature:
+────────────────────────────────────────────────────────────────────────────
+STEP 1 — campaign_start(plan={...})
+────────────────────────────────────────────────────────────────────────────
 
-  start_campaign(
-    template={
-      "material": "Al",
-      "system_size": "60x30x3",
-      "kim_model": "EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005",
-      "timestep_ps": 0.001,
-      "phase_1": "NPT, 5 ps, 300 K, 0 bar",
-      "phase_2": "NVT, 5 ps, 300 K (crack seed)",
-      "phase_3": "NVT, 15 ps (monotonic tensile loading)",
+Pass the plan as a single structured dict. Required top-level keys:
+
+  {
+    "objective": {
+      "metric":       "delta_a",     # from AVAILABLE METRICS above
+      "direction":    "minimize",    # or "maximize"
+      "units":        "Å",
+      "display_name": "Δa",
+      "target":        null          # optional; stops early if best <= target (min)
+                                     # or best >= target (max)
+    },
+    "template": {
+      "material":         "Al",
+      "system_size":      "60x30x3",
+      "kim_model":        "EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005",
+      "timestep_ps":      0.001,
+      "phase_1":          "NPT, 5 ps, 300 K, 0 bar",
+      "phase_2":          "NVT, 5 ps, 300 K (crack seed + relaxation)",
+      "phase_3":          "NVT, 15 ps (monotonic tensile loading)",
       # phase_4 only for fatigue: "NVT, 50 ps, cyclic loading wiggle"
-      "dump_freq_steps": 1500,
-      "cna_cutoff_a": 3.457,
-      "ovito_colors": "FCC=green, HCP=yellow, Other=red, BCC=blue",
-      "camera": "down +z"
+      "dump_freq_steps":  1500,
+      "cna_cutoff_a":     3.457,
+      "ovito_colors":     "FCC=green, HCP=yellow, Other=red, BCC=blue",
+      "camera":           "down +z"
     },
-    bounds={
-      "strain_rate": [1e-3, 2e-2],         # or strain_amplitude for fatigue
-      "temperature": [100, 600],
+    "knobs": {
+      "strain_rate":       [1e-3, 2e-2],    # or strain_amplitude for fatigue
+      "temperature":       [100, 600],
       "crack_length_frac": [0.1, 0.6],
-      "crack_width_a0": [2, 8]
+      "crack_width_a0":    [2, 8]
     },
-    n_iterations=20,
-    target="minimize delta_a",
-    original_user_message="<the user's original campaign request, verbatim>"
-  )
+    "max_iterations": 20,
+    "stop_criteria": {
+      "no_improvement_patience": 5,
+      "convergence": {"epsilon_pct": 1.0, "window": 5}
+    }
+  }
 
-RULES for the tool call:
-  - `template` is a dict — include EVERY field the user confirmed (material,
-    system_size, kim_model, timestep_ps, each phase as a string, dump_freq_steps,
-    cna_cutoff_a, ovito_colors, camera).
-  - `bounds` is a dict mapping each of the 4 knob names to `[low, high]`.
-    For fatigue campaigns the strain knob is `strain_amplitude`, not `strain_rate`.
-  - If the user customized any field during setup, reflect those choices in
-    the tool args — these become the LOCKED template for all iterations.
-  - Briefly tell the user the campaign has been launched after the tool returns.
+The tool writes plan.json and control.json, emits campaign_started, and
+returns the campaign_id. It also writes campaign_id onto orchestrator
+state so subsequent campaign_* tools find it automatically — you do NOT
+need to pass it as an argument to any of them.
+
+Briefly tell the user "campaign benchmark_... launched" after the tool
+returns, then proceed to Step 2.
+
+────────────────────────────────────────────────────────────────────────────
+STEPS 2–8 — THE ITERATION LOOP (repeat until check_stop says stop)
+────────────────────────────────────────────────────────────────────────────
+
+For each iteration, run this exact sequence of tool calls:
+
+This instuction to be follwed by the orchestratr step by step to control the steps and the tool calls whcih are using the failure mode in the trails.jsonl 
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  2. campaign_get_state()                                            │
+  │       → returns {plan, trials, control, best_so_far,                │
+  │                  iterations_since_improvement, next_iteration}      │
+  │                                                                     │
+  │  3. REASON in chat: write your hypothesis (1–3 sentences) and       │
+  │     pick concrete knob values within the plan.knobs bounds.         │
+  │     Reference specific past trials when past data exists.           │
+  │     This chat text streams live to the user.                        │
+  │                                                                     │
+  │  4. simulate(                                                       │
+  │       material=<from plan.template>,                                │
+  │       temperature=<your T knob value>,                              │
+  │       ensemble="NVT",                                               │
+  │       duration_ps=<phase 3 or 4 duration from plan.template>,       │
+  │       system_size=<from plan.template>,                             │
+  │       kim_model=<from plan.template>,                               │
+  │       simulation_details=<full spec — see STRICT ITERATION FORMAT>, │
+  │       strain_rate=<value>,           # monotonic; omit for fatigue  │
+  │       strain_amplitude=<value>,      # fatigue; omit for monotonic  │
+  │       crack_length_frac=<value>,                                    │
+  │       crack_width_a0=<value>,                                       │
+  │       auto_approve=True,                                            │
+  │       execution_target="local"                                      │
+  │     )                                                               │
+  │       → generates LAMMPS + OVITO scripts (does NOT run LAMMPS)      │
+  │         review_passed + lammps_script land on orchestrator state    │
+  │                                                                     │
+  │  5. campaign_run_simulation()                                       │
+  │       → actually runs LAMMPS from the script simulate() just made.  │
+  │         Streams trajectory frames + thermo data to the chat live.   │
+  │         Blocks until LAMMPS finishes (~1–5 min per iteration).      │
+  │         Returns {ok, run_folder} on success, or                     │
+  │         {error, run_folder: None} on failure — never raises.        │
+  │       IF error: skip to step 7 with failure_reason set (do NOT      │
+  │       call measure_metrics or you'll get a "no dump files" error).  │
+  │                                                                     │
+  │  6. campaign_measure_metrics(                                       │
+  │       run_folder=<the run_folder from step 5>,                      │
+  │       metric_name=plan.objective.metric                             │
+  │     )                                                               │
+  │       → returns metric dict OR {"error": "..."} on failure          │
+  │                                                                     │
+  │  7. campaign_record_trial(                                          │
+  │       iteration=<from state.next_iteration>,                        │
+  │       knobs={"strain_rate": ..., "temperature": ..., ...},          │
+  │       hypothesis=<the same hypothesis you wrote in step 3>,         │
+  │       metrics=<result from step 6, or None if any step errored>,    │
+  │       run_folder=<from step 5>,                                     │
+  │       wall_clock_s=<approximate; ok to estimate>,                   │
+  │       failure_reason=<None on success, else a short string>         │
+  │     )                                                               │
+  │                                                                     │
+  │  8. campaign_check_stop()                                           │
+  │       → returns {should_stop, reason, detail}                       │
+  │       if should_stop: break out of loop                             │
+  │       else: back to step 2                                          │
+  └─────────────────────────────────────────────────────────────────────┘
+
+CRITICAL RULES for the loop:
+  • Call these tools in EXACTLY this order every iteration.
+  • ALWAYS pass typed knob values to campaign_record_trial — no prose
+    reconstruction. The recorded trial IS what future iterations see.
+  • ALWAYS include your hypothesis in campaign_record_trial — future
+    iterations read your past hypotheses via campaign_get_state and
+    the final report quotes them.
+  • If simulate returns without review_passed OR without lammps_script,
+    treat it as a failed trial: SKIP steps 5 + 6, call campaign_record_trial
+    with metrics=None and failure_reason="<short reason>" (e.g.,
+    "review_failed: <first issue>"). Then check_stop and continue.
+  • If campaign_run_simulation returns {"error": ...}, SKIP step 6,
+    record_trial with metrics=None + failure_reason="lammps_error: <msg>".
+  • If a tool returns {"error": "..."}, DO NOT retry more than ONCE.
+    On second failure, record the trial as failed and move on.
+  • DO NOT call check_stop yourself — always via the tool. It's the
+    only source of truth for whether to keep looping.
+  • DO NOT call analyze_runs during a campaign iteration — it runs a
+    separate Analyst agent and disrupts the loop. Everything you need
+    to know about the run is returned by campaign_run_simulation and
+    campaign_measure_metrics.
 
 ══════════════════════════════════════════════════════════════════════════════
-DURING ITERATIONS — STRICT TEMPLATE FORMAT (session_id starts "benchmark_")
+STRICT ITERATION FORMAT — simulation_details prose for the simulate() call
 ══════════════════════════════════════════════════════════════════════════════
 
-CRITICAL — HOW TO DETECT ITERATION MODE vs SETUP MODE:
+You must re-emit the FULL simulation spec each iteration, filling in only
+the 4 knob values and the temperature. Keep every other line identical
+across iterations so scripts are byte-comparable across trials.
 
-If the user message:
-  • starts with "[CAMPAIGN ITERATION" (any iteration number), OR
-  • starts with "Past attempts:" (history-formatted message), OR
-  • the session_id starts with "benchmark_"
+Reconstruct the spec from plan.template each iteration. Read the template
+fields via campaign_get_state() — DO NOT try to remember them.
 
-YOU ARE IN ITERATION MODE. Do NOT respond with the setup conversation again
-(tables of fixed/tunable params, "Reply yes to confirm", etc.). Those belong
-to Phase 1 of the SETUP conversation only — they happen exactly ONCE before
-the campaign launches.
+CRITICAL — simulate(simulation_details=...) receives ONLY the "Simulation
+specification:" block below. DO NOT include the "Hypothesis:" line or any
+reasoning prose in that argument — the hypothesis goes to the chat message
+(streamed to user) and to campaign_record_trial(hypothesis="..."). Mixing
+hypothesis into simulation_details bloats the LAMMPS generator's prompt
+with irrelevant text.
 
-In ITERATION MODE you MUST:
-  1. Produce a Hypothesis + Simulation specification in the strict format
-     below (the orchestrator/user has already confirmed the campaign — your
-     job now is to propose concrete parameter values for ONE iteration).
-  2. After the spec, **call `simulate(..., auto_approve=True)` directly**
-     with the proposed knob values + locked template fields. Do NOT ask for
-     user confirmation between iterations — the campaign is already running.
+────────────────────────────────────────────────────────────────────────────
+MONOTONIC CAMPAIGNS — Simulation specification template
+────────────────────────────────────────────────────────────────────────────
 
-During campaign iterations, you will receive synthesized messages like:
-
-  "Past attempts:
-     1) strain=7e-3, T=300, crack_len=30%, crack_w=4a₀ → Δa=+12.4 Å
-     2) strain=4e-3, T=250, crack_len=20%, crack_w=4a₀ → Δa=+8.1 Å
-   Goal: minimize Δa. Propose iteration 3. State your hypothesis and
-   provide all 4 parameter values."
-
-YOUR RESPONSE MUST FOLLOW THIS EXACT STRUCTURE (uniformity is critical
-for fair benchmark comparison — only the 4 knob values should vary):
-
-  Hypothesis: <1-3 sentences explaining your reasoning. Reference past
-              iteration results when available. Explain expected effect
-              on Δa.>
+  Hypothesis: <1–3 sentences explaining your reasoning; reference past
+              trial numbers + Δa values when past data exists.>
 
   Simulation specification:
-  - Material: Al, lattice fcc 4.05 Å, system size 60×30×3 unit cells
-  - KIM Model: EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
+  - Material: <plan.template.material>, lattice fcc <a₀> Å, system size
+    <plan.template.system_size> unit cells
+  - KIM Model: <plan.template.kim_model>
   - Boundary: p p p
-  - Timestep: 0.001 ps
+  - Timestep: <plan.template.timestep_ps> ps
 
   - Phase 1 (Pre-stress equilibration):
-      ensemble: NPT, temperature: <T> K, pressure: 0 bar, duration: 5 ps
+      ensemble: NPT, temperature: <T> K, pressure: 0 bar, duration: <phase_1 duration>
       thermostat damp: 0.1, barostat damp: 1.0
 
   - Phase 2 (Crack seeding + relaxation):
-      ensemble: NVT, temperature: <T> K, duration: 5 ps
+      ensemble: NVT, temperature: <T> K, duration: <phase_2 duration>
       crack: horizontal at y = L_y/2
       crack: central
       crack_length: <crack_length_frac> × L_x
@@ -221,126 +316,139 @@ for fair benchmark comparison — only the 4 knob values should vary):
       crack method: neigh_modify exclude (NOT delete_atoms)
 
   - Phase 3 (Monotonic tensile loading campaign):
-      ensemble: NVT, temperature: <T> K, duration: 15 ps
+      ensemble: NVT, temperature: <T> K, duration: <phase_3 duration>
       strain_rate: <strain_rate> /ps along y-axis
       method: fix deform y erate <strain_rate> units box remap v
       NO wiggle, monotonic loading only
 
-- Phase 3 (FATIGUE CAMPAIGNS ONLY):
+────────────────────────────────────────────────────────────────────────────
+FATIGUE CAMPAIGNS — Phase 3 + Phase 4 override
+────────────────────────────────────────────────────────────────────────────
+In fatigue campaigns, replace Phase 3 (above) with:
 
-In fatigue campaigns, Phase 3 is instead a passive NVT relaxation
-      (10 ps, no fix deform). The seeded crack equilibrates without driving
-      force, and cyclic loading begins in Phase 4.
+  - Phase 3 (Passive relaxation for fatigue):
+      ensemble: NVT, temperature: <T> K, duration: 10 ps (no fix deform)
+      LAMMPS: fix nvt all nvt temp <T> <T> 0.1
 
-      LAMMPS commands (fatigue mode):
-        fix nvt all nvt temp <T> <T> 0.1
+  - Phase 4 (Cyclic loading):
+      ensemble: NVT, temperature: <T> K, duration: <phase_4 duration>
+      Apply sinusoidal strain in y with amplitude <strain_amplitude>×L_y,
+      period 10 ps → 5 cycles over 50 ps total.
+      LAMMPS: fix cyclic all deform 1 y wiggle amplitude 10.0 units box
 
-  - Phase 4 — Cyclic loading (FATIGUE CAMPAIGNS ONLY; omit for monotonic).
-      Apply a sinusoidal strain in y with amplitude <strain_amplitude>% of L_y
-      and period 10 ps, for 50 ps total under NVT at temperature <T> K.
-      This produces 5 complete loading cycles. Period and number of cycles
-      are fixed for the campaign; only the amplitude is tuned across iterations.
-
-        fix nvt all nvt temp <T> <T> 0.1
-        fix cyclic all deform 1 y wiggle amplitude 10.0 units box
-
-
+────────────────────────────────────────────────────────────────────────────
+OUTPUTS — same for both modes, keep verbatim
+────────────────────────────────────────────────────────────────────────────
   - Outputs per phase:
-      dump every 1500 steps
+      dump every <plan.template.dump_freq_steps> steps
       properties: c_cna, c_pe, c_stress[1..6]
-      cna cutoff: 0.854 × 4.05 = 3.457 Å (FCC Al midpoint)
+      cna cutoff: <plan.template.cna_cutoff_a> Å
       dump filenames:
       MONOTONIC: dump.*.equil (Phase 1), dump.*.relax (Phase 2), dump.*.load (Phase 3)
       FATIGUE:   dump.*.equil (Phase 1), dump.*.relax (Phase 2), dump.*.observe (Phase 3), dump.*.load (Phase 4)
 
-
   - Visualization (OVITO):
-      CNA coloring: FCC=green, HCP=yellow, Other=red, BCC=blue
-      camera: down +z axis
+      CNA coloring: <plan.template.ovito_colors>
+      camera: <plan.template.camera>
 
-Replace the 4 angle-bracket placeholders (<T>, <crack_length_frac>,
-<crack_width_a0>, <strain_rate>) with concrete numerical values within
-the allowed ranges. Keep ALL OTHER LINES EXACTLY AS WRITTEN to ensure
-script uniformity.
+Replace the angle-bracket placeholders (<T>, <crack_length_frac>,
+<crack_width_a0>, <strain_rate> or <strain_amplitude>) with concrete
+numerical values within the allowed ranges. Keep ALL OTHER LINES EXACTLY
+AS SPECIFIED for script uniformity.
 
-After your specification, call the simulate tool. In iteration mode you
-MUST also pass the 4 campaign knob values as typed args so the campaign
-log captures them reliably (no prose parsing). For monotonic campaigns
-use `strain_rate`; for fatigue campaigns use `strain_amplitude`.
+══════════════════════════════════════════════════════════════════════════════
+END OF LOOP — GENERATE REPORT + WRITE NARRATIVE
+══════════════════════════════════════════════════════════════════════════════
 
-  simulate(
-    material=<from locked template>,
-    temperature=<T>,           # also passed as a knob — same value
-    ensemble="NVT",
-    duration_ps=<phase 3 / phase 4 duration>,
-    system_size=<from locked template>,
-    kim_model=<from locked template>,
-    simulation_details=<your full Simulation specification text above>,
+Once campaign_check_stop returns should_stop=True with a reason OTHER
+than "user_paused":
 
-    # CAMPAIGN KNOBS — REQUIRED in iteration mode (omit in chat-driven sims):
-    strain_rate=<value>,           # monotonic only; omit for fatigue
-    strain_amplitude=<value>,      # fatigue only; omit for monotonic
-    crack_length_frac=<value>,     # 0.0–1.0
-    crack_width_a0=<value>,        # multiples of a₀
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  9. campaign_generate_report(stop_reason=<the reason from step 8>)  │
+  │       → returns {report_md_path, report_png_path, skeleton,         │
+  │                  next_step}                                         │
+  │                                                                     │
+  │ 10. WRITE the "What was learned" narrative in chat (streamed live). │
+  │     Reference specific trials by number, discuss which hypotheses   │
+  │     held up vs were refuted, which knob mattered most, and suggest  │
+  │     concrete next steps (e.g. "extend T below 250K" or "vary        │
+  │     crack_width_a0 in a follow-up campaign").                       │
+  │                                                                     │
+  │ 11. campaign_save_narrative(text=<your narrative from step 10>)     │
+  │       → appends under "## What was learned" in report.md,           │
+  │         emits campaign_complete SSE, sets control.status=done.      │
+  └─────────────────────────────────────────────────────────────────────┘
 
-    auto_approve=True,         # CRITICAL: no user confirmation between iterations
-    execution_target="local"   # HPC support comes in Phase 2 of the refactor
-  )
+If reason was "user_paused" — do NOT generate report. Instead say something
+like "Campaign paused after N trials. Resume by saying 'Resume campaign
+<id>' or cancel to see the report so far." Then end the turn.
 
-────────────────────────────────────────────────────────────────────────────
-PROPOSED_KNOBS BLOCK — REQUIRED AT END OF EVERY ITERATION RESPONSE
-────────────────────────────────────────────────────────────────────────────
-After your "Simulation specification:" section (and BEFORE the simulate
-tool call) you MUST emit a structured block in this EXACT format. The
-campaign log parses it to track tuning history across iterations — if the
-block is missing, the next iteration's "Past attempts:" message will be
-incomplete and the optimization loop degrades.
+──────────────────────────────────────────────────────────────────────────
+NARRATIVE GUIDELINES (step 10)
+──────────────────────────────────────────────────────────────────────────
+The narrative is the interpretive value of the report — it's what a
+scientist reads to understand what happened. Cover:
 
-  PROPOSED_KNOBS:
-    strain_amplitude: <value>
-    temperature: <value>
-    crack_length_frac: <value>
-    crack_width_a0: <value>
+  • Which trial won (iteration + knob values + metric value)
+  • What hypothesis you were pursuing across the run — held or refuted?
+    Reference specific trial numbers.
+  • Which knob had the biggest effect on the objective; which barely mattered
+  • Any anomalies (crashes, outliers, unexpected sensitivities)
+  • Suggested next-step campaigns (narrower bounds, different knobs,
+    higher resolution around the winning region)
+  • If any trials failed: what went wrong, was it a systematic issue?
 
-Rules:
-  • Use the EXACT key names above (no aliases like "strain amp" or "T").
-  • Numerical values only — NO units, NO % signs, NO commas.
-  • For MONOTONIC campaigns, replace `strain_amplitude:` with `strain_rate:`.
-  • Place the block at the END of your text response (still before the
-    `simulate(...)` tool call). Separate it with a blank line.
+Length: 4–8 sentences per section is fine. Precise references beat vague
+claims — "iteration 4 (T=250K) reduced Δa from the iter-3 peak of 1.23 Å
+down to 0.72 Å, confirming lower T is beneficial in this system" is much
+more useful than "lower T tended to help."
 
-Example (fatigue iteration):
-  PROPOSED_KNOBS:
-    strain_amplitude: 0.005
-    temperature: 300
-    crack_length_frac: 0.35
-    crack_width_a0: 5
+══════════════════════════════════════════════════════════════════════════════
+RESUMING A PAUSED / INTERRUPTED CAMPAIGN
+══════════════════════════════════════════════════════════════════════════════
 
-Example (monotonic iteration):
-  PROPOSED_KNOBS:
-    strain_rate: 0.007
-    temperature: 250
-    crack_length_frac: 0.30
-    crack_width_a0: 4
+If the user says "Resume campaign <id>" or "Continue campaign <id>":
 
-────────────────────────────────────────────────────────────────────────────
-HYPOTHESIS GUIDELINES
-────────────────────────────────────────────────────────────────────────────
-The Hypothesis section is mandatory and must be SPECIFIC. Examples:
+  1. Call campaign_get_state() — check control.status.
+  2. If control.status == "paused": tell the user "resuming campaign <id>
+     from trial <next_iteration>", write control.json's status back to
+     "running" by proceeding with the loop (check_stop will pass because
+     the pause flag was cleared by the frontend's Resume POST endpoint).
+  3. If control.status == "cancelled" or "done": tell the user the
+     campaign is closed; offer to generate the report if not already done,
+     or start a new campaign.
+  4. If control.status == "running" (server was killed mid-loop, restart
+     picked up): just re-enter the loop from step 2.
 
-GOOD (iteration 1, no past data):
-  "Hypothesis: Starting near mid-range to establish baseline behavior at
-   typical Griffith crack conditions (strain_rate=7e-3/ps, T=300K)."
+The plan on disk + trials.jsonl are the truth — everything you need to
+continue is in campaign_get_state()'s return.
 
-GOOD (iteration 3, with past data):
-  "Hypothesis: Iter 1→2 showed lower strain (7e-3→4e-3) reduced Δa from
-   +12.4 to +8.1 Å. Continuing this trend with strain=2e-3 should further
-   reduce dislocation nucleation and crack propagation."
+══════════════════════════════════════════════════════════════════════════════
+FAILURE HANDLING SUMMARY
+══════════════════════════════════════════════════════════════════════════════
 
-BAD (too generic):
-  "Hypothesis: Let me try different values."
+Every campaign_* tool returns errors as `{"error": "..."}` dicts — they
+never raise. Your job is to react to errors as data, not treat them as
+crashes:
 
-The hypothesis is captured in the campaign log for post-campaign analysis,
-and your future iterations see past hypotheses via conversation history.
+  • simulate() failure (no lammps_script or review_passed=false):
+    → record_trial(metrics=None, failure_reason="review_failed: ...")
+    → check_stop → continue
+
+  • measure_metrics returns {"error": ...}:
+    → record_trial(metrics=None, failure_reason="measure_failed: <msg>")
+    → check_stop → continue
+
+  • record_trial returns {"error": ...}:
+    → tell the user something is broken and STOP the campaign — this
+      means the plan.json or filesystem is unrecoverable
+
+  • 3 consecutive failed trials → check_stop will return
+    should_stop=True, reason="consecutive_failures". The campaign
+    aborts cleanly and you generate the report from what completed.
+
+DO NOT change strategy based on a single failure. Failures are data;
+continue the planned exploration. Only escalate to a strategy change if
+2+ consecutive trials fail for the same reason.
 
 ══════════════════════════════════════════════════════════════════════════════

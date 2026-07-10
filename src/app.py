@@ -21,7 +21,7 @@ import sys
 import threading
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from agents import configure_dspy_lm
-from graph.nodes import SESSION_QUEUES, CAMPAIGN_COMPLETION_EVENTS
+from graph.nodes import SESSION_QUEUES
 
 # Configure DSPy LM once at module load (main thread). DSPy 3.x locks settings
 # to the thread that first calls dspy.configure(), so this must happen here —
@@ -548,9 +548,9 @@ async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
     target_timesteps = None
 
     # Branch 6: Scripts ready for user approval — but NOT for campaign
-    # iterations (auto_approve=True), where CampaignManager runs the script
-    # directly without user intervention. The orchestrator's `simulate` tool
-    # sets auto_approve on the orchestrator state.
+    # iterations (auto_approve=True), where the orchestrator runs the script
+    # within its own ReAct loop without user intervention. The orchestrator's
+    # `simulate` tool sets auto_approve on the orchestrator state.
     if (final.get("lammps_script") and final.get("review_passed")
             and not final.get("auto_approve")):
         print("[CASCADE] branch=scripts_ready_for_review (script + review_passed + not auto_approve)")
@@ -641,7 +641,14 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
         simulate_called_this_turn = False
         async for ev in ACTIVE_GRAPH.astream_events(
             graph_input,
-            config={"configurable": {"thread_id": session_id}},
+            config={
+                "configurable": {"thread_id": session_id},
+                # Bumped from LangGraph's default of 25 so a campaign
+                # turn (up to ~20 iters × 6 tools + wrapping ≈ 125 steps)
+                # fits in a single ReAct trace. Standalone chat turns
+                # never come close to this ceiling; the change is safe.
+                "recursion_limit": 200,
+            },
             version="v2",
         ):
             etype = ev.get("event")
@@ -711,28 +718,6 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
         await run_cascade(final, sse_q, session_id, prior_hpc_count, body,
                           simulate_called_this_turn=simulate_called_this_turn)
 
-        # ── Campaign mode: keep SSE open until background loop signals completion
-        # The start_campaign tool spawned a daemon thread that emits events into
-        # SESSION_QUEUES via a DualQueue. Without this wait, the finally below
-        # would close the SSE immediately and the frontend would miss every
-        # campaign_iteration_* / campaign_complete event. The completion signal
-        # is the CAMPAIGN_COMPLETION_EVENTS entry registered by start_campaign.
-        campaign_launched = (
-            final.get("intent") == "campaign_start"
-            or session_id in CAMPAIGN_COMPLETION_EVENTS
-        )
-        if campaign_launched:
-            print("[POST-GRAPH] campaign launched — keeping SSE open until campaign_complete")
-            ev = _take_campaign_completion_event(session_id)
-            if ev is not None:
-                # Wait up to 3 hours; on signal, give SSE generator a grace period
-                completed = await asyncio.to_thread(ev.wait, 3 * 3600)
-                if completed:
-                    await asyncio.sleep(0.5)  # let final SSE events flush
-                    print("[POST-GRAPH] campaign_complete signaled — closing SSE")
-                else:
-                    print("[POST-GRAPH] campaign SSE wait timed out")
-
     except Exception as e:
         traceback.print_exc()
         parts = _flatten(e) or [repr(e)]
@@ -743,14 +728,67 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
         SESSION_QUEUES.pop(session_id, None)
 
 
-def _take_campaign_completion_event(chat_session_id: str):
-    """Pop and return the completion event for this chat session, if registered.
+##──────────────────────────────────────────────────────────────────────────
+##  Campaign v2 — control endpoints (pause / resume / cancel)
+##──────────────────────────────────────────────────────────────────────────
+##
+##  These flip control.json for a campaign folder. The orchestrator's
+##  campaign_check_stop() reads control.json between iterations and exits
+##  the loop cleanly when it sees paused / cancelled.
+##
+##  Resume is a two-step in the frontend:
+##    1. POST /api/campaign/{id}/resume  — flips flag back to "running"
+##    2. Send a chat message "Resume campaign <id>" via /api/llm-stream-live
+##  The campaign skill detects that prose and re-enters the loop from
+##  next_iteration (state on disk is the source of truth).
 
-    CAMPAIGN_COMPLETION_EVENTS is defined in graph.nodes (not here) so worker
-    threads can access it without triggering app.py's top-level
-    dspy.configure() side effect on a fresh import.
-    """
-    return CAMPAIGN_COMPLETION_EVENTS.pop(chat_session_id, None)
+_VALID_CAMPAIGN_STATUSES = {"running", "paused", "cancelled"}
+
+
+def _campaign_control_path(campaign_id: str) -> str:
+    """Path guard: prevent directory traversal via campaign_id."""
+    # Only allow the id our tools generate: "benchmark_YYYYMMDD_HHMMSS".
+    # Reject anything containing / or .. — the id must be a plain segment.
+    if not campaign_id or "/" in campaign_id or ".." in campaign_id:
+        raise HTTPException(status_code=400, detail=f"invalid campaign_id: {campaign_id!r}")
+    return os.path.join("runs", campaign_id, "control.json")
+
+
+def _write_campaign_status(campaign_id: str, status: str) -> dict:
+    if status not in _VALID_CAMPAIGN_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {status!r}")
+    path = _campaign_control_path(campaign_id)
+    if not os.path.exists(os.path.dirname(path)):
+        raise HTTPException(status_code=404, detail=f"campaign not found: {campaign_id}")
+    payload = {"status": status, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
+    return {"ok": True, "campaign_id": campaign_id, **payload}
+
+
+@app.post("/api/campaign/{campaign_id}/pause")
+async def campaign_pause(campaign_id: str) -> dict:
+    """Flag the campaign as paused. Orchestrator exits the loop cleanly on
+    the next campaign_check_stop call. Does NOT generate a report."""
+    return _write_campaign_status(campaign_id, "paused")
+
+
+@app.post("/api/campaign/{campaign_id}/resume")
+async def campaign_resume(campaign_id: str) -> dict:
+    """Flag the campaign as running again. The frontend must ALSO send a
+    chat message "Resume campaign <id>" to re-invoke the orchestrator —
+    this endpoint only clears the pause flag; it does not restart the loop
+    on its own."""
+    return _write_campaign_status(campaign_id, "running")
+
+
+@app.post("/api/campaign/{campaign_id}/cancel")
+async def campaign_cancel(campaign_id: str) -> dict:
+    """Flag the campaign as cancelled. Orchestrator exits the loop and
+    generates the report from whatever trials completed."""
+    return _write_campaign_status(campaign_id, "cancelled")
 
 
 @app.post("/api/llm-stream-live")
@@ -990,7 +1028,7 @@ async def replay_trajectory(sid, data):
                     "ovito_script":     ovito_script,
                     "file_frame_index": 0,
                     "camera_angle":     "top",
-                    "render_size":      [600, 450],
+                    "render_size":      [1200, 900],
                 })
                 if result.get("status") == "ok":
                     asyncio.run_coroutine_threadsafe(

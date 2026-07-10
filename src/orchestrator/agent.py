@@ -75,8 +75,8 @@ class OrchestratorState(MessagesState):
     # ── Written by `simulate` tool, read by the post-graph cascade ────────────
     # The cascade in app.py fires `scripts_ready_for_review` only when both
     # lammps_script is present AND auto_approve is falsy. Campaign iteration
-    # calls (auto_approve=True) skip the card so CampaignManager can run the
-    # script without user intervention.
+    # calls (auto_approve=True) skip the card so the orchestrator can run
+    # the script within its own ReAct loop without user intervention.
     lammps_script: str | None
     ovito_script: str | None
     dump_filename_pattern: str | None
@@ -84,10 +84,17 @@ class OrchestratorState(MessagesState):
     camera_angle: str | None
     auto_approve: bool | None
     # Campaign-only: typed knob values the LLM passed to simulate() during
-    # an iteration. None for chat-driven simulations. CampaignManager pulls
-    # this from final_state to build params_text + the next iteration's
-    # "Past attempts:" line — no regex on prose.
+    # an iteration. Written by simulate() as a per-iteration echo. In v2
+    # this is a convenience mirror — trial history itself lives on disk
+    # (trials.jsonl) and is read via campaign_get_state().
     campaign_knobs: dict | None
+
+    # Campaign v2: id of the active campaign. Written by campaign_start via
+    # Command(update={"campaign_id": ...}); read by every other campaign_*
+    # tool via InjectedState so those tools take no id argument themselves.
+    # None for chat-driven turns. Persists across the ReAct trace of a
+    # single campaign turn via the AsyncSqliteSaver checkpointer.
+    campaign_id: str | None
     # Surfaces the script-review status from the simulate subgraph so the
     # cascade can branch on review_failed (rare but needs explicit handling).
     review_passed: bool | None

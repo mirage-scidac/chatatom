@@ -15,13 +15,6 @@ from openai import OpenAI
 # Keeps sse_queue out of LangGraph state (not serializable by SqliteSaver).
 SESSION_QUEUES: Dict[str, queue.Queue] = {}
 
-# Campaign completion signaling: chat_session_id → threading.Event
-# start_campaign tool creates the event; CampaignManager sets it when
-# campaign_complete fires; app.py waits on it before closing the SSE stream.
-# Lives here (not in app.py) so worker threads can access it without
-# triggering app.py's top-level dspy.configure() side effects.
-CAMPAIGN_COMPLETION_EVENTS: Dict[str, threading.Event] = {}
-
 import sys
 import os
 import glob

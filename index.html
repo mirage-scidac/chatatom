@@ -573,7 +573,7 @@
                 <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr_auto] gap-3 flex-1 min-h-0">
                     <h2 class="text-xl font-orbitron font-semibold text-blue-400">3D Visualization</h2>
                     <div id="viewer-container"
-                        class="bg-black/90 p-1 rounded-lg overflow-hidden min-h-0 relative border border-gray-700/30">
+                        class="bg-black p-1 rounded-lg overflow-hidden min-h-0 relative border border-gray-700/30">
                         <div id="viewer-placeholder"
                             class="text-gray-500 flex flex-col items-center justify-center h-full gap-2 opacity-60">
                             <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1417,17 +1417,54 @@
         let playbackSpeed = 1;
 
         // ── Campaign mode state ─────────────────────────────────────────────
-        // activeCampaign = { id, total, target, completed, bestSoFar, iterations: [...] }
+        // v2 shape:
+        //   activeCampaign = {
+        //     id, total, objective: {metric, direction, units, display_name},
+        //     knobs: [name, ...], status: 'running'|'paused'|'cancelled'|'done',
+        //     completed, bestValue, bestIteration, iterations: [...]
+        //   }
         let activeCampaign = null;
 
-        function formatDelta(d) {
-            if (d === null || d === undefined || Number.isNaN(d)) return 'n/a';
-            const v = Number(d);
-            return (v >= 0 ? '+' : '') + v.toFixed(2);
+        function formatMetric(v, digits) {
+            if (v === null || v === undefined || Number.isNaN(v)) return 'n/a';
+            const n = Number(v);
+            const d = digits === undefined ? 3 : digits;
+            return n.toPrecision(d);
+        }
+
+        function formatKnobs(knobs) {
+            // knobs is a dict {name: value}. Render compactly.
+            if (!knobs || typeof knobs !== 'object') return '-';
+            return Object.entries(knobs)
+                .map(([k, v]) => `${k}=${typeof v === 'number' ? formatMetric(v, 3) : v}`)
+                .join(', ');
+        }
+
+        function campaignMetricValue(iterRow) {
+            // Pull the objective's metric value out of a persisted iteration row.
+            if (!iterRow || !iterRow.metrics || !activeCampaign) return null;
+            const key = activeCampaign.objective && activeCampaign.objective.metric;
+            if (!key) return null;
+            const v = iterRow.metrics[key];
+            return (v === null || v === undefined) ? null : Number(v);
+        }
+
+        function campaignBetter(a, b) {
+            // Returns true if a is a strict improvement over b for the campaign's direction.
+            if (a === null) return false;
+            if (b === null) return true;
+            const dir = (activeCampaign && activeCampaign.objective && activeCampaign.objective.direction) || 'minimize';
+            return dir === 'maximize' ? a > b : a < b;
+        }
+
+        function metricLabel() {
+            const o = activeCampaign && activeCampaign.objective;
+            if (!o) return 'metric';
+            const units = o.units ? ` (${o.units})` : '';
+            return `${o.display_name || o.metric}${units}`;
         }
 
         function showCampaignBanner() {
-            // Lazily create the banner DOM if not present
             let banner = document.getElementById('campaign-banner');
             if (!banner) {
                 banner = document.createElement('div');
@@ -1439,22 +1476,110 @@
                 }
             }
             banner.classList.remove('hidden');
-            if (activeCampaign) {
-                banner.innerHTML = `<span class="font-bold">🎯 Campaign ${activeCampaign.id}</span> &nbsp;|&nbsp; ` +
-                                   `0/${activeCampaign.total} iterations &nbsp;|&nbsp; target: ${activeCampaign.target}`;
+            renderCampaignBanner('waiting for first iteration...');
+        }
+
+        function renderCampaignBanner(statusLine) {
+            const banner = document.getElementById('campaign-banner');
+            if (!banner || !activeCampaign) return;
+            const o = activeCampaign.objective || {};
+            const dir = o.direction || 'minimize';
+            const disp = o.display_name || o.metric || 'metric';
+            const units = o.units || '';
+            const best = activeCampaign.bestValue !== null && activeCampaign.bestValue !== undefined
+                ? `${formatMetric(activeCampaign.bestValue)} ${units}`.trim()
+                : 'n/a';
+            const statusPill = activeCampaign.status && activeCampaign.status !== 'running'
+                ? ` <span class="ml-2 px-2 py-0.5 rounded bg-yellow-700/70 text-yellow-100">${activeCampaign.status}</span>`
+                : '';
+            banner.innerHTML =
+                `<div class="flex items-center justify-between gap-3 flex-wrap">` +
+                  `<div>` +
+                    `<span class="font-bold">🎯 ${activeCampaign.id}</span>${statusPill} &nbsp;|&nbsp; ` +
+                    `${activeCampaign.completed}/${activeCampaign.total} done &nbsp;|&nbsp; ` +
+                    `${dir} ${disp} &nbsp;|&nbsp; best: ${best} ` +
+                    `<span class="text-purple-300">— ${statusLine}</span>` +
+                  `</div>` +
+                  `<div class="flex gap-1">` +
+                    `<button id="campaign-pause-btn"  class="px-2 py-1 rounded bg-yellow-700/80 hover:bg-yellow-700 text-white text-xs" title="Pause after current iteration">⏸ Pause</button>` +
+                    `<button id="campaign-resume-btn" class="px-2 py-1 rounded bg-green-700/80  hover:bg-green-700 text-white text-xs hidden" title="Resume the campaign">▶ Resume</button>` +
+                    `<button id="campaign-cancel-btn" class="px-2 py-1 rounded bg-red-800/80    hover:bg-red-800    text-white text-xs" title="Cancel and generate report">✖ Cancel</button>` +
+                  `</div>` +
+                `</div>`;
+            wireCampaignControlButtons();
+            syncCampaignControlButtons();
+        }
+
+        // Backwards-compat alias so existing call sites keep working
+        function updateCampaignBanner(statusLine) { renderCampaignBanner(statusLine); }
+
+        function syncCampaignControlButtons() {
+            if (!activeCampaign) return;
+            const pauseBtn = document.getElementById('campaign-pause-btn');
+            const resumeBtn = document.getElementById('campaign-resume-btn');
+            const cancelBtn = document.getElementById('campaign-cancel-btn');
+            const st = activeCampaign.status || 'running';
+            const closed = (st === 'cancelled' || st === 'done');
+            if (pauseBtn)  pauseBtn.classList.toggle('hidden', st !== 'running' || closed);
+            if (resumeBtn) resumeBtn.classList.toggle('hidden', st !== 'paused');
+            if (cancelBtn) cancelBtn.disabled = closed;
+            if (cancelBtn) cancelBtn.classList.toggle('opacity-50', closed);
+        }
+
+        async function _campaignControl(action) {
+            if (!activeCampaign) return;
+            try {
+                const r = await fetch(`/api/campaign/${encodeURIComponent(activeCampaign.id)}/${action}`, { method: 'POST' });
+                if (!r.ok) {
+                    const err = await r.text().catch(() => '');
+                    addConversationMessage('System', `⚠️ Campaign ${action} failed: ${err || r.status}`, 'info');
+                    return null;
+                }
+                return await r.json();
+            } catch (e) {
+                addConversationMessage('System', `⚠️ Campaign ${action} error: ${e && e.message ? e.message : e}`, 'info');
+                return null;
             }
         }
 
-        function updateCampaignBanner(statusLine) {
-            const banner = document.getElementById('campaign-banner');
-            if (!banner || !activeCampaign) return;
-            banner.innerHTML = `<span class="font-bold">🎯 ${activeCampaign.id}</span> &nbsp;|&nbsp; ` +
-                               `${activeCampaign.completed}/${activeCampaign.total} done &nbsp;|&nbsp; ` +
-                               `${statusLine}`;
+        function wireCampaignControlButtons() {
+            const pauseBtn = document.getElementById('campaign-pause-btn');
+            const resumeBtn = document.getElementById('campaign-resume-btn');
+            const cancelBtn = document.getElementById('campaign-cancel-btn');
+            if (pauseBtn && !pauseBtn.dataset.wired) {
+                pauseBtn.dataset.wired = '1';
+                pauseBtn.addEventListener('click', async () => {
+                    await _campaignControl('pause');
+                    // Optimistic UI — real confirmation arrives via campaign_paused SSE
+                    if (activeCampaign) { activeCampaign.status = 'paused'; syncCampaignControlButtons(); }
+                });
+            }
+            if (resumeBtn && !resumeBtn.dataset.wired) {
+                resumeBtn.dataset.wired = '1';
+                resumeBtn.addEventListener('click', async () => {
+                    const ok = await _campaignControl('resume');
+                    if (!ok) return;
+                    // Fire the resume message through the normal chat POST so the
+                    // orchestrator re-enters the loop from next_iteration.
+                    // The campaign skill detects "Resume campaign <id>" prose.
+                    const userInput = document.getElementById('user-input');
+                    if (userInput && typeof sendMessage === 'function') {
+                        userInput.value = `Resume campaign ${activeCampaign.id}`;
+                        sendMessage();
+                    }
+                });
+            }
+            if (cancelBtn && !cancelBtn.dataset.wired) {
+                cancelBtn.dataset.wired = '1';
+                cancelBtn.addEventListener('click', async () => {
+                    if (!confirm(`Cancel campaign ${activeCampaign.id}? Report will be generated from trials completed so far.`)) return;
+                    await _campaignControl('cancel');
+                    if (activeCampaign) { activeCampaign.status = 'cancelled'; syncCampaignControlButtons(); }
+                });
+            }
         }
 
         function updateCampaignProgressTable() {
-            // Build/refresh a small collapsible table of iteration results below the banner
             let tableWrap = document.getElementById('campaign-progress-wrap');
             if (!tableWrap) {
                 tableWrap = document.createElement('details');
@@ -1470,24 +1595,26 @@
             const body = document.getElementById('campaign-progress-body');
             if (!body || !activeCampaign) return;
 
+            const bestVal = activeCampaign.bestValue;
             const rows = activeCampaign.iterations.map(it => {
                 if (it.failed) {
                     return `<tr class="text-red-400"><td class="pr-3">${it.iteration}</td><td colspan="3">FAILED: ${it.reason || 'unknown'}</td></tr>`;
                 }
-                const isBest = activeCampaign.bestSoFar !== null && it.delta_a === activeCampaign.bestSoFar;
+                const v = campaignMetricValue(it);
+                const isBest = v !== null && bestVal !== null && v === bestVal;
                 const rowCls = isBest ? 'text-green-300 font-bold' : '';
                 return `<tr class="${rowCls}"><td class="pr-3">${it.iteration}</td>` +
-                       `<td class="pr-3">${it.params_text || '-'}</td>` +
-                       `<td class="pr-3">${formatDelta(it.delta_a)}</td>` +
-                       `<td class="pr-3">${formatDelta(it.best_so_far)}</td></tr>`;
+                       `<td class="pr-3">${formatKnobs(it.knobs)}</td>` +
+                       `<td class="pr-3">${formatMetric(v)}</td>` +
+                       `<td class="pr-3">${formatMetric(bestVal)}</td></tr>`;
             }).join('');
 
             body.innerHTML =
                 '<table class="w-full"><thead><tr class="text-zinc-400 border-b border-zinc-700">' +
                 '<th class="text-left pr-3">Iter</th>' +
-                '<th class="text-left pr-3">Params</th>' +
-                '<th class="text-left pr-3">Δa (Å)</th>' +
-                '<th class="text-left pr-3">Best (Å)</th>' +
+                '<th class="text-left pr-3">Knobs</th>' +
+                `<th class="text-left pr-3">${metricLabel()}</th>` +
+                '<th class="text-left pr-3">Best</th>' +
                 '</tr></thead><tbody>' + rows + '</tbody></table>';
         }
 
@@ -3072,94 +3199,92 @@
                     isStreaming = false;
                     break;
 
-                // ── Campaign mode (autonomous benchmarking) ─────────────────
-                case 'campaign_started':
+                // ── Campaign mode v2 (autonomous benchmarking) ──────────────
+                // v2 emits: campaign_started, campaign_iteration_complete,
+                // campaign_iteration_failed, campaign_paused, campaign_cancelled,
+                // campaign_complete. No campaign_iteration_start (the LLM's
+                // hypothesis prose streaming IS the iteration-start signal).
+                case 'campaign_started': {
+                    const objective = data.objective || {};
+                    const knobs = Array.isArray(data.knobs) ? data.knobs : [];
                     activeCampaign = {
                         id: data.campaign_id,
-                        total: data.n_iterations,
-                        target: data.target || 'minimize delta_a',
+                        total: data.max_iterations,
+                        objective: objective,
+                        knobs: knobs,
+                        status: 'running',
                         completed: 0,
-                        bestSoFar: null,
+                        bestValue: null,
+                        bestIteration: null,
                         iterations: [],
                     };
                     showCampaignBanner();
-                    updateStatus(`Campaign started: ${data.campaign_id} (${data.n_iterations} iterations)`);
+                    const disp = objective.display_name || objective.metric || 'metric';
+                    const dir = objective.direction || 'minimize';
+                    updateStatus(`Campaign started: ${data.campaign_id} (${data.max_iterations} iterations)`);
                     addConversationMessage(
                         'System',
-                        `🚀 Campaign **${data.campaign_id}** launched — ${data.n_iterations} iterations targeting *${activeCampaign.target}*.`,
+                        `🚀 Campaign **${data.campaign_id}** launched — up to ${data.max_iterations} iterations, ${dir} ${disp}.`,
                         'info'
                     );
-                    // Pick up the session title that start_campaign just wrote
-                    // to SQLite ("Al campaign (5 iters)").
-                    refreshSessions();
-                    break;
-
-                case 'campaign_iteration_start':
-                    if (activeCampaign) {
-                        updateCampaignBanner(`Iteration ${data.iteration}/${activeCampaign.total} running...`);
-                    }
-                    // Each iteration gets a fresh viz + thermo view
+                    // Reset per-iteration viz/thermo state (previous chat run
+                    // may have populated these).
                     trajectoryFrames = [];
                     currentFrameIndex = 0;
                     isPlaying = false;
-                    if (playbackInterval) {
-                        clearInterval(playbackInterval);
-                        playbackInterval = null;
-                    }
+                    if (playbackInterval) { clearInterval(playbackInterval); playbackInterval = null; }
                     hideTrajectoryViewer();
                     clearPlots();
-
-                    // CRITICAL — fresh bubble keys + enable streaming-plot updates:
-                    //   1) streamingSessionId++ → each iteration's agent_content
-                    //      (Orchestrator hypothesis, Generator script, Reviewer)
-                    //      gets a NEW chat bubble instead of appending to the
-                    //      stale bubble from the user's "yes" turn.
-                    //   2) isStreamingSimulation=true → updateStreamingPlots()
-                    //      otherwise early-returns (it's gated on the Socket.IO
-                    //      simulation_started flag which we never emit).
-                    //   3) reset streamingData/streamingGroups so plot init runs
-                    //      fresh on the first thermo_data_point of this iter.
                     streamingSessionId++;
                     isStreamingSimulation = true;
                     streamingData = [];
                     streamingGroups = [];
                     currentAgentMessages = {};
-
-                    addConversationMessage(
-                        'System',
-                        `▶️ Iteration ${data.iteration}/${data.total || '?'} starting...`,
-                        'info'
-                    );
+                    refreshSessions();
                     break;
+                }
 
-                case 'campaign_iteration_complete':
+                case 'campaign_iteration_complete': {
                     if (activeCampaign) {
                         activeCampaign.completed += 1;
-                        if (data.best_so_far !== null && data.best_so_far !== undefined) {
-                            activeCampaign.bestSoFar = data.best_so_far;
+                        const metricName = data.metric_name || (activeCampaign.objective && activeCampaign.objective.metric);
+                        const val = (data.metrics && metricName) ? Number(data.metrics[metricName]) : null;
+                        if (data.is_new_best && val !== null && !Number.isNaN(val)) {
+                            activeCampaign.bestValue = val;
+                            activeCampaign.bestIteration = data.iteration;
                         }
                         activeCampaign.iterations.push({
                             iteration: data.iteration,
-                            params_text: data.params_text,
-                            delta_a: data.delta_a,
-                            best_so_far: data.best_so_far,
+                            knobs: data.knobs || {},
+                            metrics: data.metrics || null,
                             run_folder: data.run_folder,
+                            wall_clock_s: data.wall_clock_s,
                         });
-                        updateCampaignBanner(
-                            `Iteration ${data.iteration}/${activeCampaign.total} done — Δa=${formatDelta(data.delta_a)} Å` +
-                            (activeCampaign.bestSoFar !== null
-                                ? ` | best=${formatDelta(activeCampaign.bestSoFar)} Å`
-                                : '')
+                        renderCampaignBanner(
+                            `iter ${data.iteration}/${activeCampaign.total} done — ${metricLabel()}=${formatMetric(val)}` +
+                            (data.is_new_best ? ' ← new best' : '')
                         );
                         updateCampaignProgressTable();
                     }
                     addConversationMessage(
                         'System',
-                        `✅ Iteration ${data.iteration} complete: ${data.params_text || ''} → **Δa=${formatDelta(data.delta_a)} Å**` +
-                        (data.wall_clock_s ? ` _(${data.wall_clock_s}s)_` : ''),
+                        `✅ Iteration ${data.iteration} complete: ${formatKnobs(data.knobs)} → **${metricLabel()}=${formatMetric(data.metrics && data.metrics[data.metric_name])}**` +
+                        (data.wall_clock_s ? ` _(${Number(data.wall_clock_s).toFixed(1)}s)_` : '') +
+                        (data.is_new_best ? ' 🏆 new best' : ''),
                         'info'
                     );
+                    // Refresh per-iteration viz/thermo streams for the next iteration.
+                    trajectoryFrames = [];
+                    currentFrameIndex = 0;
+                    if (playbackInterval) { clearInterval(playbackInterval); playbackInterval = null; }
+                    hideTrajectoryViewer();
+                    clearPlots();
+                    streamingSessionId++;
+                    streamingData = [];
+                    streamingGroups = [];
+                    currentAgentMessages = {};
                     break;
+                }
 
                 case 'campaign_iteration_failed':
                     if (activeCampaign) {
@@ -3168,9 +3293,10 @@
                             iteration: data.iteration,
                             failed: true,
                             reason: data.reason,
+                            knobs: data.knobs || {},
                         });
-                        updateCampaignBanner(
-                            `Iteration ${data.iteration}/${activeCampaign.total} failed (${data.reason || 'unknown'})`
+                        renderCampaignBanner(
+                            `iter ${data.iteration}/${activeCampaign.total} failed (${data.reason || 'unknown'})`
                         );
                         updateCampaignProgressTable();
                     }
@@ -3179,26 +3305,68 @@
                         `❌ Iteration ${data.iteration} failed: ${data.reason || 'unknown reason'}`,
                         'info'
                     );
+                    // Same viz/thermo cleanup as _complete, so next iteration
+                    // starts fresh even after a failure.
+                    trajectoryFrames = [];
+                    currentFrameIndex = 0;
+                    if (playbackInterval) { clearInterval(playbackInterval); playbackInterval = null; }
+                    hideTrajectoryViewer();
+                    clearPlots();
+                    streamingSessionId++;
+                    streamingData = [];
+                    streamingGroups = [];
+                    currentAgentMessages = {};
                     break;
 
-                case 'campaign_complete':
+                case 'campaign_paused':
                     if (activeCampaign) {
-                        const bestStr = activeCampaign.bestSoFar !== null
-                            ? `${formatDelta(activeCampaign.bestSoFar)} Å`
-                            : 'n/a';
-                        updateCampaignBanner(
-                            `✅ Campaign complete — best Δa=${bestStr} across ${activeCampaign.completed} iterations`
-                        );
+                        activeCampaign.status = 'paused';
+                        renderCampaignBanner('paused — click ▶ Resume to continue');
                     }
-                    updateStatus('Campaign complete');
                     addConversationMessage(
                         'System',
-                        `🎉 Campaign **${data.campaign_id}** finished. Best Δa: **${activeCampaign && activeCampaign.bestSoFar !== null ? formatDelta(activeCampaign.bestSoFar) : 'n/a'} Å**.\n\n` +
-                        `📂 Log: \`${data.log_path || 'runs/' + data.campaign_id + '/campaign_log.md'}\`\n` +
-                        `📊 Summary: \`${data.summary_path || 'runs/' + data.campaign_id + '/summary.json'}\``,
+                        `⏸ Campaign **${data.campaign_id}** paused. Click ▶ Resume in the banner to continue.`,
                         'info'
                     );
                     break;
+
+                case 'campaign_cancelled':
+                    if (activeCampaign) {
+                        activeCampaign.status = 'cancelled';
+                        renderCampaignBanner('cancelled — report will be generated from completed trials');
+                    }
+                    addConversationMessage(
+                        'System',
+                        `✖ Campaign **${data.campaign_id}** cancelled. Report is being generated from ${activeCampaign ? activeCampaign.completed : 0} completed trials.`,
+                        'info'
+                    );
+                    break;
+
+                case 'campaign_complete': {
+                    if (activeCampaign) {
+                        activeCampaign.status = 'done';
+                        renderCampaignBanner(`complete — best ${metricLabel()}=${formatMetric(activeCampaign.bestValue)}`);
+                    }
+                    updateStatus('Campaign complete');
+                    const md = data.report_md_path
+                        ? `runs/${data.campaign_id}/report.md`
+                        : null;
+                    const png = data.report_png_path
+                        ? `runs/${data.campaign_id}/report.png`
+                        : null;
+                    const bestLine = activeCampaign && activeCampaign.bestValue !== null
+                        ? `Best ${metricLabel()}: **${formatMetric(activeCampaign.bestValue)}** at iteration ${activeCampaign.bestIteration}.`
+                        : 'No successful trials.';
+                    addConversationMessage(
+                        'System',
+                        `🎉 Campaign **${data.campaign_id}** finished.\n\n` +
+                        bestLine + '\n\n' +
+                        (md  ? `📄 Report: \`${md}\`\n` : '') +
+                        (png ? `📊 Graph: \`${png}\`` : ''),
+                        'info'
+                    );
+                    break;
+                }
 
                 case 'run_list':
                     // Render one "Analyze" button per run below the streamed list

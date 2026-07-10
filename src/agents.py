@@ -24,7 +24,7 @@ from memory import get_memory_backend, MemoryEntry
 # =============================================================================
 
 # Module-level singleton — the LM configured at app startup.
-# Worker threads (e.g., CampaignManager) reference this to wrap their
+# Reference this from any worker thread (rare in v2) that needs to wrap
 # DSPy calls in `with dspy.context(lm=CONFIGURED_LM):` since DSPy 3.x
 # locks dspy.settings to the thread that called dspy.configure().
 CONFIGURED_LM = None

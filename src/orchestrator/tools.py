@@ -5,18 +5,15 @@ NOTE: this file is `src/orchestrator/tools.py` — distinct from `src/tools.py`
 monitoring, OVITO rendering). The orchestrator tools live under the
 orchestrator/ package; the LAMMPS helpers stay at src/ root.
 
-Phase 1b status (current):
-  - get_kim_models  ✅ real (wraps kim_utils.build_registry_context_for_command)
-  - load_skill      ✅ real (reads skills/<name>.md, strips frontmatter, returns body)
-  - simulate        ✅ real (invokes simulate_subgraph, returns Command(update=...))
-  - analyze_runs    ⏳ stub (Phase 1c)
-  - start_campaign  ⏳ stub (Phase 1d)
-  - hpc_submit      ⏳ stub (Phase 1e)
-  - hpc_status      ⏳ stub (Phase 1e)
-
-Each stub returns a clear string the orchestrator-LLM will relay to the
-user, so users get a useful "not implemented yet" message instead of an
-exception during the incremental rollout.
+Tools registered in ORCHESTRATOR_TOOLS:
+  - load_skill                 (reads skills/<name>.md, strips frontmatter)
+  - get_kim_models             (wraps kim_utils.build_registry_context_for_command)
+  - simulate                   (invokes simulate_subgraph, returns Command(update=...))
+  - analyze_runs               (invokes analyze_results_node, return_direct)
+  - hpc_submit                 (two-phase HPC submit via Globus)
+  - hpc_status                 (queries Globus / PBS status)
+  - campaign_* (7 tools)       (see orchestrator/campaign_tools.py — v2 orchestrator
+                                owns the campaign loop directly, no daemon thread)
 """
 import os
 import sys
@@ -114,8 +111,9 @@ def simulate(
     # ── Campaign-only optional knob args (set ONLY inside a campaign
     # iteration loop). For chat-driven simulations, leave all of these as
     # None — they will be ignored. The campaign skill instructs the LLM
-    # to populate them per iteration so CampaignManager can read typed
-    # knob values straight from the tool args (no regex on prose).
+    # to populate them per iteration; the values are echoed back onto
+    # OrchestratorState.campaign_knobs as a convenience mirror, then the
+    # LLM passes them explicitly to campaign_record_trial for persistence.
     strain_rate: float | None = None,
     strain_amplitude: float | None = None,
     crack_length_frac: float | None = None,
@@ -176,11 +174,12 @@ def simulate(
     # DEBUG: print the EXACT simulation_details prose the LLM passed
     # to the tool. Compare against what's visible in the chat to confirm
     # whether the LLM is sending the same full text or a summary.
-    print("=" * 80)
-    print(f"[simulate] simulation_details ({len(simulation_details)} chars):")
-    print("-" * 80)
-    print(simulation_details)
-    print("=" * 80)
+    # Uncomment when debugging LLM prose drift or hypothesis leaks.
+    # print("=" * 80)
+    # print(f"[simulate] simulation_details ({len(simulation_details)} chars):")
+    # print("-" * 80)
+    # print(simulation_details)
+    # print("=" * 80)
     
 
 
@@ -227,9 +226,9 @@ def simulate(
         )
 
     # Echo any campaign-only knob args the LLM passed back into state.
-    # CampaignManager pulls campaign_knobs from final_state to build the
-    # per-iteration record (params_text + the "Past attempts:" line in the
-    # next iteration's synthesized message). All-None for chat-driven sims.
+    # In v2 the source of truth for per-trial knobs is trials.jsonl (written
+    # by campaign_record_trial). This state mirror is kept for downstream
+    # observers/cascades that already read it. All-None for chat-driven sims.
     campaign_knobs = {
         k: v for k, v in {
             "strain_rate":       strain_rate,
@@ -329,138 +328,6 @@ def analyze_runs(
     # return_direct=True, the graph ends immediately after this — the LLM
     # does NOT see this content, so it can be anything.
     return "Analysis streamed via Analyst agent."
-
-
-@tool(return_direct=True)
-def start_campaign(
-    template: dict,
-    bounds: dict,
-    n_iterations: int,
-    target: str,
-    original_user_message: str,
-    runtime: ToolRuntime = None,
-) -> str:
-    """Launch a benchmark campaign as a background daemon thread.
-
-    Call this AFTER the campaign skill's Phase 1 setup conversation, once
-    the user has confirmed the template + knob bounds + iteration count.
-    Sets up a _DualQueue tee (campaign_q + chat_q), registers a
-    CAMPAIGN_COMPLETION_EVENTS entry so app.py keeps the SSE stream open
-    until the campaign finishes, and spawns CampaignManager.run() in a
-    daemon thread.
-
-    return_direct=True: orchestrator's turn ends after launch. Subsequent
-    iterations re-enter the orchestrator via their own thread_id (the
-    campaign_id), with the campaign skill re-loaded by the LLM on each
-    iteration's "Propose iteration N. Past attempts:..." message.
-
-    Args:
-        template: Locked simulation spec (material, system_size, kim_model,
-                  timestep_ps, phase_1..N, dump_freq_steps, cna_cutoff_a,
-                  ovito_colors, camera).
-        bounds: Per-knob ranges, e.g. {"strain_rate": [1e-3, 2e-2],
-                "temperature": [100, 600], ...}.
-        n_iterations: How many iterations to run.
-        target: Optimization target, e.g. "minimize delta_a".
-        original_user_message: User's original campaign request, used as the
-                               iteration-1 prompt (CampaignManager passes it
-                               in verbatim with locked template + bounds).
-    """
-    import queue
-    import threading
-    from datetime import datetime
-
-    from benchmark.campaign import CampaignManager
-    from graph.nodes import (
-        SESSION_QUEUES,
-        CAMPAIGN_COMPLETION_EVENTS,
-        _q,
-    )
-    import config
-
-    state = runtime.state if runtime else {}
-    chat_sid = (state or {}).get("session_id")
-
-    # campaign_id doubles as LangGraph thread_id for iterations
-    campaign_id = f"benchmark_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-
-    # _DualQueue tee — events written by inside-iteration nodes via
-    # _q(SESSION_QUEUES[campaign_id], ...) get mirrored to the user's chat
-    # queue so the browser sees live progress (campaign_iteration_start,
-    # agent_content, etc.).
-    chat_q = SESSION_QUEUES.get(chat_sid) if chat_sid else None
-    campaign_q: queue.Queue = queue.Queue()
-
-    # CAMPAIGN_COMPLETION_EVENTS signals app.py's run_graph_async to keep
-    # the SSE stream open until campaign_complete fires (otherwise the
-    # finally block closes SSE the moment the orchestrator turn ends, and
-    # the frontend would miss every campaign_iteration_* / _complete event).
-    completion_event = threading.Event()
-    if chat_sid:
-        CAMPAIGN_COMPLETION_EVENTS[chat_sid] = completion_event
-
-    class _DualQueue:
-        """Tee: put(item) writes to both primary and secondary queues, and
-        sets completion_event when campaign_complete flows by."""
-        def __init__(self, primary, secondary, completion_event):
-            self.primary = primary
-            self.secondary = secondary
-            self.completion_event = completion_event
-
-        def put(self, item, *args, **kwargs):
-            try:
-                self.primary.put(item)
-            except Exception as e:
-                print(f"[DualQueue] primary.put FAILED: {e}")
-            if self.secondary is not None and self.secondary is not self.primary:
-                try:
-                    self.secondary.put(item)
-                except Exception as e:
-                    print(f"[DualQueue] secondary.put FAILED: {e}")
-            if isinstance(item, dict) and item.get("type") == "campaign_complete":
-                self.completion_event.set()
-
-    dual_q = _DualQueue(campaign_q, chat_q, completion_event)
-
-    # CRITICAL: register dual_q (NOT plain campaign_q) under campaign_id —
-    # inside-iteration nodes write to SESSION_QUEUES[campaign_id], so this
-    # is what tees their events to the user's chat queue.
-    SESSION_QUEUES[campaign_id] = dual_q
-
-    manager = CampaignManager(
-        campaign_id=campaign_id,
-        n_iterations=n_iterations,
-        original_user_message=original_user_message,
-        sse_q=dual_q,
-        num_cores=config.LAMMPS_CORES,
-        target=target,
-        template=template,
-        bounds=bounds,
-    )
-
-    t = threading.Thread(target=manager.run, daemon=True)
-    t.start()
-
-    # Emit campaign_started on the user's chat session.
-    _q({"session_id": chat_sid}, {
-        "type": "campaign_started",
-        "campaign_id": campaign_id,
-        "n_iterations": n_iterations,
-        "target": target,
-    })
-
-    # TODO: auto-title the chat session ("Al campaign (N iters)") if still
-    # default. Initial attempt failed because importing _get_sessions_db
-    # from app.py re-triggers dspy.configure in this thread. Will revisit
-    # alongside the campaign-mode architecture rework.
-
-    print(f"[start_campaign] spawned campaign thread: {campaign_id}, "
-          f"n_iter={n_iterations}, target={target}")
-
-    # Return value satisfies tool→ToolMessage invariant. return_direct=True
-    # means the LLM does NOT see this content — frontend sees campaign_started
-    # SSE + iteration progress via the daemon thread instead.
-    return f"Campaign {campaign_id} launched ({n_iterations} iterations, target: {target})."
 
 
 @tool(return_direct=True)
@@ -692,12 +559,16 @@ def hpc_status(
 
 # ── Exported list for create_react_agent ─────────────────────────────────────
 
+from orchestrator.campaign_tools import CAMPAIGN_TOOLS
+
 ORCHESTRATOR_TOOLS = [
     load_skill,
     get_kim_models,
     simulate,
     analyze_runs,
-    start_campaign,
+    *CAMPAIGN_TOOLS,   # campaign_start, campaign_get_state, campaign_measure_metrics,
+                       # campaign_record_trial, campaign_check_stop,
+                       # campaign_generate_report, campaign_save_narrative
     hpc_submit,
     hpc_status,
 ]
