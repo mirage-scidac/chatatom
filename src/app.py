@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # Make sibling modules importable (config, agents, kim_utils, graph)
@@ -62,6 +63,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve the runs/ folder statically so the frontend can link directly
+# to per-campaign report.png / report.md and per-iteration LAMMPS files.
+# URLs like /runs/benchmark_<id>/report.png open the file in the browser.
+if os.path.isdir("runs"):
+    app.mount("/runs", StaticFiles(directory="runs"), name="runs")
 
 
 @app.on_event("startup")

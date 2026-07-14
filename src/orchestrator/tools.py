@@ -172,14 +172,12 @@ def simulate(
     session_id = (state or {}).get("session_id")
 
     # DEBUG: print the EXACT simulation_details prose the LLM passed
-    # to the tool. Compare against what's visible in the chat to confirm
-    # whether the LLM is sending the same full text or a summary.
-    # Uncomment when debugging LLM prose drift or hypothesis leaks.
-    # print("=" * 80)
-    # print(f"[simulate] simulation_details ({len(simulation_details)} chars):")
-    # print("-" * 80)
-    # print(simulation_details)
-    # print("=" * 80)
+    # to the tool — one block per simulate call (i.e. per campaign iteration).
+    print("=" * 80)
+    print(f"[simulate] simulation_details ({len(simulation_details)} chars):")
+    print("-" * 80)
+    print(simulation_details)
+    print("=" * 80)
     
 
 
@@ -557,6 +555,297 @@ def hpc_status(
     return "HPC status streamed to user via HPC agent."
 
 
+# ── visualize_run ────────────────────────────────────────────────────────────
+
+@tool(return_direct=True)
+def visualize_run(
+    run_folder: str,
+    camera_angle: Literal["top", "side", "default"] = "top",
+    runtime: ToolRuntime = None,
+) -> str:
+    """Render key dump frames of a simulation run and produce a visual
+    analysis (crack morphology, dislocations, stacking faults, etc.) via a
+    vision-capable LLM.
+
+    Reuses the existing OVITO render server + the run's own ovito_script.py
+    for consistent coloring. Writes viz_report.md + viz_frames/*.png to the
+    run folder, then streams a text summary + a clickable link to the chat.
+
+    return_direct=True — the orchestrator turn ends after this tool.
+
+    Args:
+        run_folder: Path or name of a run folder. Accepts:
+                    - absolute path or "runs/run_..."
+                    - just "run_..." (resolved under runs/)
+                    - a number ("1", "2", ...) matching list_recent_runs
+                    - "latest"
+        camera_angle: "top" (default, best for crack analysis), "side", or "default"
+                     (isometric 3D view).
+    """
+    import base64
+    import glob as _glob
+    from graph.nodes import _q
+    import run_manager
+
+    state = runtime.state if runtime else {}
+    session_id = (state or {}).get("session_id")
+    tool_call_id = runtime.tool_call_id if runtime else ""
+
+    # ── Resolve run_folder (support name / number / "latest") ─────────
+    resolved = _resolve_run_folder(run_folder)
+    if not resolved or not os.path.isdir(resolved):
+        _q(state, {"type": "agent_content", "agent": "Visualization",
+                   "content": f"Could not resolve run folder: {run_folder!r}"})
+        return f"Visualization failed: could not resolve run folder {run_folder!r}"
+
+    _q(state, {"type": "agent_start", "agent": "Visualization"})
+    _q(state, {"type": "agent_content", "agent": "Visualization",
+               "content": f"**Analyzing** `{os.path.basename(resolved)}`\n\n"})
+
+    # ── Frame selection: pristine + first_load + last_load (else fallback) ─
+    picks = _pick_viz_frames(resolved)
+    if not picks:
+        _q(state, {"type": "agent_content", "agent": "Visualization",
+                   "content": f"No dump files found in {resolved}."})
+        _q(state, {"type": "agent_complete", "agent": "Visualization"})
+        return f"No dump files in {resolved}"
+
+    # ── Load ovito_script.py if present ───────────────────────────────
+    ovito_script = None
+    ovito_path = os.path.join(resolved, "ovito_script.py")
+    if os.path.exists(ovito_path):
+        with open(ovito_path) as f:
+            ovito_script = f.read()
+
+    # ── Render 3 PNGs via existing render server ──────────────────────
+    from tools import _start_render_server_process, _send_render_request
+    frames_dir = os.path.join(resolved, "viz_frames")
+    os.makedirs(frames_dir, exist_ok=True)
+
+    proc = _start_render_server_process()
+    rendered = []
+    try:
+        for label, dump_path in picks:
+            resp = _send_render_request(proc, {
+                "dump_file":        os.path.abspath(dump_path),
+                "ovito_script":     ovito_script,
+                "camera_angle":     camera_angle,
+                "render_size":      (800, 600),
+                "file_frame_index": 0,
+            })
+            if resp.get("status") != "ok":
+                _q(state, {"type": "agent_content", "agent": "Visualization",
+                           "content": f"Render failed for {label}: {resp.get('error')}\n"})
+                continue
+            b64 = resp["image"]
+            png_path = os.path.join(frames_dir, f"{label}.png")
+            with open(png_path, "wb") as f:
+                f.write(base64.b64decode(b64))
+            rendered.append({"label": label, "png_path": png_path, "b64": b64})
+    finally:
+        try:
+            proc.stdin.close(); proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+    if not rendered:
+        _q(state, {"type": "agent_complete", "agent": "Visualization"})
+        return "No frames rendered — cannot analyze."
+
+    # ── Vision LLM call — stream summary to chat ──────────────────────
+    from openai import OpenAI
+    import config
+    client = OpenAI(api_key=config.API_KEY, base_url=config.API_BASE_URL)
+
+    content = []
+    for f in rendered:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{f['b64']}"},
+        })
+    if ovito_script:
+        content.append({
+            "type": "text",
+            "text": ("The atom colors in these frames were assigned by the following "
+                     "OVITO script. Use its color_map to interpret each color's "
+                     "structural meaning (do NOT guess):\n\n```python\n" +
+                     ovito_script + "\n```"),
+        })
+    else:
+        content.append({
+            "type": "text",
+            "text": ("No custom OVITO script was used. Atoms are colored by LAMMPS "
+                     "particle type (NOT crystal structure). Do not interpret colors "
+                     "as FCC/HCP/BCC. Focus on gross spatial features."),
+        })
+    content.append({"type": "text", "text": _VIZ_PROMPT})
+
+    model = getattr(config, "ORCHESTRATOR_MODEL", "") or config.DEFAULT_MODEL
+
+    # Stream the summary token-by-token to the chat
+    summary_parts = []
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": content}],
+            temperature=0.3,
+            stream=True,
+        )
+        for chunk in stream:
+            tok = chunk.choices[0].delta.content
+            if tok:
+                summary_parts.append(tok)
+                _q(state, {"type": "agent_content", "agent": "Visualization",
+                           "content": tok, "message_type": "analysis"})
+    except Exception as e:
+        _q(state, {"type": "agent_content", "agent": "Visualization",
+                   "content": f"\nVision call failed: {e}\n"})
+        _q(state, {"type": "agent_complete", "agent": "Visualization"})
+        return f"Vision LLM call failed: {e}"
+
+    observation = "".join(summary_parts).strip()
+
+    # ── Write viz_report.md + viz_report.html at run folder root ─────
+    md_path, html_path = _write_viz_report(resolved, rendered, observation)
+
+    # Link to both reports (.html opens directly in Chrome)
+    rel_url = f"/{resolved}" if resolved.startswith("runs/") else f"/runs/{os.path.basename(resolved)}"
+    _q(state, {"type": "agent_content", "agent": "Visualization",
+               "content": (
+                   f"\n\n📄 [Open viz report (HTML — best in Chrome)]({rel_url}/viz_report.html)"
+                   f" • [Markdown version]({rel_url}/viz_report.md)\n"
+               )})
+    _q(state, {"type": "agent_complete", "agent": "Visualization"})
+
+    return "Visual analysis streamed to user."
+
+
+# ── visualize_run helpers ────────────────────────────────────────────────────
+
+_VIZ_PROMPT = (
+    "You are looking at frames from a molecular dynamics simulation of a "
+    "crystalline material, ordered chronologically (pristine → first load → "
+    "last load).\n\n"
+    "Write ONE integrated summary (3-6 sentences) describing what happened "
+    "across the whole run. Cover crack morphology change, dislocation activity, "
+    "stacking faults or twin nucleation, phase transitions, or notable defects.\n\n"
+    "STRICT RULES: NO per-frame headings. NO bullet lists. NO sections. "
+    "Reference frames only inline when strictly needed. Write flowing prose."
+)
+
+
+def _timestep_of(dump_path: str) -> int:
+    base = os.path.basename(dump_path)
+    for token in base.split("."):
+        if token.isdigit():
+            return int(token)
+    return 0
+
+
+def _resolve_run_folder(run_folder: str) -> str:
+    """Accepts a full path, just a name, a number, or 'latest'."""
+    import run_manager
+    if not run_folder:
+        return ""
+    val = run_folder.strip().lower()
+    if val == "latest":
+        return run_manager.get_latest_run() or ""
+    if val.isdigit():
+        all_runs = run_manager.list_all_runs()
+        idx = int(val) - 1
+        if 0 <= idx < len(all_runs):
+            return os.path.abspath(os.path.join(run_manager.RUNS_BASE_DIR, all_runs[idx]))
+        return ""
+    # Try as a full path first
+    if os.path.isdir(run_folder):
+        return os.path.abspath(run_folder)
+    # Then as a name under runs/
+    candidate = os.path.abspath(os.path.join(run_manager.RUNS_BASE_DIR, run_folder))
+    return candidate if os.path.isdir(candidate) else ""
+
+
+def _pick_viz_frames(run_folder: str):
+    """Return list of (label, dump_path).
+    Ideal: pristine + first_load + last_load.
+    Fallback (no .load dumps): pristine + last dump overall.
+    """
+    import glob as _glob
+    all_dumps = sorted(_glob.glob(os.path.join(run_folder, "dump.*")), key=_timestep_of)
+    if not all_dumps:
+        return []
+    picks = []
+    equil = sorted(_glob.glob(os.path.join(run_folder, "dump.*.equil")), key=_timestep_of)
+    picks.append(("pristine", equil[0] if equil else all_dumps[0]))
+    load = sorted(_glob.glob(os.path.join(run_folder, "dump.*.load")), key=_timestep_of)
+    if load:
+        picks.append(("first_load", load[0]))
+        if load[-1] != load[0]:
+            picks.append(("last_load", load[-1]))
+    else:
+        if all_dumps[-1] != picks[0][1]:
+            picks.append(("last", all_dumps[-1]))
+    return picks
+
+
+_VIZ_HTML_STYLE = """
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 1200px;
+         margin: 20px auto; padding: 0 20px; color: #222; }
+  h1 { color: #333; }
+  table { border-collapse: collapse; margin: 20px 0; }
+  td { padding: 10px; }
+  img { border: 1px solid #ccc; border-radius: 4px; }
+  em { color: #666; }
+  .summary { line-height: 1.6; margin-top: 30px; }
+  hr { border: 0; border-top: 1px solid #ddd; margin: 30px 0; }
+</style>
+"""
+
+
+def _write_viz_report(run_folder, rendered, observation):
+    """Write BOTH viz_report.md and viz_report.html side-by-side.
+    Returns (md_path, html_path)."""
+    import html as _html
+    title = f"Visual Analysis — {os.path.basename(run_folder.rstrip('/'))}"
+
+    # Side-by-side table (works verbatim in .md and .html)
+    img_cells, caption_cells = [], []
+    for f in rendered:
+        rel = os.path.relpath(f["png_path"], run_folder)
+        img_cells.append(f'<td align="center"><img src="{rel}" alt="{f["label"]}" width="320"></td>')
+        caption_cells.append(f'<td align="center"><em>{f["label"]}</em></td>')
+    table_html = (
+        "<table>\n"
+        "  <tr>" + "".join(img_cells) + "</tr>\n"
+        "  <tr>" + "".join(caption_cells) + "</tr>\n"
+        "</table>"
+    )
+
+    # .md version
+    md_lines = [f"# {title}", "", table_html, "", "---", "", observation, ""]
+    md_path = os.path.join(run_folder, "viz_report.md")
+    with open(md_path, "w") as fout:
+        fout.write("\n".join(md_lines))
+
+    # .html version (opens directly in Chrome, no extension needed)
+    observation_html = _html.escape(observation.strip()).replace("\n\n", "</p><p>")
+    html_body = (
+        "<!DOCTYPE html>\n<html><head>\n"
+        f"<meta charset='utf-8'>\n<title>{_html.escape(title)}</title>\n"
+        f"{_VIZ_HTML_STYLE}\n"
+        "</head><body>\n"
+        f"<h1>{_html.escape(title)}</h1>\n"
+        f"{table_html}\n<hr>\n"
+        f"<div class='summary'><p>{observation_html}</p></div>\n"
+        "</body></html>\n"
+    )
+    html_path = os.path.join(run_folder, "viz_report.html")
+    with open(html_path, "w") as fout:
+        fout.write(html_body)
+
+    return md_path, html_path
+
+
 # ── Exported list for create_react_agent ─────────────────────────────────────
 
 from orchestrator.campaign_tools import CAMPAIGN_TOOLS
@@ -566,9 +855,11 @@ ORCHESTRATOR_TOOLS = [
     get_kim_models,
     simulate,
     analyze_runs,
+    visualize_run,
     *CAMPAIGN_TOOLS,   # campaign_start, campaign_get_state, campaign_measure_metrics,
                        # campaign_record_trial, campaign_check_stop,
-                       # campaign_generate_report, campaign_save_narrative
+                       # campaign_generate_report, campaign_save_narrative,
+                       # campaign_visualize_all
     hpc_submit,
     hpc_status,
 ]

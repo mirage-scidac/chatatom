@@ -3361,8 +3361,8 @@
                         'System',
                         `🎉 Campaign **${data.campaign_id}** finished.\n\n` +
                         bestLine + '\n\n' +
-                        (md  ? `📄 Report: \`${md}\`\n` : '') +
-                        (png ? `📊 Graph: \`${png}\`` : ''),
+                        (md  ? `📄 [Open report](/runs/${data.campaign_id}/report.md)\n` : '') +
+                        (png ? `📊 [Open graph](/runs/${data.campaign_id}/report.png)` : ''),
                         'info'
                     );
                     break;

@@ -31,8 +31,8 @@ def main():
 
     renderer = TachyonRenderer()
     renderer.antialiasing = True
-    renderer.shadows = True
-    renderer.ambient_occlusion = True
+    renderer.shadows = False
+    renderer.ambient_occlusion = False
 
     viewport = Viewport()
     viewport.type = Viewport.Type.Perspective

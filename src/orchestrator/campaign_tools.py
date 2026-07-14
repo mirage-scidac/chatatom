@@ -769,6 +769,244 @@ def campaign_save_narrative(
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 9: campaign_visualize_all (opt-in, called AFTER save_narrative)
+# ────────────────────────────────────────────────────────────────────────────
+
+@tool
+def campaign_visualize_all(
+    state: Annotated[dict, InjectedState] = None,
+) -> dict:
+    """Generate per-iteration visual analysis for every trial in the
+    campaign. For each iteration:
+      - render pristine + first_load + last_load PNGs via OVITO
+      - send them to a vision LLM
+      - collect a short structural summary
+
+    Aggregates into ONE runs/<campaign_id>/viz_report.md with all
+    iterations in sequence: images side-by-side + text per iter.
+
+    Only call this when the user explicitly asks for visual analysis
+    AFTER the campaign has completed (report already generated).
+
+    Cost: ~15 seconds per iteration (renders + vision call). Sequential.
+    """
+    campaign_id = (state or {}).get("campaign_id")
+    if not campaign_id:
+        return {"error": "no active campaign on state."}
+    session_id = (state or {}).get("session_id")
+
+    try:
+        trials = _read_trials(campaign_id)
+        if not trials:
+            return {"error": "no trials to visualize"}
+
+        # Import helpers from the two different tools.py files:
+        #   - src/tools.py            → OVITO render server helpers
+        #   - src/orchestrator/tools.py → viz frame selection + LLM prompt
+        # (Same-name file gotcha — kept explicit to prevent regressions.)
+        from tools import _start_render_server_process, _send_render_request
+        from orchestrator.tools import _pick_viz_frames, _VIZ_PROMPT
+        from openai import OpenAI
+        import base64
+        import config
+
+        campaign_folder = _campaign_folder(campaign_id)
+        viz_root = os.path.join(campaign_folder, "viz_frames")
+        os.makedirs(viz_root, exist_ok=True)
+
+        # One shared render server for all iterations
+        proc = _start_render_server_process()
+        client = OpenAI(api_key=config.API_KEY, base_url=config.API_BASE_URL)
+        model = getattr(config, "ORCHESTRATOR_MODEL", "") or config.DEFAULT_MODEL
+
+        aggregated_lines = [
+            f"# Visual Analysis — Campaign {campaign_id}",
+            "",
+            f"_{len(trials)} iterations analyzed. Generated on request after campaign completion._",
+            "",
+            "---",
+            "",
+        ]
+
+        try:
+            for trial in trials:
+                iter_num = trial.get("iteration")
+                run_folder = trial.get("run_folder")
+                if not run_folder or not os.path.isdir(run_folder):
+                    aggregated_lines += [f"## Iteration {iter_num}", "",
+                                         "_run folder missing — skipped_", "", "---", ""]
+                    _emit(session_id, "campaign_viz_iteration",
+                          campaign_id=campaign_id, iteration=iter_num,
+                          status="skipped_missing_folder")
+                    continue
+
+                _emit(session_id, "campaign_viz_iteration",
+                      campaign_id=campaign_id, iteration=iter_num, status="rendering")
+
+                picks = _pick_viz_frames(run_folder)
+                if not picks:
+                    aggregated_lines += [f"## Iteration {iter_num}", "",
+                                         "_no dump files — skipped_", "", "---", ""]
+                    continue
+
+                ovito_script = None
+                ovito_path = os.path.join(run_folder, "ovito_script.py")
+                if os.path.exists(ovito_path):
+                    with open(ovito_path) as f:
+                        ovito_script = f.read()
+
+                # Render into per-iter subfolder
+                iter_dir = os.path.join(viz_root, f"iter_{iter_num}")
+                os.makedirs(iter_dir, exist_ok=True)
+                rendered = []
+                for label, dump_path in picks:
+                    resp = _send_render_request(proc, {
+                        "dump_file":        os.path.abspath(dump_path),
+                        "ovito_script":     ovito_script,
+                        "camera_angle":     "top",
+                        "render_size":      (800, 600),
+                        "file_frame_index": 0,
+                    })
+                    if resp.get("status") != "ok":
+                        continue
+                    b64 = resp["image"]
+                    png_path = os.path.join(iter_dir, f"{label}.png")
+                    with open(png_path, "wb") as f:
+                        f.write(base64.b64decode(b64))
+                    rendered.append({"label": label, "png_path": png_path, "b64": b64})
+
+                if not rendered:
+                    aggregated_lines += [f"## Iteration {iter_num}", "",
+                                         "_render failed_", "", "---", ""]
+                    continue
+
+                _emit(session_id, "campaign_viz_iteration",
+                      campaign_id=campaign_id, iteration=iter_num, status="analyzing")
+
+                # Vision call
+                content = []
+                for f in rendered:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{f['b64']}"},
+                    })
+                if ovito_script:
+                    content.append({
+                        "type": "text",
+                        "text": ("The atom colors were assigned by the following OVITO "
+                                 "script. Interpret colors per its color_map:\n\n"
+                                 "```python\n" + ovito_script + "\n```"),
+                    })
+                content.append({"type": "text", "text": _VIZ_PROMPT})
+
+                try:
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": content}],
+                        temperature=0.3,
+                    )
+                    observation = (resp.choices[0].message.content or "").strip()
+                except Exception as e:
+                    observation = f"_vision call failed: {e}_"
+
+                # Append this iteration's section
+                img_cells, caption_cells = [], []
+                for f in rendered:
+                    rel = os.path.relpath(f["png_path"], campaign_folder)
+                    img_cells.append(
+                        f'<td align="center"><img src="{rel}" alt="{f["label"]}" width="280"></td>'
+                    )
+                    caption_cells.append(
+                        f'<td align="center"><em>{f["label"]}</em></td>'
+                    )
+                knobs_str = ", ".join(f"{k}={v}" for k, v in (trial.get("knobs") or {}).items())
+                aggregated_lines += [
+                    f"## Iteration {iter_num}",
+                    "",
+                    f"**Knobs:** {knobs_str}",
+                    "",
+                    "<table>",
+                    "  <tr>" + "".join(img_cells) + "</tr>",
+                    "  <tr>" + "".join(caption_cells) + "</tr>",
+                    "</table>",
+                    "",
+                    observation,
+                    "",
+                    "---",
+                    "",
+                ]
+        finally:
+            try:
+                proc.stdin.close(); proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
+        # Write the aggregated report (both .md and .html for Chrome)
+        import html as _html
+        viz_md_path = os.path.join(campaign_folder, "viz_report.md")
+        with open(viz_md_path, "w") as fout:
+            fout.write("\n".join(aggregated_lines))
+
+        # HTML version: wrap the same markdown-safe body (which uses HTML
+        # tables + text) in a minimal <html> shell so Chrome renders it
+        # natively without a markdown-viewer extension.
+        html_style = (
+            "<style>"
+            "body{font-family:-apple-system,system-ui,sans-serif;"
+            "max-width:1200px;margin:20px auto;padding:0 20px;color:#222;}"
+            "h1{color:#333;} h2{color:#555;margin-top:40px;}"
+            "table{border-collapse:collapse;margin:20px 0;}"
+            "td{padding:10px;} img{border:1px solid #ccc;border-radius:4px;}"
+            "em{color:#666;} hr{border:0;border-top:1px solid #ddd;margin:30px 0;}"
+            "p{line-height:1.6;}"
+            "</style>"
+        )
+        # Rebuild the body as HTML — convert '#' headers to <h1>/<h2>,
+        # leave <table> blocks intact, wrap text paragraphs in <p>.
+        html_parts = []
+        for line in aggregated_lines:
+            if line.startswith("# "):
+                html_parts.append(f"<h1>{_html.escape(line[2:])}</h1>")
+            elif line.startswith("## "):
+                html_parts.append(f"<h2>{_html.escape(line[3:])}</h2>")
+            elif line.startswith("<table>") or line.startswith("  <tr>") or line == "</table>":
+                html_parts.append(line)
+            elif line == "---":
+                html_parts.append("<hr>")
+            elif line.startswith("**") and line.endswith("**"):
+                html_parts.append(f"<p><strong>{_html.escape(line[2:-2])}</strong></p>")
+            elif line.startswith("_") and line.endswith("_"):
+                html_parts.append(f"<p><em>{_html.escape(line[1:-1])}</em></p>")
+            elif line.strip():
+                html_parts.append(f"<p>{_html.escape(line)}</p>")
+        html_body = (
+            "<!DOCTYPE html><html><head>"
+            f"<meta charset='utf-8'><title>Visual Analysis — {campaign_id}</title>"
+            f"{html_style}</head><body>\n"
+            + "\n".join(html_parts) +
+            "\n</body></html>"
+        )
+        viz_html_path = os.path.join(campaign_folder, "viz_report.html")
+        with open(viz_html_path, "w") as fout:
+            fout.write(html_body)
+
+        _emit(session_id, "campaign_viz_complete",
+              campaign_id=campaign_id,
+              viz_report_md_path=viz_md_path,
+              viz_report_html_path=viz_html_path)
+
+        return {
+            "ok": True,
+            "viz_report_path": viz_md_path,           # kept for backward compat
+            "viz_report_md_path": viz_md_path,
+            "viz_report_html_path": viz_html_path,
+            "iteration_count": len(trials),
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 # ── Exports ──────────────────────────────────────────────────────────────────
 
 CAMPAIGN_TOOLS = [
@@ -780,4 +1018,5 @@ CAMPAIGN_TOOLS = [
     campaign_check_stop,
     campaign_generate_report,
     campaign_save_narrative,
+    campaign_visualize_all,
 ]

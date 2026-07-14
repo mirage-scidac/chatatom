@@ -188,7 +188,7 @@ STEPS 2–8 — THE ITERATION LOOP (repeat until check_stop says stop)
 
 For each iteration, run this exact sequence of tool calls:
 
-This instuction to be follwed by the orchestratr step by step to control the steps and the tool calls whcih are using the failure mode in the trails.jsonl 
+This instuction to be follwed by the orchestratr step by step to control the steps and the tool calls whcih are using the failure mode in the trails.jsonl
 
   ┌─────────────────────────────────────────────────────────────────────┐
   │  2. campaign_get_state()                                            │
@@ -213,7 +213,8 @@ This instuction to be follwed by the orchestratr step by step to control the ste
   │       crack_length_frac=<value>,                                    │
   │       crack_width_a0=<value>,                                       │
   │       auto_approve=True,                                            │
-  │       execution_target="local"                                      │
+  │       execution_target="local", 
+          camera_angle="top"                                     │
   │     )                                                               │
   │       → generates LAMMPS + OVITO scripts (does NOT run LAMMPS)      │
   │         review_passed + lammps_script land on orchestrator state    │
@@ -289,6 +290,14 @@ reasoning prose in that argument — the hypothesis goes to the chat message
 hypothesis into simulation_details bloats the LAMMPS generator's prompt
 with irrelevant text.
 
+CRITICAL — REPRODUCIBILITY: the velocity initialization MUST be byte-identical
+across every iteration. Always specify EXACTLY:
+    velocity all create <T> 12345 mom yes rot yes dist gaussian
+Same seed (12345), same flags (mom yes rot yes dist gaussian), every
+iteration. Only <T> (the temperature knob) changes. Never let the seed or
+argument order drift — different seeds give different thermal microstates
+and make Δa comparisons across trials unfair.
+
 ────────────────────────────────────────────────────────────────────────────
 MONOTONIC CAMPAIGNS — Simulation specification template
 ────────────────────────────────────────────────────────────────────────────
@@ -302,6 +311,10 @@ MONOTONIC CAMPAIGNS — Simulation specification template
   - KIM Model: <plan.template.kim_model>
   - Boundary: p p p
   - Timestep: <plan.template.timestep_ps> ps
+  - Velocity initialization (FIXED — use this EXACT line every iteration,
+    never change the seed or arguments; reproducibility across trials
+    depends on it):
+        velocity all create <T> 12345 mom yes rot yes dist gaussian
 
   - Phase 1 (Pre-stress equilibration):
       ensemble: NPT, temperature: <T> K, pressure: 0 bar, duration: <phase_1 duration>
@@ -377,7 +390,24 @@ than "user_paused":
   │ 11. campaign_save_narrative(text=<your narrative from step 10>)     │
   │       → appends under "## What was learned" in report.md,           │
   │         emits campaign_complete SSE, sets control.status=done.      │
+  │                                                                     │
+  │ 12. FINAL chat message — offer visual analysis (opt-in):            │
+  │     "Report and graph are ready. Would you like me to generate a    │
+  │      per-iteration **visual analysis** (renders 3 frames per iter   │
+  │      and describes crack morphology, dislocations, stacking faults, │
+  │      etc.)? Takes about 15 sec per iteration. Reply 'yes' to run."  │
+  │     Then END TURN — do NOT auto-call campaign_visualize_all.        │
   └─────────────────────────────────────────────────────────────────────┘
+
+If in a LATER turn the user replies "yes" / "generate visual analysis" /
+"show visuals" / any affirmative response after a campaign completed:
+  → call `campaign_visualize_all()` (no args — reads campaign_id from state).
+    It loops through every iteration, renders frames, calls the vision LLM,
+    and writes viz_report.html (opens directly in Chrome) + viz_report.md.
+  → When it returns, tell the user:
+    "Visual analysis ready.
+     📄 [Open in browser (HTML)](/runs/<campaign_id>/viz_report.html)
+      • [Markdown version](/runs/<campaign_id>/viz_report.md)"
 
 If reason was "user_paused" — do NOT generate report. Instead say something
 like "Campaign paused after N trials. Resume by saying 'Resume campaign

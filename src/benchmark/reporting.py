@@ -133,9 +133,6 @@ def render_campaign_graph(campaign_folder: str) -> str:
     if failed_x:
         ax_top.scatter(failed_x, [0] * len(failed_x), marker="x", color="crimson",
                        s=60, label="failed trial")
-    if any(b is not None for b in best_so_far):
-        ax_top.step(iterations, [b if b is not None else float("nan") for b in best_so_far],
-                    where="post", linestyle="--", color="darkgreen", label="best so far")
     y_label = f"{display_name} ({units})" if units else display_name
     ax_top.set_ylabel(y_label)
     ax_top.set_xlabel("Iteration")
