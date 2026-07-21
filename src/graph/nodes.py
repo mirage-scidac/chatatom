@@ -254,40 +254,10 @@ def generate_ovito_node(state: SimulationState) -> dict:
 
 
 # ─── Analyst tools (used by analyze_results_node) ────────────────────────────
-
-_LIST_RUNS_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "list_recent_runs",
-        "description": "List recent LAMMPS simulation runs with metadata (timestamp, status).",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-}
-
-_GET_RUN_LOG_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "get_run_log",
-        "description": (
-            "Read the thermodynamic log for a simulation run. "
-            "Always call this before answering questions about simulation results, "
-            "temperature, pressure, energy, or equilibration."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "run_name": {
-                    "type": "string",
-                    "description": (
-                        "Run folder name, OR a number ('1', '2', ...) to pick from "
-                        "the numbered list shown by list_recent_runs, OR 'latest'."
-                    ),
-                }
-            },
-            "required": ["run_name"],
-        },
-    },
-}
+# Tool SCHEMAS are no longer hand-written — the @tool-decorated functions
+# list_recent_runs / get_run_log (defined below with the Analyst agent) provide
+# them automatically to create_react_agent. The _exec_* helpers below do the
+# actual work and are called by those tools.
 
 
 def _exec_list_runs() -> str:
@@ -402,106 +372,125 @@ def _parse_thermo_for_plot(log_text: str) -> list:
 
 
 # ─── analyze_results ─────────────────────────────────────────────────────────
+#
+# The Analyst is a real ReAct agent (create_react_agent), consistent with the
+# orchestrator and HPC executor — NOT a hand-rolled fixed-round loop. This lets
+# it chain tools naturally (e.g. list_recent_runs → get_run_log → analyze)
+# instead of being capped at one tool call per turn.
+#
+# The two analyst tools (list_recent_runs / get_run_log) emit SSE side-effects
+# (thermo chart + trajectory viewer) via _q. Because create_react_agent tools
+# don't receive our SESSION_QUEUES-keyed state directly, the current session_id
+# is stashed in a ContextVar for the duration of one analyst call so the tools
+# can emit to the right browser queue.
+
+import contextvars
+from langchain_core.tools import tool as _lc_tool
+
+_ANALYST_SESSION: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "analyst_session_id", default=None
+)
+
+
+def _analyst_q(event: dict):
+    """Emit an SSE event to the session bound for the current analyst call."""
+    sid = _ANALYST_SESSION.get()
+    if sid and sid in SESSION_QUEUES:
+        SESSION_QUEUES[sid].put(event)
+
+
+@_lc_tool
+def list_recent_runs() -> str:
+    """List recent LAMMPS simulation runs with metadata (timestamp, status).
+
+    Call this when the user wants to browse runs or has NOT specified which run
+    to analyze. After this returns, ask the user to reply 'analyze 1', 'analyze
+    2', etc. — do NOT fabricate an analysis without reading a run's log first.
+    """
+    print("[analyze_results] tool: list_recent_runs")
+    return _exec_list_runs()
+
+
+@_lc_tool
+def get_run_log(run_name: str) -> str:
+    """Read the thermodynamic log for a simulation run. Always call this before
+    answering questions about simulation results (temperature, pressure, energy,
+    equilibration) unless the log is already in the conversation.
+
+    Args:
+        run_name: Run folder name, OR a number ('1', '2', ...) matching the
+                  list_recent_runs output, OR 'latest'.
+    """
+    print(f"[analyze_results] tool: get_run_log(run_name={run_name})")
+    # _exec_get_run_log emits thermo_data + load_trajectory SSE events; give it
+    # a lightweight state carrying session_id so those reach the browser.
+    return _exec_get_run_log(run_name, {"session_id": _ANALYST_SESSION.get()})
+
+
+_ANALYST_TOOLS = [list_recent_runs, get_run_log]
+
 
 def analyze_results_node(state: SimulationState) -> dict:
-    """Tool-calling agent: lists runs or analyzes simulation results.
+    """Analyst ReAct agent: lists runs or analyzes simulation results.
 
-    Streams throughout to avoid non-streaming round-trips that may hang on
-    proxy LLM endpoints.
+    Uses create_react_agent so tool calls chain naturally (list → read →
+    analyze) with no fixed round cap. Streams tokens to the browser via _q.
     """
+    from langgraph.prebuilt import create_react_agent
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+    session_id = state.get("session_id")
     _q(state, {"type": "agent_start", "agent": "Analyst"})
 
-    messages = [
-        {"role": "system", "content": ANALYST_SYSTEM_PROMPT},
-        *state.get("conversation_history", []),
-        {"role": "user", "content": state.get("user_message", "")},
-    ]
+    model = ChatOpenAI(
+        model=config.DEFAULT_MODEL,
+        api_key=config.API_KEY,
+        base_url=config.API_BASE_URL,
+        temperature=0.3,
+    )
+    agent = create_react_agent(
+        model=model,
+        tools=_ANALYST_TOOLS,
+        prompt=ANALYST_SYSTEM_PROMPT,
+        name="chatmd_analyst",
+    )
 
-    # ── Round 1: stream with tools — detect if LLM calls a tool ─────────────
+    # Rebuild prior turns so follow-ups ("was it equilibrated?") answer from
+    # context without re-reading.
+    history_msgs = []
+    for m in state.get("conversation_history", []):
+        role = m.get("role")
+        content = m.get("content", "")
+        if role == "user":
+            history_msgs.append(HumanMessage(content=content))
+        elif role == "assistant" and content.strip():
+            history_msgs.append(AIMessage(content=content))
+    agent_input = {
+        "messages": history_msgs + [HumanMessage(content=state.get("user_message", ""))]
+    }
+
+    # Bind session_id for the tools' SSE side-effects, then stream tokens.
+    token = _ANALYST_SESSION.set(session_id)
     try:
-        stream1 = client.chat.completions.create(
-            model=config.DEFAULT_MODEL,
-            messages=messages,
-            tools=[_LIST_RUNS_TOOL, _GET_RUN_LOG_TOOL],
-            tool_choice="auto",
-            temperature=0.3,
-            stream=True,
-        )
-    except Exception as e:
-        print(f"[analyze_results] API error round 1: {e}")
-        _q(state, {"type": "agent_content", "agent": "Analyst",
-                   "content": f"Error connecting to LLM: {e}", "message_type": "analysis"})
-        _q(state, {"type": "agent_complete", "agent": "Analyst"})
-        return {}
-
-    tool_calls_acc = {}   # index → {id, name, arguments}
-    text_chunks = []
-
-    for chunk in stream1:
-        choice = chunk.choices[0]
-        delta = choice.delta
-
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_acc:
-                    tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                if tc_delta.id:
-                    tool_calls_acc[idx]["id"] = tc_delta.id
-                if tc_delta.function and tc_delta.function.name:
-                    tool_calls_acc[idx]["name"] = tc_delta.function.name
-                if tc_delta.function and tc_delta.function.arguments:
-                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
-
-        if delta.content:
-            text_chunks.append(delta.content)
-
-    if tool_calls_acc:
-        reconstructed = [
-            {
-                "id": tc["id"],
-                "type": "function",
-                "function": {"name": tc["name"], "arguments": tc["arguments"]},
-            }
-            for tc in tool_calls_acc.values()
-        ]
-        messages.append({"role": "assistant", "tool_calls": reconstructed})
-
-        for tc in tool_calls_acc.values():
-            args = json.loads(tc["arguments"]) if tc["arguments"] else {}
-            if tc["name"] == "list_recent_runs":
-                print("[analyze_results] tool: list_recent_runs")
-                result = _exec_list_runs()
-            elif tc["name"] == "get_run_log":
-                run_name = args.get("run_name", "latest")
-                print(f"[analyze_results] tool: get_run_log(run_name={run_name})")
-                result = _exec_get_run_log(run_name, state)
-            else:
-                result = f"Unknown tool: {tc['name']}"
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
-
-        try:
-            stream2 = client.chat.completions.create(
-                model=config.DEFAULT_MODEL,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=800,
-                stream=True,
-            )
-            for chunk in stream2:
-                token = chunk.choices[0].delta.content
-                if token:
+        for chunk, _meta in agent.stream(
+            agent_input,
+            config={"recursion_limit": 12},
+            stream_mode="messages",
+        ):
+            # Only stream final assistant text (AIMessage tokens); tool results
+            # are surfaced via their own SSE side-effects.
+            if isinstance(chunk, AIMessage) or getattr(chunk, "type", "") == "AIMessageChunk":
+                tok = chunk.content if isinstance(chunk.content, str) else ""
+                if tok:
                     _q(state, {"type": "agent_content", "agent": "Analyst",
-                               "content": token, "message_type": "analysis"})
-        except Exception as e:
-            print(f"[analyze_results] API error round 2: {e}")
-            _q(state, {"type": "agent_content", "agent": "Analyst",
-                       "content": f"Analysis error: {e}", "message_type": "analysis"})
-
-    else:
-        for token in text_chunks:
-            _q(state, {"type": "agent_content", "agent": "Analyst",
-                       "content": token, "message_type": "analysis"})
+                               "content": tok, "message_type": "analysis"})
+    except Exception as e:
+        print(f"[analyze_results] agent error: {e}")
+        _q(state, {"type": "agent_content", "agent": "Analyst",
+                   "content": f"Analysis error: {e}", "message_type": "analysis"})
+    finally:
+        _ANALYST_SESSION.reset(token)
 
     _q(state, {"type": "agent_complete", "agent": "Analyst"})
     print("[analyze_results] done")

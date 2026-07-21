@@ -973,6 +973,40 @@ RESPONSE FORMAT:
 """
 
 
+# ── Vision-analysis prompts (MD trajectory frame summaries) ───────────────────
+# _VIZ_PROMPT: standalone single-run visualization (visualize_run tool).
+# CAMPAIGN_VIZ_PROMPT: per-iteration campaign visualization. Kept as its own
+# constant so it can diverge (crack-specific / structured) later to feed
+# hypothesis generation, without affecting the standalone prompt.
+_VIZ_PROMPT = (
+    "You are looking at frames from a molecular dynamics simulation of a "
+    "crystalline material, ordered chronologically: (1) pristine crystal "
+    "before crack seeding, (2) the seeded crack after relaxation but BEFORE "
+    "any loading, (3) the final state at the end of tensile loading.\n\n"
+    "Write ONE integrated summary (3-6 sentences) describing what happened "
+    "across the whole run — especially how the crack changed between the "
+    "seeded (pre-loading) state and the final loaded state. Cover crack "
+    "morphology change, dislocation activity, stacking faults or twin "
+    "nucleation, phase transitions, or notable defects.\n\n"
+    "STRICT RULES: NO per-frame headings. NO bullet lists. NO sections. "
+    "Reference frames only inline when strictly needed. Write flowing prose."
+)
+
+CAMPAIGN_VIZ_PROMPT = (
+    "You are looking at frames from a molecular dynamics simulation of a "
+    "crystalline material, ordered chronologically: (1) pristine crystal "
+    "before crack seeding, (2) the seeded crack after relaxation but BEFORE "
+    "any loading, (3) the final state at the end of tensile loading.\n\n"
+    "Write ONE integrated summary (3-6 sentences) describing what happened "
+    "across the whole run — especially how the crack changed between the "
+    "seeded (pre-loading) state and the final loaded state. Cover crack "
+    "morphology change, dislocation activity, stacking faults or twin "
+    "nucleation, phase transitions, or notable defects.\n\n"
+    "STRICT RULES: NO per-frame headings. NO bullet lists. NO sections. "
+    "Reference frames only inline when strictly needed. Write flowing prose."
+)
+
+
 HPC_EXECUTOR_PROMPT = """You are an HPC agent for ChatMD. You have access to Globus tools to move files between endpoints and run shell commands on HPC clusters.
 
 You will be given context: local paths, Globus endpoint IDs, and either a job to submit or a list of previously submitted jobs to check.

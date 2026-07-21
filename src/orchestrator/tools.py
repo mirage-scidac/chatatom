@@ -27,6 +27,7 @@ from langgraph.types import Command
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import kim_utils
+from prompts import _VIZ_PROMPT
 
 
 SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
@@ -602,7 +603,7 @@ def visualize_run(
     _q(state, {"type": "agent_content", "agent": "Visualization",
                "content": f"**Analyzing** `{os.path.basename(resolved)}`\n\n"})
 
-    # ── Frame selection: pristine + first_load + last_load (else fallback) ─
+    # ── Frame selection: pristine + seeded-crack (last relax) + last_load ──
     picks = _pick_viz_frames(resolved)
     if not picks:
         _q(state, {"type": "agent_content", "agent": "Visualization",
@@ -721,17 +722,7 @@ def visualize_run(
 
 
 # ── visualize_run helpers ────────────────────────────────────────────────────
-
-_VIZ_PROMPT = (
-    "You are looking at frames from a molecular dynamics simulation of a "
-    "crystalline material, ordered chronologically (pristine → first load → "
-    "last load).\n\n"
-    "Write ONE integrated summary (3-6 sentences) describing what happened "
-    "across the whole run. Cover crack morphology change, dislocation activity, "
-    "stacking faults or twin nucleation, phase transitions, or notable defects.\n\n"
-    "STRICT RULES: NO per-frame headings. NO bullet lists. NO sections. "
-    "Reference frames only inline when strictly needed. Write flowing prose."
-)
+# _VIZ_PROMPT is imported from prompts.py (all LLM prompts live there).
 
 
 def _timestep_of(dump_path: str) -> int:
@@ -766,7 +757,20 @@ def _resolve_run_folder(run_folder: str) -> str:
 
 def _pick_viz_frames(run_folder: str):
     """Return list of (label, dump_path).
-    Ideal: pristine + first_load + last_load.
+
+    Frames chosen to MATCH the Δa metric's baseline→final pair so the viz
+    report visually corresponds to the measured crack growth:
+      1. pristine   — first equil frame (clean crystal, before crack seeding)
+      2. seeded     — LAST relax frame (the seeded crack, pre-loading) =
+                      the metric's a_initial baseline
+      3. last_load  — LAST load frame = the metric's a_final
+
+    We intentionally do NOT include a "first_load" frame: the dump clock is
+    global and does not reset when loading starts, so the first dump.*.load
+    file lands an unpredictable number of steps INTO loading and is not a
+    reliable "start of load" (same reason the metric uses last-relax, not
+    first-load, as its baseline).
+
     Fallback (no .load dumps): pristine + last dump overall.
     """
     import glob as _glob
@@ -774,16 +778,27 @@ def _pick_viz_frames(run_folder: str):
     if not all_dumps:
         return []
     picks = []
+
     equil = sorted(_glob.glob(os.path.join(run_folder, "dump.*.equil")), key=_timestep_of)
     picks.append(("pristine", equil[0] if equil else all_dumps[0]))
+
+    # Seeded crack (metric baseline) = LAST relax frame.
+    relax = sorted(_glob.glob(os.path.join(run_folder, "dump.*.relax")), key=_timestep_of)
+    if relax and relax[-1] != picks[0][1]:
+        picks.append(("seeded", relax[-1]))
+
     load = sorted(_glob.glob(os.path.join(run_folder, "dump.*.load")), key=_timestep_of)
     if load:
-        picks.append(("first_load", load[0]))
-        if load[-1] != load[0]:
+        if load[-1] != picks[-1][1]:
             picks.append(("last_load", load[-1]))
     else:
-        if all_dumps[-1] != picks[0][1]:
+        if all_dumps[-1] != picks[-1][1]:
             picks.append(("last", all_dumps[-1]))
+
+    # Log the chosen frames so it's verifiable at runtime which dumps the viz
+    # report renders (should be: pristine equil → last relax → last load).
+    print(f"[viz] frames for {os.path.basename(run_folder)}: "
+          + ", ".join(f"{lbl}={os.path.basename(p)}" for lbl, p in picks))
     return picks
 
 

@@ -108,8 +108,8 @@ Print the plan in chat so the user can read/edit it. Example format:
      • crack_width_a0: [2, 8] × a₀
 
    ITERATIONS: 20 max
-   STOP CRITERIA: no improvement for 5 trials, or best changes < 1% over
-                  last 5 trials
+  STOP CRITERIA: runs to max iterations; stops early only if you
+               pause/cancel or 3 simulations fail in a row
 
    Would you like to change anything, or shall I proceed? Reply 'confirm'
    to start the campaign, or tell me what to change."

@@ -460,7 +460,22 @@ def campaign_measure_metrics(
 
     Call this after simulate() returns, before record_trial().
     """
-    return compute_metric(metric_name, run_folder)
+    result = compute_metric(metric_name, run_folder)
+
+    # Print the raw metric to the terminal so the crack lengths are visible
+    # while a campaign runs.
+    if isinstance(result, dict) and "error" not in result:
+        print(
+            f"[metric:{metric_name}] {os.path.basename(run_folder)}  "
+            f"a_initial={result.get('a_initial'):.3f} Å  "
+            f"a_final={result.get('a_final'):.3f} Å  "
+            f"Δa={result.get('delta_a'):.3f} Å",
+            flush=True,
+        )
+    else:
+        print(f"[metric:{metric_name}] {run_folder}  ERROR: {result}", flush=True)
+
+    return result
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -573,14 +588,14 @@ def campaign_check_stop(
 ) -> dict:
     """Deterministic stop decision — call at the END of every iteration.
 
-    Evaluates 6 criteria in order (first match wins):
+    Evaluates 5 active criteria in order (first match wins); #6–#7 disabled below:
       1. user_cancelled            — control.json says cancelled
       2. user_paused               — control.json says paused
       3. max_iterations            — trials count >= plan.max_iterations
       4. target_hit                — plan.objective.target set AND met
       5. consecutive_failures      — >= 3 trials in a row failed
-      6. no_improvement            — iterations_since_improvement >= patience
-      7. convergence               — best-value change over last window < epsilon_pct%
+    #   6. no_improvement            — iterations_since_improvement >= patience
+    #   7. convergence               — best-value change over last window < epsilon_pct%
 
     Returns {should_stop: bool, reason: str, detail: str}.
     Emits campaign_paused / campaign_cancelled SSE if user-triggered.
@@ -635,40 +650,48 @@ def campaign_check_stop(
             return {"should_stop": True, "reason": "consecutive_failures",
                     "detail": f"{summary['consecutive_failures']} failed trials in a row"}
 
-        # 6. no improvement (patience)
-        patience = stop_criteria.get("no_improvement_patience", 5)
-        if summary["iterations_since_improvement"] >= patience:
-            return {"should_stop": True, "reason": "no_improvement",
-                    "detail": f"no new best in {patience} trials"}
-
-        # 7. convergence (best value change over last N < epsilon_pct%)
-        conv = stop_criteria.get("convergence") or {}
-        window = int(conv.get("window", 0) or 0)
-        eps_pct = float(conv.get("epsilon_pct", 0) or 0)
-        if window >= 2 and eps_pct > 0 and best is not None:
-            # look at the last <window> successful trials; if the range of best-so-far
-            # over that window has changed by less than eps_pct%, call it converged.
-            best_progression: List[float] = []
-            running = None
-            for t in trials:
-                v = _metric_value(t, metric_name)
-                if v is None:
-                    continue
-                if running is None:
-                    running = v
-                elif direction == "maximize" and v > running:
-                    running = v
-                elif direction == "minimize" and v < running:
-                    running = v
-                best_progression.append(running)
-            if len(best_progression) >= window:
-                tail = best_progression[-window:]
-                lo, hi = min(tail), max(tail)
-                denom = abs(tail[-1]) if abs(tail[-1]) > 1e-12 else 1.0
-                change_pct = 100.0 * (hi - lo) / denom
-                if change_pct < eps_pct:
-                    return {"should_stop": True, "reason": "convergence",
-                            "detail": f"best changed by {change_pct:.3g}% over last {window} trials (< {eps_pct}%)"}
+        # ── #6 no_improvement and #7 convergence are COMMENTED OUT (not deleted)
+        #    for now. The Δa metric can pin at 0.0 (metric saturation /
+        #    dislocation-span contamination), which makes both plateau-stops fire
+        #    on a metric artifact rather than real convergence, cutting campaigns
+        #    short. Campaigns now run to max_iterations (still respecting user
+        #    pause/cancel, target_hit, and consecutive_failures above).
+        #    Re-enable these once the crack metric is trustworthy.
+        #
+        # # 6. no improvement (patience)
+        # patience = stop_criteria.get("no_improvement_patience", 5)
+        # if summary["iterations_since_improvement"] >= patience:
+        #     return {"should_stop": True, "reason": "no_improvement",
+        #             "detail": f"no new best in {patience} trials"}
+        #
+        # # 7. convergence (best value change over last N < epsilon_pct%)
+        # conv = stop_criteria.get("convergence") or {}
+        # window = int(conv.get("window", 0) or 0)
+        # eps_pct = float(conv.get("epsilon_pct", 0) or 0)
+        # if window >= 2 and eps_pct > 0 and best is not None:
+        #     # look at the last <window> successful trials; if the range of best-so-far
+        #     # over that window has changed by less than eps_pct%, call it converged.
+        #     best_progression: List[float] = []
+        #     running = None
+        #     for t in trials:
+        #         v = _metric_value(t, metric_name)
+        #         if v is None:
+        #             continue
+        #         if running is None:
+        #             running = v
+        #         elif direction == "maximize" and v > running:
+        #             running = v
+        #         elif direction == "minimize" and v < running:
+        #             running = v
+        #         best_progression.append(running)
+        #     if len(best_progression) >= window:
+        #         tail = best_progression[-window:]
+        #         lo, hi = min(tail), max(tail)
+        #         denom = abs(tail[-1]) if abs(tail[-1]) > 1e-12 else 1.0
+        #         change_pct = 100.0 * (hi - lo) / denom
+        #         if change_pct < eps_pct:
+        #             return {"should_stop": True, "reason": "convergence",
+        #                     "detail": f"best changed by {change_pct:.3g}% over last {window} trials (< {eps_pct}%)"}
 
         return {"should_stop": False, "reason": "continue",
                 "detail": f"trials={len(trials)}, best={best['value'] if best else None}"}
@@ -779,7 +802,7 @@ def campaign_visualize_all(
 ) -> dict:
     """Generate per-iteration visual analysis for every trial in the
     campaign. For each iteration:
-      - render pristine + first_load + last_load PNGs via OVITO
+      - render pristine + seeded-crack (pre-loading) + last-load PNGs via OVITO
       - send them to a vision LLM
       - collect a short structural summary
 
@@ -803,10 +826,14 @@ def campaign_visualize_all(
 
         # Import helpers from the two different tools.py files:
         #   - src/tools.py            → OVITO render server helpers
-        #   - src/orchestrator/tools.py → viz frame selection + LLM prompt
+        #   - src/orchestrator/tools.py → viz frame selection
         # (Same-name file gotcha — kept explicit to prevent regressions.)
+        # Campaign uses its OWN prompt (CAMPAIGN_VIZ_PROMPT from prompts.py) so it
+        # can diverge from the standalone prompt later (e.g. crack-specific output
+        # for hypothesis generation) without affecting visualize_run.
         from tools import _start_render_server_process, _send_render_request
-        from orchestrator.tools import _pick_viz_frames, _VIZ_PROMPT
+        from orchestrator.tools import _pick_viz_frames
+        from prompts import CAMPAIGN_VIZ_PROMPT
         from openai import OpenAI
         import base64
         import config
@@ -898,15 +925,34 @@ def campaign_visualize_all(
                                  "script. Interpret colors per its color_map:\n\n"
                                  "```python\n" + ovito_script + "\n```"),
                     })
-                content.append({"type": "text", "text": _VIZ_PROMPT})
+                else:
+                    content.append({
+                        "type": "text",
+                        "text": ("No custom OVITO script was used. Atoms are colored by "
+                                 "LAMMPS particle type (NOT crystal structure). Do not "
+                                 "interpret colors as FCC/HCP/BCC. Focus on gross spatial "
+                                 "features."),
+                    })
+                content.append({"type": "text", "text": CAMPAIGN_VIZ_PROMPT})
 
                 try:
-                    resp = client.chat.completions.create(
+                    # Stream is REQUIRED by the gateway for requests it estimates
+                    # may exceed 10 min (non-streaming ones are rejected with a
+                    # 500 "Streaming is required"). Vision-over-many-images trips
+                    # that threshold, so stream and accumulate the tokens (the
+                    # report is built from the full text, not shown live).
+                    stream = client.chat.completions.create(
                         model=model,
                         messages=[{"role": "user", "content": content}],
                         temperature=0.3,
+                        stream=True,
                     )
-                    observation = (resp.choices[0].message.content or "").strip()
+                    parts = []
+                    for chunk in stream:
+                        tok = chunk.choices[0].delta.content
+                        if tok:
+                            parts.append(tok)
+                    observation = "".join(parts).strip()
                 except Exception as e:
                     observation = f"_vision call failed: {e}_"
 

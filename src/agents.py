@@ -37,7 +37,13 @@ def configure_dspy_lm():
         model=f'openai/{config.DEFAULT_MODEL}',
         api_base=config.API_BASE_URL,
         api_key=config.API_KEY,
-        temperature=0.1
+        temperature=0.1,
+        max_tokens=16000,   # cap output so the gateway's worst-case time estimate
+                            # stays under the 10-min "streaming required" threshold.
+                            # NOTE: do NOT add stream=True here — DSPy's .forward()
+                            # path can't consume litellm's raw CustomStreamWrapper
+                            # (raises 'not subscriptable'); real streaming needs
+                            # dspy.streamify, which we don't want for the generator.
     )
     dspy.configure(lm=lm)
     CONFIGURED_LM = lm
