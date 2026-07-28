@@ -15,15 +15,19 @@ Registry entry fields:
 """
 from typing import Any, Dict, List
 
-from . import delta_a as _delta_a
+from . import surface_void as _surface_void
 
 
 METRIC_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "delta_a": {
-        "compute":      _delta_a.compute,
+    # Surface-mesh cavity metric. The objective value read by the campaign is
+    # the dict key matching the registry name — here "delta_cavity_surface_area".
+    # surface_void.compute() returns that key plus volume / area-per-volume / PCA
+    # shape / num_voids as extra diagnostics in the same dict.
+    "delta_cavity_surface_area": {
+        "compute":      _surface_void.compute,
         "direction":    "minimize",
-        "units":        "Å",
-        "display_name": "Δa",
+        "units":        "Å²",
+        "display_name": "Δ crack surface area",
     },
     # Add new metrics here — one entry each. Drop a compute(run_folder) function
     # into src/benchmark/metrics/<name>.py, import it above, then list it here.

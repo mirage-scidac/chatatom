@@ -429,6 +429,11 @@ unrecognized type, and filters like 'StructureType == 0' will not match.
 
 For display and statistics, use OVITO's encoding:
 structure_names = {0: "Other", 1: "FCC", 2: "HCP", 3: "BCC", 4: "ICO"}
+
+When emitting RGB tuples for named colors, use these EXACT pure values
+(do NOT invent shades like 0.8):
+  red=(1,0,0)  green=(0,1,0)  blue=(0,0,1)  yellow=(1,1,0)
+  magenta=(1,0,1)  cyan=(0,1,1)  white=(1,1,1)  black=(0,0,0)
 """
 
     # CNA cutoff formula for correct nearest-neighbor analysis

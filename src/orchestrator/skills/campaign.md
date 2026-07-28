@@ -25,11 +25,13 @@ AVAILABLE METRICS
 
 Currently registered objective metrics you can pick from:
 
-  • `delta_a` — Δa crack growth (Å); default direction: minimize
+  • `delta_cavity_surface_area` — Δ crack surface area (Å²): the surface area
+    of the crack opened during loading, measured from an OVITO surface mesh.
+    Default direction: minimize.
 
 If the user asks for a metric not in this list (fracture toughness, peak
 stress, DXA density, etc.), tell them it's not yet implemented and offer
-to proceed with `delta_a` instead, or wait until it's added.
+to proceed with `delta_cavity_surface_area` instead, or wait until it's added.
 
 ══════════════════════════════════════════════════════════════════════════════
 TURN 1 — DESIGN THE CAMPAIGN PLAN
@@ -67,7 +69,7 @@ TUNABLE KNOBS — ALWAYS THESE 4 FOR CRACK/FATIGUE CAMPAIGNS
 | Knob              | Default Range       | Units            |
 |-------------------|---------------------|------------------|
 | strain_rate       | [1e-3, 2e-2]        | /ps              |
-| temperature       | [100, 600]          | K                |
+| temperature       | [100, 700]          | K                |
 | crack_length_frac | [0.1, 0.6]          | fraction of L_x  |
 | crack_width_a0    | [2, 8]              | × a₀             |
 
@@ -76,7 +78,7 @@ For CYCLIC (fatigue) campaigns, replace `strain_rate` with `strain_amplitude`
 
 The user MAY NARROW these ranges during setup. The user MAY NOT change
 which knobs are tuned (this campaign mode is specifically for
-crack/fatigue Δa optimization).
+crack/fatigue crack-area optimization).
 
 ────────────────────────────────────────────────────────────────────────────
 PRESENT THE PLAN AS PROSE (do NOT call any tool yet)
@@ -86,7 +88,7 @@ Print the plan in chat so the user can read/edit it. Example format:
   "I'll set up a Griffith crack campaign for Al. Here's my proposed plan
    (you can change ANY field):
 
-   OBJECTIVE: minimize Δa (crack growth, Å)
+   OBJECTIVE: minimize Δ crack surface area (crack opening, Å²)
 
    TEMPLATE (locked once you confirm):
      • Material: Al (fcc, a₀ = 4.05 Å)
@@ -98,12 +100,12 @@ Print the plan in chat so the user can read/edit it. Example format:
      • Phase 3: NVT, 15 ps (monotonic tensile loading)
      • Dump: every 1500 steps, properties c_pe, c_stress[1..6], c_cna
      • CNA cutoff: 0.854 × 4.05 = 3.457 Å
-     • OVITO colors: FCC=green, HCP=yellow, Other=red, BCC=blue
+     • OVITO colors: FCC=green, HCP=yellow, Other=red, BCC=blue, ICO:gray
      • Camera: down +z
 
    TUNABLE KNOBS (vary across iterations):
      • strain_rate: [1e-3, 2e-2] /ps
-     • temperature: [100, 600] K
+     • temperature: [100, 700] K
      • crack_length_frac: [0.1, 0.6]
      • crack_width_a0: [2, 8] × a₀
 
@@ -120,7 +122,7 @@ RULES:
   - NEVER auto-call `campaign_start(...)` without explicit user confirmation.
   - If user requests changes ("use Cu instead", "narrow strain to
     [1e-3, 5e-3]", "max_iter 30"), update the proposal and ask again.
-  - DEFAULT ovito_colors are "FCC=green, HCP=yellow, Other=red, BCC=blue".
+  - DEFAULT ovito_colors are "FCC=green, HCP=yellow, Other=red, BCC=blue, ICO:gray"
     Override ONLY if the user explicitly states colors.
   - PRESERVE user-specified colors VERBATIM across ALL subsequent turns.
   - If user says "confirm" / "yes" / "go", proceed to Turn 2.
@@ -140,10 +142,10 @@ Pass the plan as a single structured dict. Required top-level keys:
 
   {
     "objective": {
-      "metric":       "delta_a",     # from AVAILABLE METRICS above
+      "metric":       "delta_cavity_surface_area",  # from AVAILABLE METRICS above
       "direction":    "minimize",    # or "maximize"
-      "units":        "Å",
-      "display_name": "Δa",
+      "units":        "Å²",
+      "display_name": "Δ crack surface area",
       "target":        null          # optional; stops early if best <= target (min)
                                      # or best >= target (max)
     },
@@ -158,12 +160,12 @@ Pass the plan as a single structured dict. Required top-level keys:
       # phase_4 only for fatigue: "NVT, 50 ps, cyclic loading wiggle"
       "dump_freq_steps":  1500,
       "cna_cutoff_a":     3.457,
-      "ovito_colors":     "FCC=green, HCP=yellow, Other=red, BCC=blue",
+      "ovito_colors":     "FCC=green, HCP=yellow, Other=red, BCC=blue, ICO=gray",
       "camera":           "down +z"
     },
     "knobs": {
       "strain_rate":       [1e-3, 2e-2],    # or strain_amplitude for fatigue
-      "temperature":       [100, 600],
+      "temperature":       [100, 700],
       "crack_length_frac": [0.1, 0.6],
       "crack_width_a0":    [2, 8]
     },
@@ -296,14 +298,14 @@ across every iteration. Always specify EXACTLY:
 Same seed (12345), same flags (mom yes rot yes dist gaussian), every
 iteration. Only <T> (the temperature knob) changes. Never let the seed or
 argument order drift — different seeds give different thermal microstates
-and make Δa comparisons across trials unfair.
+and make crack-area comparisons across trials unfair.
 
 ────────────────────────────────────────────────────────────────────────────
 MONOTONIC CAMPAIGNS — Simulation specification template
 ────────────────────────────────────────────────────────────────────────────
 
   Hypothesis: <1–3 sentences explaining your reasoning; reference past
-              trial numbers + Δa values when past data exists.>
+              trial numbers + Δ crack surface area values when past data exists.>
 
   Simulation specification:
   - Material: <plan.template.material>, lattice fcc <a₀> Å, system size
@@ -429,8 +431,8 @@ scientist reads to understand what happened. Cover:
   • If any trials failed: what went wrong, was it a systematic issue?
 
 Length: 4–8 sentences per section is fine. Precise references beat vague
-claims — "iteration 4 (T=250K) reduced Δa from the iter-3 peak of 1.23 Å
-down to 0.72 Å, confirming lower T is beneficial in this system" is much
+claims — "iteration 4 (T=250K) reduced Δ crack surface area from the iter-3 peak of 1230 Å²
+down to 0.72 Å², confirming lower T is beneficial in this system" is much
 more useful than "lower T tended to help."
 
 ══════════════════════════════════════════════════════════════════════════════

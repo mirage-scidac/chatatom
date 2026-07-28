@@ -93,7 +93,7 @@ def render_campaign_graph(campaign_folder: str) -> str:
     trials = _read_trials(campaign_folder)
 
     objective = plan.get("objective", {})
-    metric_name = objective.get("metric", "delta_a")
+    metric_name = objective.get("metric", "delta_cavity_surface_area")
     direction = objective.get("direction", "minimize")
     display_name = objective.get("display_name", metric_name)
     units = objective.get("units", "")
@@ -247,7 +247,7 @@ def write_report_skeleton(
     trials = _read_trials(campaign_folder)
 
     objective = plan.get("objective", {})
-    metric_name = objective.get("metric", "delta_a")
+    metric_name = objective.get("metric", "delta_cavity_surface_area")
     direction = objective.get("direction", "minimize")
     display_name = objective.get("display_name", metric_name)
     units = objective.get("units", "")

@@ -14,6 +14,7 @@ State is persisted to disk under runs/<campaign_id>/:
 SSE emission goes through the existing _q helper in graph.nodes so the
 frontend's existing handlers pick up the events unchanged.
 """
+import asyncio
 import json
 import os
 import sys
@@ -28,7 +29,11 @@ from langgraph.types import Command
 from typing_extensions import Annotated
 
 # Make sibling-module imports work when the tool runs inside the orchestrator
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _SRC_DIR)
+# Repo root (parent of src/) — cwd for the metric subprocess so its
+# `os.getcwd()/src` on sys.path resolves to this project's src/.
+PROJECT_ROOT = os.path.dirname(_SRC_DIR)
 
 from benchmark.metrics import compute_metric, list_metrics, get_metric_meta
 from benchmark.reporting import (
@@ -446,30 +451,80 @@ def campaign_run_simulation(
 # TOOL 4: campaign_measure_metrics
 # ────────────────────────────────────────────────────────────────────────────
 
+# Inline program run by the metric subprocess: dispatch through the registry and
+# print the result dict as JSON on stdout. Debug/warnings go to stderr, so stdout
+# is clean JSON. Runs in its own process → Qt/OVITO gets a real main thread.
+_METRIC_SUBPROC_SRC = (
+    "import sys, json, os; "
+    "sys.path.insert(0, os.path.join(os.getcwd(), 'src')); "
+    "from benchmark.metrics import compute_metric; "
+    "print(json.dumps(compute_metric(sys.argv[1], sys.argv[2])))"
+)
+
+
+async def _measure_in_subprocess(metric_name: str, run_folder: str) -> dict:
+    """Run compute_metric in a child process and return its dict.
+
+    OVITO/Qt deadlocks on worker threads and blocks the event loop when run
+    inline, so we isolate it in a subprocess and await it — the loop stays free
+    to service the Socket.IO/SSE heartbeat. Never raises: any failure (non-zero
+    exit, unparseable output, timeout) is returned as {"error": ...} so the
+    campaign loop records a failed trial and continues, matching compute_metric's
+    own contract.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-W", "ignore", "-c", _METRIC_SUBPROC_SRC,
+            metric_name, run_folder,
+            cwd=PROJECT_ROOT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.TimeoutError:
+        return {"error": f"metric subprocess timed out after 120s"}
+    except Exception as e:
+        return {"error": f"metric subprocess failed to launch: {type(e).__name__}: {e}"}
+
+    if proc.returncode != 0:
+        tail = (err or b"").decode(errors="replace").strip()[-500:]
+        return {"error": f"metric subprocess exit {proc.returncode}: {tail}"}
+    try:
+        return json.loads((out or b"").decode().strip())
+    except Exception as e:
+        tail = (out or b"").decode(errors="replace").strip()[-500:]
+        return {"error": f"metric subprocess bad JSON ({e}): {tail}"}
+
+
 @tool
-def campaign_measure_metrics(
+async def campaign_measure_metrics(
     run_folder: str,
     metric_name: str,
 ) -> dict:
     """Extract the objective metric from a completed simulation's run folder.
 
     Dispatches to src/benchmark/metrics/ registry by metric_name. Currently
-    registered: 'delta_a'. Returns the metric dict on success, or
+    registered: 'delta_cavity_surface_area'. Returns the metric dict on success, or
     {"error": "..."} on failure (unknown metric name, missing dump files,
     extractor crash — never raises).
 
     Call this after simulate() returns, before record_trial().
     """
-    result = compute_metric(metric_name, run_folder)
+    # OVITO/Qt cannot run off the main thread: asyncio.to_thread(compute_metric)
+    # deadlocks forever, and running it inline on the loop thread blocks the
+    # Socket.IO/SSE heartbeat for ~2s (frontend "Could not connect"). Fix: run the
+    # metric in a SEPARATE PROCESS so Qt gets its own main thread, and await it so
+    # this coroutine yields to the event loop while it runs.
+    result = await _measure_in_subprocess(metric_name, run_folder)
 
-    # Print the raw metric to the terminal so the crack lengths are visible
+    # Print the raw metric to the terminal so the crack area/volume are visible
     # while a campaign runs.
     if isinstance(result, dict) and "error" not in result:
         print(
             f"[metric:{metric_name}] {os.path.basename(run_folder)}  "
-            f"a_initial={result.get('a_initial'):.3f} Å  "
-            f"a_final={result.get('a_final'):.3f} Å  "
-            f"Δa={result.get('delta_a'):.3f} Å",
+            f"crack_area={result.get('cavity_surface_area_final', 0.0):.1f} Å²  "
+            f"Δarea={result.get('delta_cavity_surface_area', 0.0):.1f} Å²  "
+            f"(crack_volume={result.get('cavity_volume_final', 0.0):.1f} Å³)",
             flush=True,
         )
     else:

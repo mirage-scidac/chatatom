@@ -205,9 +205,11 @@ __pycache__/
 # Data files (memory and sessions)
 data/*.json
 data/*.db
+data/*.db.bak
 data/*.db-journal
 data/*.db-shm
 data/*.db-wal
+*.bak
 !data/.gitkeep
 
 # Local secrets — never commit. Use src/config.example.py as a template.
