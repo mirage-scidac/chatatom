@@ -558,6 +558,7 @@ CRITICAL CONSTRAINTS:
 - The crack length (ybound_high - ybound_low) should be ~30% of the box (0.15 * ly on each side)
 - Use 'units box' for region commands when working with box dimensions (lx, ly)
 - The INF INF for z means the crack extends through the full thickness
+- Define crack geometry, regions, AND groups AFTER the Phase-1 NPT equilibration run, so groups are assigned on relaxed atom positions (defining them before NPT freezes a stale group and misaligns the crack)
 """
 
     # Cyclic loading technique for fatigue simulations
