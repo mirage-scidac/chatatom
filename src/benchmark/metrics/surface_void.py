@@ -29,7 +29,7 @@ from ovito.modifiers import ConstructSurfaceModifier
 
 
 # ── Parameters ──────────────────────────────────────────────────────────────
-SURFACE_RADIUS = 2  # probe-sphere radius (~1 NN spacing for Cu)
+SURFACE_RADIUS = 2 # probe-sphere radius (~1 NN spacing for Cu)
 SMOOTHING_LEVEL = 2
 # Optional seeded-crack center [x,y,z] to disambiguate multiple voids. None ->
 # pick the largest empty region (default).

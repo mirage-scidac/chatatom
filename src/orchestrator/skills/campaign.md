@@ -333,7 +333,7 @@ MONOTONIC CAMPAIGNS — Simulation specification template
   - Phase 3 (Monotonic tensile loading campaign):
       ensemble: NVT, temperature: <T> K, duration: <phase_3 duration>
       strain_rate: <strain_rate> /ps along y-axis
-      method: fix deform y erate <strain_rate> units box remap v
+      method: fix deform y erate <strain_rate> units box remap x
       NO wiggle, monotonic loading only
 
 ────────────────────────────────────────────────────────────────────────────

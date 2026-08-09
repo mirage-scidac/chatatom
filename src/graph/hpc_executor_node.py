@@ -35,6 +35,7 @@ llm = ChatOpenAI(
     model=config.DEFAULT_MODEL,
     api_key=config.API_KEY,
     base_url=config.API_BASE_URL,
+    streaming = True,
 )
 
 GLOBUS_MCP_CONFIG = {

@@ -96,7 +96,7 @@ class GenerateLAMMPSScript(dspy.Signature):
     lammps_script: str = dspy.OutputField(desc="Complete LAMMPS input script")
     explanation: str = dspy.OutputField(desc="Brief explanation of key script features")
     dump_filename_pattern: str = dspy.OutputField(
-        desc="The dump filename pattern used in the script (e.g., 'dump.Cu_solidification.*.dat' or 'traj.lammpstrj'). "
+        desc="The dump filename pattern used in the script (e.g., 'dump.Cu_solidification.*.dat'). "
              "For multi-phase simulations with separate dumps per phase, report a UNIFIED glob pattern that matches ALL "
              "dump files (e.g., 'dump.*.dat' to match dump.*.prestress AND dump.*.cracked)."
     )
@@ -814,32 +814,32 @@ When the user mentions any of these keywords, treat the request as a crack or fa
 
 Simulation type mapping:
 - Crack only (no monotonic loading no cycling) → 3-phase simulation:
-  Phase 1: Pre-stress equilibration (NPT, ~50 ps)
-  Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
-  Phase 3: Crack propagation observation (NVT, user-specified or ~100 ps)
+  Phase 1: Pre-stress equilibration (NPT, ~10 ps)
+  Phase 2: Crack seeding + relaxation (NVT, ~10 ps)
+  Phase 3: Crack propagation observation (NVT, user-specified or ~50 ps)
 
 - Crack (monotonic loadding) → 3-phase simulation:
-  Phase 1: Pre-stress equilibration (NPT, ~50 ps)
-  Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
-  Phase 3: Crack propagation under monotonic loading (NVT, strain rate = 1e-2, user-specified or ~100 ps)
+  Phase 1: Pre-stress equilibration (NPT, ~10 ps)
+  Phase 2: Crack seeding + relaxation (NVT, ~10 ps)
+  Phase 3: Crack propagation under monotonic loading (NVT, strain rate = 2e-3, user-specified or ~50 ps)
   
 - Crack + cyclic loading (fatigue) → 4-phase simulation:
-  Phase 1: Pre-stress equilibration (NPT, ~50 ps)
-  Phase 2: Crack seeding + relaxation (NVT, ~50 ps)
-  Phase 3: Initial crack propagation (NVT, ~50 ps)
-  Phase 4: Cyclic loading (NVT + fix deform wiggle, user-specified or ~500 ps)
+  Phase 1: Pre-stress equilibration (NPT, ~10 ps)
+  Phase 2: Crack seeding + relaxation (NVT, ~10 ps)
+  Phase 3: Initial crack propagation (NVT, ~10 ps)
+  Phase 4: Cyclic loading (NVT + fix deform wiggle, user-specified or ~200 ps)
 
 Required parameters to extract for crack simulations:
 - Material/Element (e.g., Cu, Al, Fe)
 - Temperature (default: 300 K)
 - Pre-stress pressure targets (default: 1.0 bar in x and y)
-- Crack geometry: length fraction (default: 0.3 of L_y), width (default: 4 lattice parameters in x)
-- System size: minimum 20x20x5 unit cells (crack simulations need large boxes)
+- Crack geometry: length fraction (default: 0.3 of L_x), width (default: 4 lattice parameters in y)
+- System size: minimum 40x40x5 unit cells (crack simulations need large boxes)
 
 Additional parameters for fatigue:
 - Strain amplitude (default: 0.25%)
-- Loading period (default: 100 ps)
-- Loading direction: normal to the crack plane (Mode I tensile opening) — for the default crack geometry, this is x
+- Loading period (default: 50 ps)
+- Loading direction: normal to the crack plane (Mode I tensile opening) — for the default crack geometry, this is y
 - Number of cycles or total cycling duration
 
 Crack simulation multi-phase description template:
@@ -901,9 +901,25 @@ If the user specifies visualization preferences (e.g., "show only crystalline at
 - Structural analysis (e.g., "identify defects", "show dislocations")
 - Display preferences (e.g., "high quality", "top view")
 
-If visualization preferences are detected, add a section:
+DEFAULT — CRACK / FATIGUE SIMULATIONS ONLY (when the user gives NO visualization preference):
+For crack or fatigue simulations ONLY, if the user provides no visualization
+preference, DO NOT skip this — apply the default below, treat it as a detected
+preference, and still emit the VISUALIZATION PREFERENCES section (see below).
+(For all other simulation types, do NOT force a default — only emit the section
+if the user actually specified a preference.)
+- Coloring: color by CNA structure type — FCC=green, HCP=yellow, BCC=blue, ICO=gray, Other=red
+- Camera: top view (down +z)
+- Filtering: none (show all atoms)
+
+
+Add a VISUALIZATION PREFERENCES section when the user specified preferences.
+ADDITIONALLY, for CRACK / FATIGUE simulations, always add it even when no
+preference was given — filling it from the CRACK/FATIGUE DEFAULT above (color by
+CNA structure type: FCC=green, HCP=yellow, BCC=blue, ICO=gray, Other=red; camera
+top view down +z; no filtering). For non-crack simulations with no user
+preference, do NOT add the section.
  VISUALIZATION PREFERENCES:
- - Request: [user's visualization request in their own words]
+ - Request: [user's visualization request in their own words, or "default: color by CNA structure type, top view" for crack/fatigue when none given]
  - Type: [filtering/coloring/analysis/display]
  - Data availability notes: Call out any per-atom fields already in the dump (e.g., `c_cna`, `c_pe`, custom scalars). Remind the visualization generator to inspect `data_collection.particles.keys()` (per OVITO's data model docs) and to install an early PythonModifier guard that runs every frame: reuse the stored properties when present, otherwise invoke the appropriate OVITO modifier (CommonNeighborAnalysisModifier, CentroSymmetryModifier, etc.) so that downstream steps never see missing data or warnings. When color coding needs to remain consistent between frames, tell it to disable automatic range scaling (`auto_adjust_range=False`) and set explicit `start_value`, `end_value`, and `discretize_color_map=True` where appropriate (see docs/ovito_docs/modifiers.md for ColorCodingModifier parameters).
  - Post-processing tips: When asking for printed structure statistics, ensure the visualization generator defines a `structure_names = {1: 'FCC', 2: 'HCP', 3: 'BCC', 4: 'ICO', 5: 'Other'}` mapping (based on the CommonNeighborAnalysisModifier docs) before using it in report formatting.

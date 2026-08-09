@@ -25,7 +25,7 @@ from typing import NotRequired
 from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
 from langgraph.managed.is_last_step import RemainingSteps
-from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt import create_react_agent, ToolNode
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -165,7 +165,8 @@ def build_orchestrator_graph(checkpointer=None):
     """
     return create_react_agent(
         model=_build_model(),
-        tools=ORCHESTRATOR_TOOLS,
+        tools=ORCHESTRATOR_TOOLS,  
+        # tools = ToolNode(ORCHESTRATOR_TOOLS, handle_tool_errors=True),
         prompt=_prompt,
         state_schema=OrchestratorState,
         checkpointer=checkpointer,

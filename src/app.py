@@ -576,6 +576,50 @@ async def run_cascade(final: dict, sse_q: _queue.Queue, session_id: str,
     sse_q.put({"type": "workflow_complete", "session_id": session_id})
 
 
+def _backfill_orphaned_tool_calls(messages: list) -> list:
+    """Return ToolMessages needed to satisfy any AIMessage.tool_calls that
+    have no following ToolMessage (an interrupted mid-tool turn — campaign
+    OR standalone). Returns [] when history is already clean.
+
+    An interrupted tool turn (browser close, restart, cancel) can persist an
+    AIMessage requesting a tool with no result recorded. Providers reject such
+    histories (INVALID_CHAT_HISTORY) on every subsequent message, permanently
+    wedging the session. This is LangGraph's documented recovery: add a
+    ToolMessage whose tool_call_id matches each unanswered call, then
+    update_state + resume.
+
+    An orphan can only exist at the tail (an interrupted turn is always the
+    last thing written), so we walk backwards and stop after the most recent
+    tool-calling AIMessage — O(few) instead of O(N).
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    if not messages:
+        return []
+
+    answered = set()
+    backfills = []
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            tc_id = getattr(m, "tool_call_id", None)
+            if tc_id:
+                answered.add(tc_id)
+        elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            for tc in m.tool_calls:
+                # tool_calls may be dicts or objects — handle both.
+                tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "tool")
+                if tc_id and tc_id not in answered:
+                    backfills.append(ToolMessage(
+                        content=f"[interrupted] The '{tc_name}' call did not complete.",
+                        tool_call_id=tc_id,
+                        name=tc_name,
+                    ))
+            # Older AIMessages-with-tools were resolved in prior turns — stop.
+            break
+    return backfills
+
+
 async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
                            session_id: str, body: "LLMStreamRequest") -> None:
     """Run the LangGraph in a thread (sync invoke) and emit events via the queue.
@@ -594,6 +638,22 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
             )
             if prior_state and prior_state.values:
                 prior_hpc_count = len(prior_state.values.get("hpc_jobs") or [])
+
+                # Heal an interrupted prior turn before replay. An interrupted
+                # tool turn (campaign OR standalone) leaves an AIMessage.tool_calls
+                # with no matching ToolMessage; the provider then rejects the whole
+                # history (INVALID_CHAT_HISTORY) on every subsequent message.
+                # Reuses this same get_state snapshot (no extra read).
+                _backfills = _backfill_orphaned_tool_calls(
+                    prior_state.values.get("messages") or []
+                )
+                if _backfills:
+                    print(f"[HEAL] backfilling {len(_backfills)} orphaned tool call(s) for {session_id}")
+                    await asyncio.to_thread(
+                        ACTIVE_GRAPH.update_state,
+                        {"configurable": {"thread_id": session_id}},
+                        {"messages": _backfills},
+                    )
         except Exception as e:
             print(f"[POST-GRAPH] get_state failed (likely fresh session): {e}")
 

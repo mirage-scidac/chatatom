@@ -41,6 +41,8 @@ def _start_render_server_process() -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",    # stray non-UTF-8 bytes -> "?" instead of crashing the reader
         bufsize=1,           # line-buffered
         close_fds=True,      # don't inherit WebSocket file descriptors
     )
@@ -461,7 +463,7 @@ def monitor_dump_file(dump_path: str, frame_queue: Queue, simulation_done: threa
     current_timestep = None
     pending_frame = None
 
-    with open(actual_dump_file, 'r') as f:
+    with open(actual_dump_file, 'r', errors='replace') as f:
         while not simulation_done.is_set() or f.tell() < os.path.getsize(actual_dump_file):
             line = f.readline()
 
@@ -729,6 +731,8 @@ def run_lammps_simulation(script_string: str, render_config: Optional[Dict[str, 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",        # stray non-UTF-8 bytes -> "?" instead of crashing the reader
             cwd=run_folder,
             bufsize=1,
             universal_newlines=True,
