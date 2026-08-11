@@ -116,10 +116,11 @@ class ReviewLAMMPSScript(dspy.Signature):
     NVT/NPT without velocity initialization, NPT combined with fix deform.
 
     CHECK: Pdamp ~1000x timestep, CNA cutoff ~0.854*a0 (midpoint of 1st and 2nd NN),
-    crack regions defined AFTER create_atoms, neigh_modify exclude
-    (NOT delete_atoms) for Griffith cracks, unfix/undump hygiene
-    between phases, pe/atom and stress/atom in crack dump commands,
-    velocity temperature matches thermostat temperature.
+    crack regions defined AFTER create_atoms. Griffith cracks may be seeded
+    EITHER with neigh_modify exclude OR with delete_atoms — both are valid; do
+    NOT reject a delete_atoms crack (delete_atoms should use 'compress no').
+    Also check unfix/undump hygiene between phases, pe/atom and stress/atom in
+    crack dump commands, velocity temperature matches thermostat temperature.
     """
     lammps_script: str = dspy.InputField(desc="LAMMPS script to review")
     intended_parameters: str = dspy.InputField(desc="Description of intended simulation", default="")
@@ -528,22 +529,30 @@ Wrong: color_mod.discretize_color_map = True  (correct name but must be in const
 
     # Griffith crack seeding technique
     GRIFFITH_CRACK_TECHNIQUE = """
-GRIFFITH CRACK SEEDING TECHNIQUE:
-This technique seeds a crack by severing atomic bonds across a crack plane using
-neigh_modify exclude. No atoms are deleted — the crack is created by preventing
-interactions between atoms on opposite sides of the crack face.
+GRIFFITH CRACK SEEDING TECHNIQUES:
+Choose the method from simulation_details:
+- DEFAULT (nothing said about method): use METHOD A (neigh_modify exclude).
+- If simulation_details says "delete_atoms" / "remove atoms" / "carve a void" /
+  "free surfaces": use METHOD B (delete_atoms) instead.
 
-Steps (must come AFTER create_atoms and force field setup):
+METHOD A — neigh_modify exclude (DEFAULT):
+This seeds a crack by severing atomic bonds across a crack plane using
+neigh_modify exclude. No atoms are deleted (atom count N stays constant) — the
+crack is created by preventing interactions between atoms on opposite sides of
+the crack face.
+
+Steps (must come AFTER create_atoms and force field setup).
+Example below is for a HORIZONTAL crack (line along x, faces open in y, load in y):
 1. Define geometry variables for crack position and extent:
-   variable xmid equal lx/2
-   variable xbound_low equal lx/2-2*${a0}
-   variable xbound_high equal lx/2+2*${a0}
-   variable ybound_low equal ly/2-0.15*ly
-   variable ybound_high equal ly/2+0.15*ly
+   variable ymid equal ly/2
+   variable xbound_low equal lx/2-0.15*lx
+   variable xbound_high equal lx/2+0.15*lx
+   variable ybound_low equal ly/2-1.0*${a0}
+   variable ybound_high equal ly/2+1.0*${a0}
 
-2. Create two regions for the upper and lower crack faces:
-   region crack_lower block ${xbound_low} ${xmid} ${ybound_low} ${ybound_high} INF INF units box
-   region crack_upper block ${xmid} ${xbound_high} ${ybound_low} ${ybound_high} INF INF units box
+2. Create two regions for the lower and upper crack faces (split by y at ymid):
+   region crack_lower block ${xbound_low} ${xbound_high} ${ybound_low} ${ymid} INF INF units box
+   region crack_upper block ${xbound_low} ${xbound_high} ${ymid} ${ybound_high} INF INF units box
 
 3. Create groups from the regions:
    group crack_lower region crack_lower
@@ -554,11 +563,27 @@ Steps (must come AFTER create_atoms and force field setup):
 
 CRITICAL CONSTRAINTS:
 - Regions/groups MUST be defined AFTER create_atoms (atoms must exist first)
-- The crack width (xbound_high - xbound_low) should be ~4 lattice parameters
-- The crack length (ybound_high - ybound_low) should be ~30% of the box (0.15 * ly on each side)
+- The crack length and width are simulation-dependent; take them from simulation_details.
 - Use 'units box' for region commands when working with box dimensions (lx, ly)
 - The INF INF for z means the crack extends through the full thickness
 - Define crack geometry, regions, AND groups AFTER the Phase-1 NPT equilibration run, so groups are assigned on relaxed atom positions (defining them before NPT freezes a stale group and misaligns the crack)
+
+METHOD B — delete_atoms (only when simulation_details explicitly requests it):
+Physically removes the atoms inside a single thin slot, carving a real void with
+free surfaces. This changes the atom count N. Use 'compress no' so atom IDs stay
+stable across phases.
+
+Steps (AFTER create_atoms, force field, and Phase-1 NPT).
+Example below is for a HORIZONTAL crack (line along x, faces open in y, load in y):
+1. Define geometry variables for one thin slot (both faces in one region):
+   variable xlo_crack equal lx/2-0.05*lx
+   variable xhi_crack equal lx/2+0.05*lx
+   variable ylo_crack equal ly/2-${a0}
+   variable yhi_crack equal ly/2+${a0}
+2. Create one region spanning the full crack slot:
+   region crack_slot block ${xlo_crack} ${xhi_crack} ${ylo_crack} ${yhi_crack} INF INF units box
+3. Physically remove the atoms inside the slot:
+   delete_atoms region crack_slot compress no
 """
 
     # Cyclic loading technique for fatigue simulations
@@ -833,7 +858,8 @@ Required parameters to extract for crack simulations:
 - Material/Element (e.g., Cu, Al, Fe)
 - Temperature (default: 300 K)
 - Pre-stress pressure targets (default: 1.0 bar in x and y)
-- Crack geometry: length fraction (default: 0.3 of L_x), width (default: 4 lattice parameters in y)
+- Crack geometry: length fraction (default: 0.3 of L_x), width (default: 2 lattice parameters in y)
+- Crack seeding method: neigh_modify exclude (default) OR delete_atoms if the user explicitly asks to delete/remove atoms or carve a void
 - System size: minimum 40x40x5 unit cells (crack simulations need large boxes)
 
 Additional parameters for fatigue:
@@ -867,6 +893,7 @@ For crack/fatigue simulations, also include:
 - Simulation type: Griffith Crack / Griffith Crack with Cyclic Loading
 - Pre-stress pressure: [Px] [Py] bar
 - Crack geometry: length fraction [value], width [value] lattice parameters
+- Crack seeding method: [neigh_modify exclude / delete_atoms]
 - Crack relaxation duration: [value] ps
 - Strain amplitude: [value]% (fatigue only)
 - Loading period: [value] ps (fatigue only)
