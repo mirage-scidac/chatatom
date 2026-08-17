@@ -297,24 +297,43 @@ def _exec_list_runs() -> str:
     return "\n".join(lines) + "\n\nTell the user: reply with 'analyze 1', 'analyze 2', etc. to analyze a run."
 
 
-def _exec_get_run_log(run_name: str, state: SimulationState) -> str:
-    """Execute get_run_log: resolves folder (name, number, or 'latest'), emits header, returns parsed log."""
-    # Strip leading "analyze " prefix in case LLM passes the full user phrase
+def _resolve_run_dir(run_name: str) -> str:
+    """Resolve a run identifier to an absolute run-folder path.
+
+    Accepts a folder name under runs/, a 1-based number matching the
+    list_recent_runs ordering, 'latest', or a path that is already a directory
+    (which is how nested campaign runs like runs/benchmark_*/run_* are reached).
+
+    Returns "" if nothing resolves; callers supply their own error text.
+    """
+    if not run_name:
+        return ""
+
+    # Strip leading "analyze " prefix in case the LLM passes the full user phrase.
     clean = run_name.strip().lower().removeprefix("analyze").strip()
     run_name = clean if clean else run_name.strip()
 
     if run_name == "latest":
-        run_folder = run_manager.get_latest_run()
-    elif run_name.strip().isdigit():
-        idx = int(run_name.strip()) - 1
+        return run_manager.get_latest_run() or ""
+
+    if run_name.isdigit():
+        idx = int(run_name) - 1
         all_runs = run_manager.list_all_runs()
         if 0 <= idx < len(all_runs):
-            run_folder = os.path.abspath(os.path.join(run_manager.RUNS_BASE_DIR, all_runs[idx]))
-        else:
-            run_folder = run_manager.get_latest_run()
-    else:
-        candidate = os.path.abspath(os.path.join(run_manager.RUNS_BASE_DIR, run_name))
-        run_folder = candidate if os.path.isdir(candidate) else run_manager.get_latest_run()
+            return os.path.abspath(os.path.join(run_manager.RUNS_BASE_DIR, all_runs[idx]))
+        return ""
+
+    # An existing path wins over a name lookup.
+    if os.path.isdir(run_name):
+        return os.path.abspath(run_name)
+
+    candidate = os.path.abspath(os.path.join(run_manager.RUNS_BASE_DIR, run_name))
+    return candidate if os.path.isdir(candidate) else ""
+
+
+def _exec_get_run_log(run_name: str, state: SimulationState) -> str:
+    """Execute get_run_log: resolves folder (name, number, or 'latest'), emits header, returns parsed log."""
+    run_folder = _resolve_run_dir(run_name) or run_manager.get_latest_run()
 
     print(f"[get_run_log] run_name={run_name!r}  resolved_folder={run_folder}")
 
@@ -427,7 +446,130 @@ def get_run_log(run_name: str) -> str:
     return _exec_get_run_log(run_name, {"session_id": _ANALYST_SESSION.get()})
 
 
-_ANALYST_TOOLS = [list_recent_runs, get_run_log]
+@_lc_tool
+def stress_strain_curve(run_name: str, axis: str = "y",
+                        fit_max_strain: float = 0.01) -> str:
+    """Compute the engineering stress-strain curve for a tensile-loading run.
+
+    Call this whenever the user asks about Young's modulus, yield or peak
+    stress, strain at failure, stiffness, or wants stress plotted against
+    strain. Do NOT try to answer those from raw pressure numbers in the log —
+    this tool derives strain from the box length and is the only correct source.
+
+    Only works on runs that contain a `fix deform` loading phase; a pure
+    equilibration run has no strain and the tool will say so.
+
+    The plot is shown to the user automatically — interpret the curve in your
+    reply rather than announcing that a plot exists.
+
+    Args:
+        run_name: Run folder name, OR a number ('1', '2', ...) matching the
+                  list_recent_runs output, OR 'latest', OR a path to a run
+                  folder (needed for campaign runs under runs/benchmark_*/).
+        axis: Loading axis — 'x', 'y', or 'z'. Defaults to 'y'.
+        fit_max_strain: Upper strain bound for the elastic (Young's modulus)
+                        least-squares fit. Defaults to 0.01.
+    """
+    print(f"[analyze_results] tool: stress_strain_curve(run_name={run_name}, axis={axis})")
+    try:
+        return _exec_stress_strain(run_name, axis, fit_max_strain)
+    except Exception as e:  # noqa: BLE001 — a raised tool aborts the agent turn
+        return f"Stress-strain analysis failed: {e}"
+
+
+def _exec_stress_strain(run_name: str, axis: str, fit_max_strain: float) -> str:
+    """Run stress_strain.py's analysis on one run; write CSV+PNG, emit the plot.
+
+    Reuses the root-level stress_strain module rather than reimplementing the
+    thermo parsing / loading-phase detection / modulus fit.
+    """
+    # stress_strain.py lives at the repo root alongside viz_run.py and
+    # kim_search.py. Append (never insert) so root scripts cannot shadow a
+    # same-named module under src/.
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if repo_root not in sys.path:
+        sys.path.append(repo_root)
+    import stress_strain as ss
+
+    axis = (axis or "y").strip().lower()
+    if axis not in ss._AXIS_COLUMNS:
+        return f"Invalid axis '{axis}'. Use 'x', 'y', or 'z'."
+    press_col, length_col = ss._AXIS_COLUMNS[axis]
+
+    run_folder = _resolve_run_dir(run_name)
+    if not run_folder:
+        return (f"Could not resolve a run folder from '{run_name}'. "
+                "Call list_recent_runs and pass a number or folder name.")
+
+    log_path = os.path.join(run_folder, "log.lammps")
+    if not os.path.exists(log_path):
+        candidates = glob.glob(os.path.join(run_folder, "log.*"))
+        if not candidates:
+            return f"No LAMMPS log file found in {run_folder}."
+        log_path = candidates[0]
+
+    blocks = ss.parse_thermo_blocks(log_path)
+    if not blocks:
+        return f"No thermo tables found in {log_path}."
+
+    try:
+        block = ss.pick_loading_block(blocks, length_col)
+    except ValueError:
+        return (f"This run has no tensile-loading phase: box length '{length_col}' "
+                f"never changes, so there is no `fix deform` block along {axis}. "
+                "Stress-strain is undefined here (it looks like an equilibration-only "
+                f"run). If the pull was along a different axis, retry with that axis.")
+
+    missing = [c for c in (press_col, length_col) if c not in block]
+    if missing:
+        return (f"Thermo output is missing column(s) {', '.join(missing)}. "
+                f"Add them to thermo_style. Available: {', '.join(block)}.")
+
+    strain, stress = ss.compute_stress_strain(block, press_col, length_col)
+    modulus = ss.youngs_modulus(strain, stress, fit_max_strain)
+
+    peak_stress = max(stress)
+    peak_strain = strain[stress.index(peak_stress)]
+
+    run_display = os.path.basename(os.path.normpath(run_folder))
+    prefix = os.path.join(run_folder, "stress_strain")
+    csv_path = prefix + ".csv"
+    ss.write_csv(csv_path, block, strain, stress, length_col)
+    png_path = ss.plot(prefix + ".png", strain, stress, modulus,
+                       fit_max_strain, run_display)
+
+    # Push the curve into chat. /runs is mounted statically by app.py and
+    # agent_content is markdown-rendered, so an <img> needs no frontend change.
+    # relpath (not basename) keeps nested campaign runs addressable.
+    if png_path:
+        try:
+            rel = os.path.relpath(run_folder, os.path.abspath(run_manager.RUNS_BASE_DIR))
+            if not rel.startswith(".."):
+                _analyst_q({
+                    "type": "agent_content", "agent": "Analyst",
+                    "content": f"\n\n![Stress-strain curve](/runs/{rel}/stress_strain.png)\n\n",
+                    "message_type": "analysis",
+                })
+        except ValueError:
+            pass  # run folder on a different drive; skip the image, keep the numbers
+
+    modulus_str = (f"{modulus:.1f} GPa (least-squares fit over strain <= {fit_max_strain})"
+                   if modulus is not None else "n/a (not enough low-strain points)")
+
+    return "\n".join([
+        f"run:             {run_display}",
+        f"loading axis:    {axis}  (stress = -{press_col}, strain from {length_col})",
+        f"data points:     {len(strain)}  (loading phase only)",
+        f"L0 ({length_col}):          {block[length_col][0]:.4f} Angstrom",
+        f"max strain:      {max(strain):.4f}",
+        f"Young's modulus: {modulus_str}",
+        f"peak stress:     {peak_stress:.3f} GPa at strain {peak_strain:.4f}",
+        f"csv:             {csv_path}",
+        f"png:             {png_path or 'not written (matplotlib unavailable)'}",
+    ])
+
+
+_ANALYST_TOOLS = [list_recent_runs, get_run_log, stress_strain_curve]
 
 
 def analyze_results_node(state: SimulationState) -> dict:

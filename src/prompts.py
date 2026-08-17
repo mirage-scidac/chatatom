@@ -857,7 +857,8 @@ Simulation type mapping:
 Required parameters to extract for crack simulations:
 - Material/Element (e.g., Cu, Al, Fe)
 - Temperature (default: 300 K)
-- Pre-stress pressure targets (default: 1.0 bar in x and y)
+- Pre-stress pressure targets (default: 1.0 bar, applied equally in x, y, AND z —
+  keep all three axes at the same value; never leave z at 0 bar or un-barostatted)
 - Crack geometry: length fraction (default: 0.3 of L_x), width (default: 2 lattice parameters in y)
 - Crack seeding method: neigh_modify exclude (default) OR delete_atoms if the user explicitly asks to delete/remove atoms or carve a void
 - System size: minimum 40x40x5 unit cells (crack simulations need large boxes)
@@ -870,7 +871,7 @@ Additional parameters for fatigue:
 
 Crack simulation multi-phase description template:
 "The simulation will proceed in [3/4] distinct phases:
-- Phase 1 (Pre-stress): Equilibrate the system at [temp] K under NPT with target pressures [Px, Py] bar for [duration] ps
+- Phase 1 (Pre-stress): Equilibrate the system at [temp] K under NPT with equal target pressures [Px, Py, Pz] = 1.0 bar in all three directions for [duration] ps
 - Phase 2 (Crack seeding + relaxation): Seed a Griffith crack at the center of the box and relax under NVT at [temp] K for [duration] ps
 - Phase 3 (Propagation): Observe crack propagation under NVT at [temp] K for [duration] ps
 [- Phase 4 (Cyclic loading): Apply sinusoidal strain of [amplitude]% in [direction] with period [period] ps under NVT at [temp] K for [duration] ps]
@@ -891,7 +892,7 @@ SIMULATION PARAMETERS:
 
 For crack/fatigue simulations, also include:
 - Simulation type: Griffith Crack / Griffith Crack with Cyclic Loading
-- Pre-stress pressure: [Px] [Py] bar
+- Pre-stress pressure: [Px] [Py] [Pz] bar (all three equal, default 1.0 bar each)
 - Crack geometry: length fraction [value], width [value] lattice parameters
 - Crack seeding method: [neigh_modify exclude / delete_atoms]
 - Crack relaxation duration: [value] ps
@@ -983,6 +984,16 @@ YOUR TOOLS:
   (a) No log data is visible in conversation history yet, OR
   (b) User is asking about a DIFFERENT run than already discussed.
   If log data is already in conversation history, answer directly from it — do not re-read.
+- stress_strain_curve: call this for Young's modulus, yield/peak stress, strain at
+  failure, stiffness, or any request to plot stress vs strain. It takes the SAME run
+  identifier as get_run_log (number, folder name, 'latest', or a path) plus an optional
+  loading axis (default 'y'). It derives strain from the box length — never estimate
+  modulus or yield by eyeballing pxx/pyy in the raw log.
+  The curve image is displayed to the user automatically, so INTERPRET it (where the
+  response leaves linearity, whether there is a sharp post-peak drop, what the modulus
+  implies) instead of saying "here is a plot".
+  Only meaningful for runs with a `fix deform` phase; on an equilibration-only run the
+  tool says so — relay that rather than guessing.
 
 WORKFLOW:
 1. Check conversation history first — if log data is already present, answer directly.
@@ -1005,6 +1016,9 @@ FOR MELTING / HEATING simulations (temperature ramp):
 - Report estimated melting temperature from the energy inflection point.
 
 FOR CRACK / FRACTURE simulations:
+- Call stress_strain_curve to get the quantitative response — do NOT read stress off
+  the raw pxx/pyy columns, and do NOT describe yielding without it.
+- Report Young's modulus, peak (yield) stress, and the strain at peak stress.
 - Report stress buildup and whether fracture occurred.
 - Look for sudden drop in potential energy or stress — marks crack propagation.
 - Report the timestep/strain at which fracture initiated if detectable.

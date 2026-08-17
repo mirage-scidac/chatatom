@@ -95,7 +95,7 @@ Print the plan in chat so the user can read/edit it. Example format:
      • System size: 60 × 30 × 3 unit cells
      • KIM model: EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
      • Timestep: 0.001 ps
-     • Phase 1: NPT, 5 ps, 300 K, 0 bar (pre-stress equilibration)
+     • Phase 1: NPT, 5 ps, 300 K, 1 bar (pre-stress equilibration in all x, y, and z)
      • Phase 2: NVT, 5 ps, 300 K (crack seed + relaxation)
      • Phase 3: NVT, 15 ps (monotonic tensile loading)
      • Dump: every 1500 steps, properties c_pe, c_stress[1..6], c_cna
@@ -154,7 +154,7 @@ Pass the plan as a single structured dict. Required top-level keys:
       "system_size":      "60x30x3",
       "kim_model":        "EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005",
       "timestep_ps":      0.001,
-      "phase_1":          "NPT, 5 ps, 300 K, 0 bar",
+      "phase_1":          "NPT, 5 ps, 300 K, 1 bar in x, y, and z",
       "phase_2":          "NVT, 5 ps, 300 K (crack seed + relaxation)",
       "phase_3":          "NVT, 15 ps (monotonic tensile loading)",
       # phase_4 only for fatigue: "NVT, 50 ps, cyclic loading wiggle"
@@ -319,7 +319,7 @@ MONOTONIC CAMPAIGNS — Simulation specification template
         velocity all create <T> 12345 mom yes rot yes dist gaussian
 
   - Phase 1 (Pre-stress equilibration):
-      ensemble: NPT, temperature: <T> K, pressure: 0 bar, duration: <phase_1 duration>
+      ensemble: NPT, temperature: <T> K, pressure: 1 bar in x, y, and z, duration: <phase_1 duration>
       thermostat damp: 0.1, barostat damp: 1.0
 
   - Phase 2 (Crack seeding + relaxation):
@@ -349,7 +349,8 @@ In fatigue campaigns, replace Phase 3 (above) with:
       ensemble: NVT, temperature: <T> K, duration: <phase_4 duration>
       Apply sinusoidal strain in y with amplitude <strain_amplitude>×L_y,
       period 10 ps → 5 cycles over 50 ps total.
-      LAMMPS: fix cyclic all deform 1 y wiggle amplitude 10.0 units box
+      LAMMPS: variable ampL equal <strain_amplitude>*ly
+              fix cyclic all deform 1 y wiggle ${ampL} 10.0 units box
 
 ────────────────────────────────────────────────────────────────────────────
 OUTPUTS — same for both modes, keep verbatim
