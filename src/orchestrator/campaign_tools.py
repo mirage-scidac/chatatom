@@ -1,15 +1,25 @@
 """Campaign v2 tools — the orchestrator drives the whole loop by calling
 these directly. No daemon thread, no _DualQueue, no CampaignManager.
 
-All 7 tools live here and are exported via CAMPAIGN_TOOLS for registration
+All tools live here and are exported via CAMPAIGN_TOOLS for registration
 in ORCHESTRATOR_TOOLS. Every tool is failure-safe: outer try/except returns
 {"error": "..."} instead of raising, so a bad tool call never poisons the
 ReAct trace.
 
+Script generation happens ONCE per campaign. Iteration 1 calls simulate() with
+prose demanding a parameterized script, then campaign_propose_template() stages
+it for the user to approve. Every iteration after that calls
+campaign_fill_template(), which is pure string substitution into the approved
+template's variable block — no LLM, and therefore no script drift between
+trials.
+
 State is persisted to disk under runs/<campaign_id>/:
-  plan.json       (immutable, written once by campaign_start)
-  control.json    (pause/resume/cancel flag)
-  trials.jsonl    (append-only, one JSON line per iteration)
+  plan.json         (immutable, written once by campaign_start)
+  control.json      (pause/resume/cancel flag)
+  trials.jsonl      (append-only, one JSON line per iteration)
+  template.lammps   (approved parameterized script; .pending before approval)
+  template_ovito.py (approved OVITO script, knob-independent)
+  template.json     (variable defaults, knob names, dump pattern, camera)
 
 SSE emission goes through the existing _q helper in graph.nodes so the
 frontend's existing handlers pick up the events unchanged.
@@ -42,6 +52,15 @@ from benchmark.reporting import (
     write_report_skeleton,
 )
 from graph.nodes import SESSION_QUEUES
+from orchestrator.campaign_template import (  # noqa: F401  (re-exported)
+    VAR_BLOCK_BEGIN,
+    VAR_BLOCK_END,
+    check_knob_bounds,
+    extract_variable_block,
+    fill_variable_block,
+    parse_variable_block,
+    resolve_placeholders,
+)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -65,6 +84,26 @@ def _control_path(campaign_id: str) -> str:
 
 def _trials_path(campaign_id: str) -> str:
     return os.path.join(_campaign_folder(campaign_id), "trials.jsonl")
+
+
+# ── Template path helpers ────────────────────────────────────────────────────
+# The parameterized LAMMPS script is generated ONCE (iteration 1) and approved
+# by the user. Pre-approval copies carry a `.pending` suffix; the approval
+# endpoint in app.py promotes them in place.
+
+def _template_path(campaign_id: str, pending: bool = False) -> str:
+    name = "template.lammps.pending" if pending else "template.lammps"
+    return os.path.join(_campaign_folder(campaign_id), name)
+
+
+def _template_ovito_path(campaign_id: str, pending: bool = False) -> str:
+    name = "template_ovito.py.pending" if pending else "template_ovito.py"
+    return os.path.join(_campaign_folder(campaign_id), name)
+
+
+def _template_meta_path(campaign_id: str, pending: bool = False) -> str:
+    name = "template.json.pending" if pending else "template.json"
+    return os.path.join(_campaign_folder(campaign_id), name)
 
 
 # ── Small I/O helpers ────────────────────────────────────────────────────────
@@ -92,12 +131,29 @@ def _read_trials(campaign_id: str) -> List[Dict[str, Any]]:
     if not os.path.exists(path):
         return []
     out = []
+    seen = set()
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            out.append(json.loads(line))
+            trial = json.loads(line)
+            # Skip a row that repeats one already read. An interrupted or
+            # re-invoked turn can call campaign_record_trial twice for the same
+            # finished run; the extra row then inflates len(trials), which
+            # check_stop compares against max_iterations — ending the campaign
+            # early — and which the report prints as the trial count.
+            #
+            # Keyed on (iteration, run_folder), not iteration alone: two loops
+            # racing on the same campaign can hand the same iteration number to
+            # two DIFFERENT runs, and both of those are real trials. Rows with
+            # no run_folder (failed before LAMMPS started) are never collapsed,
+            # since there is nothing to tell two such failures apart.
+            key = (trial.get("iteration"), trial.get("run_folder"))
+            if trial.get("run_folder") and key in seen:
+                continue
+            seen.add(key)
+            out.append(trial)
     return out
 
 
@@ -105,6 +161,131 @@ def _append_trial(campaign_id: str, trial: Dict[str, Any]) -> None:
     """Append one JSON line to trials.jsonl."""
     with open(_trials_path(campaign_id), "a") as f:
         f.write(json.dumps(trial, default=str) + "\n")
+
+
+# ── Campaign lifecycle status ────────────────────────────────────────────────
+
+# Terminal statuses. A campaign in one of these is finished: no template may be
+# approved into it and no loop may re-enter it. "cancelled" is written by the
+# cancel endpoint, "done" by campaign_save_narrative.
+CLOSED_STATUSES = ("cancelled", "done")
+
+PENDING_SUFFIX = ".pending"
+REJECTED_SUFFIX = ".rejected"
+
+
+def campaign_closed_status(campaign_id: str) -> Optional[str]:
+    """Return the terminal status of a closed campaign, else None.
+
+    Both campaign_propose_template and the /template approval endpoint must
+    refuse a closed campaign, and they must refuse it on the same grounds — a
+    guard living in only one of them is how an approval could resurrect a
+    campaign the user had already cancelled. Shared here so the two cannot
+    drift apart again.
+
+    A missing or unreadable control.json reads as not-closed: the absence of a
+    cancel flag is not evidence of one, and refusing on a read error would
+    strand a healthy campaign.
+    """
+    path = _control_path(campaign_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        status = _read_json(path).get("status")
+    except (OSError, ValueError):
+        return None
+    return status if status in CLOSED_STATUSES else None
+
+
+def reject_pending_template(campaign_id: str) -> List[str]:
+    """Move a staged template out of the approval path. Returns the new paths.
+
+    Called when a campaign is cancelled. Everything that looks for a staged
+    template looks for `.pending`, so renaming to `.rejected` both takes it out
+    of the approval path and makes _template_status report "none" instead of
+    claiming a dead campaign is still awaiting approval.
+
+    Renamed rather than deleted: the staged script is the only copy of what the
+    campaign proposed — plan.json keeps the objective and the knob ranges, not
+    the LAMMPS — and a refused template is worth being able to read afterwards.
+
+    A no-op when nothing is staged: cancel is also reachable from the campaign
+    banner mid-run, where the template was approved long ago.
+    """
+    moved: List[str] = []
+    for path in (_template_path(campaign_id, pending=True),
+                 _template_ovito_path(campaign_id, pending=True),
+                 _template_meta_path(campaign_id, pending=True)):
+        if not os.path.exists(path):
+            continue
+        dest = path[:-len(PENDING_SUFFIX)] + REJECTED_SUFFIX
+        os.replace(path, dest)
+        moved.append(dest)
+    return moved
+
+
+# ── The campaign variable block ──────────────────────────────────────────────
+# Parsing/filling lives in campaign_template.py (stdlib-only, so the sweep logic
+# stays testable without the langchain/langgraph stack). Re-exported here
+# because callers and tests reach for them through this module.
+
+
+def _read_template(campaign_id: str) -> Tuple[Optional[str], Optional[str], Dict[str, Any]]:
+    """Return (lammps_template, ovito_script, meta) for an APPROVED template.
+
+    Returns (None, None, {}) when no approved template exists yet.
+    """
+    path = _template_path(campaign_id)
+    if not os.path.exists(path):
+        return None, None, {}
+    with open(path) as f:
+        lammps = f.read()
+    ovito = None
+    ovito_path = _template_ovito_path(campaign_id)
+    if os.path.exists(ovito_path):
+        with open(ovito_path) as f:
+            ovito = f.read()
+    meta: Dict[str, Any] = {}
+    meta_path = _template_meta_path(campaign_id)
+    if os.path.exists(meta_path):
+        try:
+            meta = _read_json(meta_path)
+        except Exception:
+            meta = {}
+    return lammps, ovito, meta
+
+
+def _template_status(campaign_id: str) -> Dict[str, Any]:
+    """Summarize template state for campaign_get_state.
+
+    status is one of "none" (iteration 1 has not generated one yet),
+    "pending" (generated, awaiting the user's approval), or "approved".
+    """
+    if os.path.exists(_template_path(campaign_id)):
+        lammps, _, meta = _read_template(campaign_id)
+        try:
+            variables, _ = parse_variable_block(lammps or "")
+        except ValueError:
+            variables = meta.get("variables") or {}
+        return {
+            "status": "approved",
+            "variables": variables,
+            "knob_vars": meta.get("knob_vars") or [],
+            "approved_at": meta.get("approved_at"),
+            "source_iteration": meta.get("source_iteration"),
+        }
+    if os.path.exists(_template_path(campaign_id, pending=True)):
+        meta = {}
+        try:
+            meta = _read_json(_template_meta_path(campaign_id, pending=True))
+        except Exception:
+            pass
+        return {
+            "status": "pending",
+            "variables": meta.get("variables") or {},
+            "knob_vars": meta.get("knob_vars") or [],
+        }
+    return {"status": "none", "variables": {}, "knob_vars": []}
 
 
 # ── SSE emission (reuses SESSION_QUEUES from graph.nodes) ────────────────────
@@ -326,7 +507,10 @@ def campaign_get_state(
           plan: {...},               # the immutable plan
           trials: [ {iteration, knobs, hypothesis, metrics, run_folder,
                      wall_clock_s, failure_reason, is_new_best, created_at}, ...],
-          control: {status: "running"|"paused"|"cancelled"},
+          control: {status: "running"|"paused"|"cancelled"
+                            |"awaiting_template_approval"},
+          template: {status: "none"|"pending"|"approved",
+                     variables: {name: value}, knob_vars: [...]},
           best_so_far: {iteration, value, knobs} | null,
           iterations_since_improvement: int,
           consecutive_failures: int,
@@ -336,6 +520,13 @@ def campaign_get_state(
     Call this at the START of every iteration to see plan.template, past
     trials with their hypotheses + metrics, and current best. Do NOT try to
     infer state from message history — always call this tool.
+
+    `template.status` tells you which branch of the loop you are in:
+      "none"     → iteration 1: call simulate() then campaign_propose_template()
+      "pending"  → the user has not approved the template yet; do not run
+      "approved" → call campaign_fill_template(knobs) — never simulate()
+    On the first iteration after approval, use template.variables as the knob
+    values: those are the values in the script the user approved.
     """
     campaign_id = (state or {}).get("campaign_id")
     if not campaign_id:
@@ -347,16 +538,327 @@ def campaign_get_state(
         metric_name = plan["objective"]["metric"]
         direction = plan["objective"]["direction"]
         summary = _summarize_trials(trials, metric_name, direction)
+
+        # Push the campaign's disk truth to the UI on every iteration so the
+        # banner and progress table can rebuild themselves. The frontend only
+        # learns about a campaign from the one-shot campaign_started event, so
+        # anything that skips campaign_start — a resume, a page reload, the
+        # turn after a template approval — would otherwise leave it with no
+        # activeCampaign and silently drop the banner, the progress table and
+        # the pause/cancel controls for the rest of the run.
+        _emit((state or {}).get("session_id"), "campaign_state",
+              campaign_id=campaign_id,
+              objective=plan.get("objective") or {},
+              max_iterations=plan.get("max_iterations"),
+              knobs=list((plan.get("knobs") or {}).keys()),
+              status=control.get("status", "running"),
+              metric_name=metric_name,
+              trials=trials)
+
         return {
             "plan": plan,
             "trials": trials,
             "control": control,
+            "template": _template_status(campaign_id),
             **summary,
         }
     except FileNotFoundError as e:
         return {"error": f"campaign files missing: {e}"}
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 2a: campaign_propose_template
+# ────────────────────────────────────────────────────────────────────────────
+
+def _emit_staged_template(
+    campaign_id: str, session_id: Optional[str], reshown: bool = False
+) -> Dict[str, Any]:
+    """Send the staged (pending) template to the UI and describe the next step.
+
+    Always reads back from disk rather than from state, so re-showing a card the
+    user missed — a page reload, a restarted server, a dropped SSE — produces
+    exactly the bytes that are awaiting approval.
+    """
+    path = _template_path(campaign_id, pending=True)
+    if not os.path.exists(path):
+        return {"error": "no template is staged for approval."}
+    with open(path) as f:
+        script = f.read()
+
+    ovito = None
+    ovito_path = _template_ovito_path(campaign_id, pending=True)
+    if os.path.exists(ovito_path):
+        with open(ovito_path) as f:
+            ovito = f.read()
+
+    meta: Dict[str, Any] = {}
+    try:
+        meta = _read_json(_template_meta_path(campaign_id, pending=True))
+    except Exception:
+        pass
+
+    variables, _ = parse_variable_block(script)
+    knob_names = meta.get("knob_vars") or []
+
+    _emit(session_id, "campaign_template_ready",
+          campaign_id=campaign_id,
+          lammps_template=script,
+          ovito_script=ovito,
+          variables=variables,
+          knob_vars=knob_names)
+
+    return {
+        "ok": True,
+        "status": "awaiting_approval",
+        "reshown": reshown,
+        "variables": variables,
+        "knob_vars": knob_names,
+        "next_step": (
+            "END YOUR TURN NOW. Tell the user the template is "
+            + ("shown again above" if reshown else "ready for review")
+            + " and that approving it starts iteration 1. Do NOT call "
+              "campaign_run_simulation — the template is not approved yet."
+        ),
+    }
+
+
+@tool
+def campaign_propose_template(
+    source_iteration: int = 1,
+    state: Annotated[dict, InjectedState] = None,
+) -> dict:
+    """Capture the script simulate() just generated as the campaign template.
+
+    Call this ONCE, immediately after the iteration-1 simulate() call, and
+    NEVER again for the same campaign. It validates that the generated script
+    is properly parameterized, stages it for approval, and emits the
+    campaign_template_ready card to the user.
+
+    After this returns ok, END YOUR TURN. Do not run the simulation — the
+    template is not approved yet. The card is READ-ONLY with two buttons:
+    Approve sends a "Template approved" chat message which resumes the loop,
+    Cancel ends the campaign. The script cannot be edited or regenerated, so
+    check it against plan.template BEFORE calling this tool.
+
+    Returns {ok, status, variables, knob_vars, next_step} on success, or
+    {"error": "..."} describing exactly what is wrong with the generated
+    script — call simulate() ONCE more with that error quoted in
+    simulation_details, then retry this tool.
+    """
+    campaign_id = (state or {}).get("campaign_id")
+    if not campaign_id:
+        return {"error": "no active campaign on state. Call campaign_start(plan) first."}
+    try:
+        # A closed campaign stays closed. Without this guard the recovery path
+        # below would re-show the approval card on any later re-invocation,
+        # offering to start a campaign the user already finished or refused.
+        closed = campaign_closed_status(campaign_id)
+        if closed:
+            return {"error": f"this campaign is {closed} — it cannot be "
+                             f"restarted. Call campaign_start(plan) to begin a "
+                             f"new one."}
+
+        if os.path.exists(_template_path(campaign_id)):
+            return {"error": "this campaign already has an approved template — "
+                             "call campaign_fill_template(knobs) instead."}
+
+        session_id = (state or {}).get("session_id")
+        script = (state or {}).get("lammps_script")
+        staged = os.path.exists(_template_path(campaign_id, pending=True))
+
+        # Recovery path: a template is already staged but no fresh script is on
+        # state (new turn, restarted server, or the user reloaded the page and
+        # missed the card's SSE event). Re-show what is on disk instead of
+        # regenerating — the staged script is still the one awaiting approval.
+        if staged and not script:
+            return _emit_staged_template(campaign_id, session_id, reshown=True)
+
+        if not script:
+            return {"error": "no lammps_script on state — call simulate() first."}
+        if not (state or {}).get("review_passed"):
+            issues = (state or {}).get("review_issues")
+            return {"error": f"generated script did not pass review: {issues}"}
+
+        plan = _read_json(_plan_path(campaign_id))
+
+        try:
+            variables, _ = parse_variable_block(script)
+        except ValueError as e:
+            return {"error": f"script is not parameterized: {e}",
+                    "fix": "Re-call simulate() and restate the TEMPLATE FORMAT "
+                           "requirements in simulation_details."}
+
+        knob_names = list((plan.get("knobs") or {}).keys())
+        missing = [k for k in knob_names if k not in variables]
+        if missing:
+            return {"error": f"the campaign variable block is missing a declaration "
+                             f"for swept knob(s) {missing}. Declared: {sorted(variables)}",
+                    "fix": "Re-call simulate() and require a 'variable <knob> equal "
+                           "<value>' line for every swept knob."}
+
+        initial_knobs = {k: variables[k] for k in knob_names}
+        problems = check_knob_bounds(plan, initial_knobs)
+        if problems:
+            return {"error": "initial knob values in the template are out of range: "
+                             + "; ".join(problems)}
+
+        # The OVITO script is plain Python, stored once and reused verbatim —
+        # nothing fills it per iteration. A ${...} left in it is a SyntaxError
+        # that makes the renderer fall back to default coloring, silently
+        # costing the CNA crack colors. Resolve the constants, reject the rest.
+        ovito = (state or {}).get("ovito_script")
+        if ovito:
+            ovito, ovito_problems = resolve_placeholders(
+                ovito, variables, swept=knob_names
+            )
+            if ovito_problems:
+                return {"error": "the OVITO script " + "; ".join(ovito_problems),
+                        "fix": "Re-call simulate() and state that the OVITO "
+                               "script is Python and must use literal numbers "
+                               "— only the LAMMPS script uses ${...}."}
+
+        meta = {
+            "variables":             variables,
+            "knob_vars":             knob_names,
+            "dump_filename_pattern": (state or {}).get("dump_filename_pattern") or "",
+            "target_timesteps":      (state or {}).get("target_timesteps"),
+            "camera_angle":          (state or {}).get("camera_angle") or "default",
+            "source_iteration":      source_iteration,
+            "proposed_at":           _now_iso(),
+            "approved_at":           None,
+        }
+
+        with open(_template_path(campaign_id, pending=True), "w") as f:
+            f.write(script)
+        if ovito:
+            with open(_template_ovito_path(campaign_id, pending=True), "w") as f:
+                f.write(ovito)
+        _write_json_atomic(_template_meta_path(campaign_id, pending=True), meta)
+
+        # Park the campaign until the user acts on the card. check_stop treats
+        # anything that isn't "paused"/"cancelled" as runnable, so this status
+        # is purely informational for resume — it does not stop the loop.
+        _write_json_atomic(_control_path(campaign_id),
+                           {"status": "awaiting_template_approval",
+                            "updated_at": _now_iso()})
+
+        return _emit_staged_template(campaign_id, session_id)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# TOOL 2b: campaign_fill_template
+# ────────────────────────────────────────────────────────────────────────────
+
+@tool
+def campaign_fill_template(
+    knobs: dict,
+    state: Annotated[dict, InjectedState] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> Command:
+    """Substitute this iteration's knob values into the approved template.
+
+    This REPLACES simulate() for every iteration once a template exists — no
+    LLM runs, so the script is byte-identical to previous trials outside the
+    variable block. Writes the filled script onto state exactly as simulate()
+    would, so campaign_run_simulation() picks it up unchanged.
+
+    Args:
+        knobs: {knob_name: value} for THIS iteration. Every name must be a
+               swept knob from plan.knobs and every value must lie inside its
+               planned range — out-of-range values are rejected, not clamped,
+               so a mistaken proposal never runs silently. Knobs you omit keep
+               the template's current value.
+
+    Call sequence per iteration: campaign_get_state → (write hypothesis) →
+    campaign_fill_template → campaign_run_simulation → campaign_measure_metrics
+    → campaign_record_trial → campaign_check_stop.
+    """
+    def _fail(msg: str) -> Command:
+        return Command(update={"messages": [ToolMessage(
+            content=f"campaign_fill_template failed: {msg}",
+            tool_call_id=tool_call_id,
+        )]})
+
+    campaign_id = (state or {}).get("campaign_id")
+    if not campaign_id:
+        return _fail("no active campaign on state. Call campaign_start(plan) first.")
+    try:
+        template, ovito, meta = _read_template(campaign_id)
+        if not template:
+            if os.path.exists(_template_path(campaign_id, pending=True)):
+                return _fail("the template is still awaiting user approval — "
+                             "end your turn and wait for the approval message.")
+            return _fail("no template yet. Run iteration 1's simulate() and "
+                         "campaign_propose_template() first.")
+
+        if not isinstance(knobs, dict) or not knobs:
+            return _fail("knobs must be a non-empty dict of {knob_name: value}.")
+
+        plan = _read_json(_plan_path(campaign_id))
+        planned = list((plan.get("knobs") or {}).keys())
+
+        # Only swept knobs may vary. Everything else in the block (a0, timestep,
+        # dump frequency) is a campaign constant: letting it drift mid-run would
+        # silently break comparability with the trials already recorded.
+        unknown = [k for k in knobs if k not in planned]
+        if unknown:
+            return _fail(f"{unknown} are not swept knobs for this campaign. "
+                         f"Tunable knobs are {planned}.")
+
+        problems = check_knob_bounds(plan, knobs)
+        if problems:
+            return _fail("; ".join(problems) + ". Pick values inside the planned "
+                         "ranges — they are not clamped for you.")
+
+        try:
+            values = {k: float(v) for k, v in knobs.items()}
+            filled = fill_variable_block(template, values)
+        except ValueError as e:
+            return _fail(str(e))
+
+        # Read back what actually landed in the script rather than trusting the
+        # requested values, then show it to the user. The substitution is the
+        # one step of an iteration with no LLM and no reviewer in it, so the
+        # filled block is the only evidence that this trial ran the numbers the
+        # hypothesis claimed.
+        applied, _ = parse_variable_block(filled)
+        print(f"[campaign_fill_template] {campaign_id} knobs={values}", flush=True)
+
+        _emit((state or {}).get("session_id"), "campaign_iteration_script",
+              campaign_id=campaign_id,
+              iteration=len(_read_trials(campaign_id)) + 1,
+              knobs=values,
+              knob_vars=planned,
+              variable_block=extract_variable_block(filled),
+              lammps_script=filled)
+
+        return Command(update={
+            "lammps_script":         filled,
+            "ovito_script":          ovito,
+            "dump_filename_pattern": meta.get("dump_filename_pattern") or "",
+            "target_timesteps":      meta.get("target_timesteps"),
+            "camera_angle":          meta.get("camera_angle") or "default",
+            # The template was reviewed and approved by the user once; a value
+            # substitution cannot invalidate it, so no reviewer runs per trial.
+            "review_passed":         True,
+            "review_issues":         None,
+            "auto_approve":          True,
+            "execution_target":      (state or {}).get("execution_target") or "local",
+            "has_custom_viz":        bool(ovito),
+            "campaign_knobs":        values,
+            "messages": [ToolMessage(
+                content=(f"Template filled with {values}. "
+                         f"Full variable block now: {applied}. "
+                         f"Next: call campaign_run_simulation()."),
+                tool_call_id=tool_call_id,
+            )],
+        })
+    except Exception as e:
+        return _fail(f"{type(e).__name__}: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1113,6 +1615,8 @@ def campaign_visualize_all(
 CAMPAIGN_TOOLS = [
     campaign_start,
     campaign_get_state,
+    campaign_propose_template,
+    campaign_fill_template,
     campaign_run_simulation,
     campaign_measure_metrics,
     campaign_record_trial,

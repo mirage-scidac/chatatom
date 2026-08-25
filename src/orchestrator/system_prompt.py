@@ -72,9 +72,9 @@ _TOOL_CATALOGUE = """\
 
 - `hpc_submit(...)` / `hpc_status(...)` — submit jobs to HPC via Globus.
 
-- `start_campaign(template, bounds, n_iterations, target, original_user_message)`
-  — launch a benchmark campaign as a background loop. Call ONLY after the
-  user has confirmed campaign parameters during setup.
+- `campaign_*` — the tools that run a benchmark campaign. Call
+  `load_skill('campaign')` FIRST; the skill documents every campaign tool and
+  the exact order to call them in.
 
 - `load_skill(name)` — load a skill's instructions for this turn.
   Re-call on subsequent turns if still relevant.

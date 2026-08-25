@@ -854,8 +854,123 @@ async def campaign_resume(campaign_id: str) -> dict:
 @app.post("/api/campaign/{campaign_id}/cancel")
 async def campaign_cancel(campaign_id: str) -> dict:
     """Flag the campaign as cancelled. Orchestrator exits the loop and
-    generates the report from whatever trials completed."""
-    return _write_campaign_status(campaign_id, "cancelled")
+    generates the report from whatever trials completed.
+
+    Also moves any still-staged template out of the approval path, so a
+    cancelled campaign cannot be re-approved and stops reporting itself as
+    awaiting approval. Best-effort: the status write above is what actually
+    ends the campaign, and the approval endpoint refuses on that status
+    regardless, so a failed rename is untidy rather than unsafe.
+    """
+    from orchestrator.campaign_tools import reject_pending_template
+
+    result = _write_campaign_status(campaign_id, "cancelled")
+    try:
+        reject_pending_template(campaign_id)
+    except OSError as e:
+        print(f"[campaign] could not reject staged template for {campaign_id}: {e}")
+    return result
+
+
+class CampaignTemplateApproval(BaseModel):
+    lammps_template: str = Field(..., min_length=1)
+    ovito_script: Optional[str] = None
+
+
+@app.post("/api/campaign/{campaign_id}/template")
+async def campaign_approve_template(
+    campaign_id: str, body: CampaignTemplateApproval
+) -> dict:
+    """Approve the parameterized LAMMPS template staged by
+    campaign_propose_template, promoting it from .pending to active.
+
+    The card is read-only, so the body is normally byte-identical to the staged
+    .pending script. The variable block is still re-parsed from the body rather
+    than trusted from the staged meta: this endpoint is reachable directly, and
+    storing a template whose block cannot be filled would break every iteration.
+
+    Like resume, this is a two-step in the frontend: this endpoint stores the
+    template and clears the awaiting-approval flag, then the frontend must send
+    a "Template approved" chat message to re-invoke the orchestrator.
+    """
+    from orchestrator.campaign_tools import (
+        _template_meta_path,
+        _template_ovito_path,
+        _template_path,
+        campaign_closed_status,
+        parse_variable_block,
+    )
+
+    # Reuse the traversal guard; its dirname is the campaign folder.
+    folder = os.path.dirname(_campaign_control_path(campaign_id))
+    if not os.path.isdir(folder):
+        raise HTTPException(status_code=404, detail=f"campaign not found: {campaign_id}")
+
+    # A closed campaign stays closed: approving into one would write its
+    # template and flip control.json back to "running", resurrecting a campaign
+    # the user ended. Checked before the staged-template check below so the
+    # caller is told the campaign is cancelled rather than the more confusing
+    # "no template awaiting approval" — and so the guard still holds if cancel's
+    # best-effort rename of the .pending files ever failed.
+    closed = campaign_closed_status(campaign_id)
+    if closed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"campaign {campaign_id} is {closed} — its template cannot be "
+                   f"approved. Start a new campaign instead.",
+        )
+
+    pending_meta_path = _template_meta_path(campaign_id, pending=True)
+    if not os.path.exists(pending_meta_path):
+        raise HTTPException(
+            status_code=409,
+            detail=f"no template awaiting approval for {campaign_id}",
+        )
+
+    try:
+        variables, _ = parse_variable_block(body.lammps_template)
+    except ValueError as e:
+        # Unfillable variable block — refuse rather than store a template that
+        # no iteration could fill.
+        raise HTTPException(status_code=400, detail=str(e))
+
+    with open(pending_meta_path) as f:
+        meta = json.load(f)
+
+    missing = [k for k in (meta.get("knob_vars") or []) if k not in variables]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"submitted template does not declare swept knob(s): {missing}",
+        )
+
+    meta["variables"] = variables
+    meta["approved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    with open(_template_path(campaign_id), "w") as f:
+        f.write(body.lammps_template)
+    if body.ovito_script:
+        with open(_template_ovito_path(campaign_id), "w") as f:
+            f.write(body.ovito_script)
+    with open(_template_meta_path(campaign_id), "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+
+    for stale in (
+        _template_path(campaign_id, pending=True),
+        _template_ovito_path(campaign_id, pending=True),
+        pending_meta_path,
+    ):
+        if os.path.exists(stale):
+            os.remove(stale)
+
+    _write_campaign_status(campaign_id, "running")
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "variables": variables,
+        "knob_vars": meta.get("knob_vars") or [],
+    }
 
 
 @app.post("/api/llm-stream-live")

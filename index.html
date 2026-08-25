@@ -185,6 +185,88 @@
             box-shadow: none !important;
         }
 
+        /* ── Campaign template approval modal ──────────────────────────────────
+           The template is the one artifact a campaign cannot revise later, so it
+           gets the whole viewport instead of the chat column: 90 lines of LAMMPS
+           are unreadable in a 400px bubble. Read-only by contract — the two
+           footer buttons are the only ways to resolve it. */
+        .campaign-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 60;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1.5rem;
+            background-color: rgba(2, 6, 23, 0.72);
+            backdrop-filter: blur(3px);
+        }
+        [data-theme="light"] .campaign-modal-backdrop {
+            background-color: rgba(15, 23, 42, 0.45);
+        }
+        .campaign-modal {
+            display: flex;
+            flex-direction: column;
+            width: min(1080px, 100%);
+            max-height: 100%;
+            background-color: #0f172a;
+            border: 1px solid rgba(129, 140, 248, 0.35);
+            border-radius: 0.75rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+            overflow: hidden;
+        }
+        [data-theme="light"] .campaign-modal {
+            background-color: #ffffff;
+            border-color: rgba(79, 70, 229, 0.25);
+        }
+        /* Header and footer stay put; only the middle scrolls, so Approve is
+           always reachable without scrolling back down 90 lines. */
+        .campaign-modal-head,
+        .campaign-modal-foot {
+            flex: 0 0 auto;
+            padding: 1rem 1.25rem;
+            background-color: rgba(30, 27, 75, 0.55);
+        }
+        [data-theme="light"] .campaign-modal-head,
+        [data-theme="light"] .campaign-modal-foot {
+            background-color: #eef2ff;
+        }
+        .campaign-modal-head { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+        .campaign-modal-foot {
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        [data-theme="light"] .campaign-modal-head { border-bottom-color: rgba(15, 23, 42, 0.08); }
+        [data-theme="light"] .campaign-modal-foot { border-top-color: rgba(15, 23, 42, 0.08); }
+        .campaign-modal-body {
+            flex: 1 1 auto;
+            overflow-y: auto;
+            padding: 1.25rem;
+        }
+        /* Two columns of knobs on a wide screen, stacked on a narrow one. */
+        .campaign-var-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+        }
+        .campaign-var-group {
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            padding: 0.75rem 0.875rem;
+        }
+        [data-theme="light"] .campaign-var-group { border-color: rgba(15, 23, 42, 0.12); }
+        .campaign-var-group table { width: 100%; border-collapse: collapse; }
+        .campaign-var-group td { padding: 0.125rem 0.25rem; vertical-align: baseline; }
+        /* Swept values are the numbers that move, so they get the accent. Own
+           class rather than a Tailwind amber-300, which has no light override
+           and washes out to nothing on white. */
+        .campaign-knob-value { color: #fcd34d; }
+        [data-theme="light"] .campaign-knob-value { color: #b45309; }
+
         /* ── Light theme overrides (toggled via [data-theme="light"] on <html>) ── */
         [data-theme="light"] {
             --bg-dark: #f9fafb;
@@ -512,12 +594,22 @@
             <div class="flex flex-col gap-4 min-h-0">
                 <!-- Chat panel -->
                 <div class="glass-panel p-4 rounded-xl grid grid-rows-[auto_1fr_auto] gap-3 flex-1 min-h-0">
-                    <div class="flex items-center justify-between">
-                        <h2 class="text-xl font-orbitron font-semibold text-blue-400">Chat Interface</h2>
-                        <button id="viz-toggle-btn" onclick="toggleVizPanel()" title="Toggle visualization panel"
-                            class="text-gray-400 hover:text-gray-200 text-base px-3 py-1.5 rounded hover:bg-gray-700/50 transition-colors flex items-center gap-1.5 font-medium">
-                            <span id="viz-toggle-icon">▶</span><span class="hidden sm:inline">Hide viz</span>
-                        </button>
+                    <div>
+                        <div class="flex items-center justify-between">
+                            <h2 class="text-xl font-orbitron font-semibold text-blue-400">Chat Interface</h2>
+                            <button id="viz-toggle-btn" onclick="toggleVizPanel()" title="Toggle visualization panel"
+                                class="text-gray-400 hover:text-gray-200 text-base px-3 py-1.5 rounded hover:bg-gray-700/50 transition-colors flex items-center gap-1.5 font-medium">
+                                <span id="viz-toggle-icon">▶</span><span class="hidden sm:inline">Hide viz</span>
+                            </button>
+                        </div>
+                        <!-- Campaign banner + progress table mount here. They must stay
+                             INSIDE this header row: the parent is a 3-row
+                             [auto,1fr,auto] grid, so injecting them as siblings of
+                             #chat-container handed the 1fr row to the banner and left
+                             the chat on an implicit auto row — the progress table then
+                             grew unbounded and squeezed the messages off screen.
+                             Empty slot = zero height, so the idle layout is unchanged. -->
+                        <div id="campaign-slot" class="mt-3 empty:mt-0"></div>
                     </div>
                     <div id="chat-container"
                         class="overflow-y-auto bg-black/40 p-4 rounded-lg min-h-0 border border-gray-700/30">
@@ -1469,11 +1561,12 @@
             if (!banner) {
                 banner = document.createElement('div');
                 banner.id = 'campaign-banner';
-                banner.className = 'sticky top-0 z-30 mb-2 px-3 py-2 rounded bg-purple-900/80 border border-purple-500 text-purple-100 text-sm font-mono';
-                const chatContainer = document.getElementById('chat-container');
-                if (chatContainer && chatContainer.parentNode) {
-                    chatContainer.parentNode.insertBefore(banner, chatContainer);
-                }
+                banner.className = 'mb-2 px-3 py-2 rounded bg-purple-900/80 border border-purple-500 text-purple-100 text-sm font-mono';
+                // prepend, not append: campaign_iteration_complete can create the
+                // progress table before any banner exists (page reload mid-run),
+                // and the banner must still render above it.
+                const slot = document.getElementById('campaign-slot');
+                if (slot) slot.prepend(banner);
             }
             banner.classList.remove('hidden');
             renderCampaignBanner('waiting for first iteration...');
@@ -1586,11 +1679,12 @@
                 tableWrap.id = 'campaign-progress-wrap';
                 tableWrap.className = 'mb-2 px-3 py-2 rounded bg-zinc-900/70 border border-zinc-700 text-xs font-mono text-zinc-200';
                 tableWrap.open = true;
-                tableWrap.innerHTML = '<summary class="cursor-pointer text-zinc-300 mb-1">📊 Campaign progress</summary><div id="campaign-progress-body"></div>';
-                const banner = document.getElementById('campaign-banner');
-                if (banner && banner.parentNode) {
-                    banner.parentNode.insertBefore(tableWrap, banner.nextSibling);
-                }
+                // Capped height: the table gains a row per iteration, so without
+                // this a 20-iteration campaign grows tall enough to push the chat
+                // out of view. Scrolls internally instead.
+                tableWrap.innerHTML = '<summary class="cursor-pointer text-zinc-300 mb-1">📊 Campaign progress</summary><div id="campaign-progress-body" class="max-h-[28vh] overflow-y-auto"></div>';
+                const slot = document.getElementById('campaign-slot');
+                if (slot) slot.appendChild(tableWrap);
             }
             const body = document.getElementById('campaign-progress-body');
             if (!body || !activeCampaign) return;
@@ -2540,6 +2634,317 @@
             btn.textContent = hidden ? 'Edit Scripts ▼' : 'Edit Scripts ▲';
         }
 
+        // ── Campaign template approval ───────────────────────────────────────
+        // Shown ONCE per campaign, when campaign_propose_template stages the
+        // parameterized script. Approving stores the template and starts
+        // iteration 1 — unlike "Approve & Run", it does not launch anything by
+        // itself; the orchestrator drives the run on the turn that follows.
+        let pendingCampaignTemplate = null;
+
+        function showCampaignTemplateCard(data) {
+            pendingCampaignTemplate = {
+                campaignId: data.campaign_id,
+                lammps:     data.lammps_template || '',
+                ovito:      data.ovito_script || null,
+                knobVars:   data.knob_vars || [],
+                variables:  data.variables || {},
+            };
+            openCampaignTemplateModal();
+        }
+
+        // Fit a code pane to its content, capped at maxVh of the viewport, so a
+        // 5-line OVITO script doesn't reserve a third of the screen while a
+        // 90-line template still gets all the room it can use. 1.4rem/line is
+        // .script-editor's 0.875rem font at line-height 1.6; 2rem is its padding.
+        function editorHeight(lines, maxVh) {
+            return `min(${maxVh}vh, calc(${lines} * 1.4rem + 2rem))`;
+        }
+
+        // The modal renders entirely from pendingCampaignTemplate, so minimizing
+        // and reopening — or a re-emitted campaign_template_ready after a
+        // reload — always shows the same staged bytes rather than a stale copy.
+        function openCampaignTemplateModal() {
+            if (!pendingCampaignTemplate) return;
+            // A re-emitted event must replace the open modal, not stack a second
+            // one on top of it.
+            const existing = document.getElementById('campaign-template-prompt');
+            if (existing) existing.remove();
+
+            const { campaignId, lammps, ovito, knobVars, variables } = pendingCampaignTemplate;
+            const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const lammpsLines = lammps.split('\n').length;
+            const ovitoLines = ovito ? ovito.split('\n').length : 0;
+
+            // Split the block into the two groups the script itself declares:
+            // what moves every iteration, and what is frozen for all of them.
+            const knobSet = new Set(knobVars);
+            const names = Object.keys(variables);
+            const row = name => `<tr>
+                    <td class="pr-3 text-gray-400">${esc(name)}</td>
+                    <td class="text-right font-semibold ${knobSet.has(name) ? 'campaign-knob-value' : 'text-gray-200'}">${esc(variables[name])}</td>
+                </tr>`;
+            const sweptRows = names.filter(n => knobSet.has(n)).map(row).join('');
+            const fixedRows = names.filter(n => !knobSet.has(n)).map(row).join('');
+            const group = (title, sub, rows) => rows ? `
+                <div class="campaign-var-group">
+                    <div class="text-xs font-semibold text-gray-300 mb-1">${title}</div>
+                    <div class="text-xs text-gray-500 mb-2">${sub}</div>
+                    <table class="text-xs font-mono"><tbody>${rows}</tbody></table>
+                </div>` : '';
+
+            const ovitoSection = ovito ? `
+                <details class="mt-4">
+                    <summary class="cursor-pointer text-gray-400 text-xs font-semibold">
+                        OVITO visualization script (${ovitoLines} lines) — reused verbatim every iteration
+                    </summary>
+                    <div class="editor-wrap w-full mt-2" style="height: ${editorHeight(ovitoLines, 34)};">
+                        <div class="line-gutter"><div class="line-gutter-inner"></div></div>
+                        <textarea id="campaign-template-ovito" readonly spellcheck="false"
+                            class="script-editor w-full" style="height: 100%; resize: none;">${esc(ovito)}</textarea>
+                    </div>
+                </details>` : '';
+
+            const el = document.createElement('div');
+            el.className = 'campaign-modal-backdrop';
+            el.id = 'campaign-template-prompt';
+            el.innerHTML = `
+                <div class="campaign-modal" role="dialog" aria-modal="true" aria-label="Campaign template approval">
+                    <div class="campaign-modal-head">
+                        <div class="flex items-start gap-2">
+                            <span class="text-lg leading-none mt-0.5">🧪</span>
+                            <div class="flex-1 min-w-0">
+                                <strong class="text-white">Campaign Template Ready</strong>
+                                <div class="text-gray-400 text-xs font-mono mt-0.5">${esc(campaignId)} · ${lammpsLines} lines</div>
+                            </div>
+                            <button onclick="minimizeCampaignTemplate()" title="Minimize — reopen from the chat"
+                                class="text-gray-400 hover:text-white text-lg leading-none px-2">−</button>
+                        </div>
+                        <div class="mt-2 text-gray-200 text-sm">
+                            This script is generated <strong>once</strong>. Every iteration reuses it and changes
+                            only the swept values below, so all trials stay comparable.
+                            Read it over — approving locks it in for the whole campaign.
+                        </div>
+                    </div>
+
+                    <div class="campaign-modal-body">
+                        <div class="campaign-var-grid">
+                            ${group('Swept knobs', 'rewritten every iteration', sweptRows)}
+                            ${group('Fixed for this campaign', 'identical in all trials', fixedRows)}
+                        </div>
+
+                        <div class="text-gray-400 text-xs font-semibold mb-1">LAMMPS template (${lammpsLines} lines)</div>
+                        <div class="editor-wrap w-full" style="height: ${editorHeight(lammpsLines, 46)};">
+                            <div class="line-gutter"><div class="line-gutter-inner"></div></div>
+                            <textarea id="campaign-template-lammps" readonly spellcheck="false"
+                                class="script-editor w-full" style="height: 100%; resize: none;">${esc(lammps)}</textarea>
+                        </div>
+                        ${ovitoSection}
+                    </div>
+
+                    <div class="campaign-modal-foot">
+                        <button onclick="approveCampaignTemplate()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">Approve Template</button>
+                        <button onclick="cancelCampaignTemplate()" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-1.5 rounded text-sm font-medium">Cancel Campaign</button>
+                        <span class="text-gray-500 text-xs">Read-only — approving starts iteration 1.</span>
+                        <div id="campaign-template-error" class="hidden text-red-300 text-xs w-full"></div>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(el);
+            // No backdrop-click dismiss: a stray click outside must not look like
+            // a decision on a template that locks in 20 runs.
+            document.body.style.overflow = 'hidden';
+            document.addEventListener('keydown', campaignTemplateKeydown);
+            attachLineNumbers('campaign-template-lammps');
+            attachLineNumbers('campaign-template-ovito');
+        }
+
+        // Escape minimizes rather than cancels — cancelling ends the campaign,
+        // which is far too destructive for a reflex keypress.
+        function campaignTemplateKeydown(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                minimizeCampaignTemplate();
+            }
+        }
+
+        // Tears down every trace of the pending template — the modal and the
+        // minimized breadcrumb — so approve and cancel cannot leave a stale
+        // "Review Template" button pointing at a resolved campaign.
+        function closeCampaignTemplateModal() {
+            const el = document.getElementById('campaign-template-prompt');
+            if (el) el.remove();
+            const crumb = document.getElementById('campaign-template-breadcrumb');
+            if (crumb) crumb.remove();
+            document.body.style.overflow = '';
+            document.removeEventListener('keydown', campaignTemplateKeydown);
+        }
+
+        // Minimize leaves the campaign staged and drops a breadcrumb in the chat
+        // so the template is one click away — the decision is still pending.
+        function minimizeCampaignTemplate() {
+            if (!pendingCampaignTemplate) return;
+            closeCampaignTemplateModal();
+
+            const chatContainer = document.getElementById('chat-container');
+            const el = document.createElement('div');
+            el.id = 'campaign-template-breadcrumb';
+            el.classList.add('mb-3', 'p-3', 'rounded', 'bg-indigo-900', 'border-l-4', 'border-indigo-400', 'chat-bubble');
+            el.innerHTML = `
+                <div class="flex items-center gap-3 flex-wrap">
+                    <span class="text-lg">🧪</span>
+                    <span class="text-gray-200 text-sm flex-1">
+                        Campaign template for <span class="font-mono text-xs">${String(pendingCampaignTemplate.campaignId).replace(/</g, '&lt;')}</span>
+                        is waiting for your approval — nothing runs until you decide.
+                    </span>
+                    <button onclick="reopenCampaignTemplateModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm font-medium">Review Template</button>
+                </div>
+            `;
+            chatContainer.appendChild(el);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function reopenCampaignTemplateModal() {
+            const crumb = document.getElementById('campaign-template-breadcrumb');
+            if (crumb) crumb.remove();
+            openCampaignTemplateModal();
+        }
+
+        // Shows the variable block that was substituted for one iteration, plus
+        // the full filled script behind a disclosure. Read-only by design — the
+        // template is fixed for the life of the campaign, so there is nothing
+        // to edit here; this is for verifying the replacement landed right.
+        function showIterationScriptCard(data) {
+            const chatContainer = document.getElementById('chat-container');
+            const el = document.createElement('div');
+            el.classList.add('mb-2', 'px-3', 'py-2', 'rounded', 'bg-zinc-900/70',
+                             'border', 'border-zinc-700', 'chat-bubble');
+
+            const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const swept = new Set(Array.isArray(data.knob_vars) ? data.knob_vars : []);
+            const block = String(data.variable_block || '');
+            const script = String(data.lammps_script || '');
+
+            // Highlight the lines that this iteration actually varies, so the
+            // swept values stand out from the campaign constants around them.
+            const blockHtml = block.split('\n').map(line => {
+                const m = line.match(/^\s*variable\s+([A-Za-z_][A-Za-z0-9_]*)\s+equal\s/);
+                const isSwept = m && swept.has(m[1]);
+                const cls = isSwept ? 'text-amber-300 font-bold'
+                          : (line.trim().startsWith('#') ? 'text-zinc-600' : 'text-zinc-400');
+                return `<div class="${cls}">${esc(line)}${isSwept ? '   <span class="text-zinc-600">← swept</span>' : ''}</div>`;
+            }).join('');
+
+            el.innerHTML = `
+                <details>
+                    <summary class="cursor-pointer text-zinc-300 text-xs">
+                        🔧 Iteration ${data.iteration} — values substituted into the template
+                    </summary>
+                    <pre class="mt-2 text-xs font-mono overflow-x-auto leading-snug">${blockHtml}</pre>
+                    <details class="mt-2">
+                        <summary class="cursor-pointer text-zinc-500 text-xs">
+                            Full LAMMPS script (${script.split('\n').length} lines)
+                        </summary>
+                        <pre class="mt-1 text-xs font-mono text-zinc-400 overflow-x-auto max-h-96 overflow-y-auto leading-snug">${esc(script)}</pre>
+                    </details>
+                </details>
+            `;
+            // Open by default: seeing the numbers is the point of the card.
+            el.querySelector('details').open = true;
+
+            chatContainer.appendChild(el);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // The template is shown read-only: it is approved or the campaign is
+        // cancelled, nothing in between. The script is posted back exactly as
+        // the server staged it, so what runs is what was displayed.
+        async function approveCampaignTemplate() {
+            if (!pendingCampaignTemplate) return;
+
+            const errBox = document.getElementById('campaign-template-error');
+            const id = pendingCampaignTemplate.campaignId;
+
+            let r;
+            try {
+                r = await fetch(`/api/campaign/${encodeURIComponent(id)}/template`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        lammps_template: pendingCampaignTemplate.lammps,
+                        ovito_script:    pendingCampaignTemplate.ovito,
+                    }),
+                });
+            } catch (e) {
+                if (errBox) {
+                    errBox.textContent = `Could not reach the server: ${e && e.message ? e.message : e}`;
+                    errBox.classList.remove('hidden');
+                }
+                return;
+            }
+
+            if (!r.ok) {
+                // Most likely the edit broke the CAMPAIGN VARIABLES block. Keep
+                // the card up with the reason so the user can repair it.
+                let detail = r.status;
+                try { detail = (await r.json()).detail || detail; } catch (e) { /* non-JSON body */ }
+                if (errBox) {
+                    errBox.textContent = `Template rejected: ${detail}`;
+                    errBox.classList.remove('hidden');
+                }
+                return;
+            }
+
+            closeCampaignTemplateModal();
+            pendingCampaignTemplate = null;
+
+            // Re-invoke the orchestrator so it enters the iteration loop. Same
+            // two-step as Resume: the POST above changed disk state, this
+            // message restarts the ReAct trace.
+            const userInput = document.getElementById('user-input');
+            if (userInput && typeof sendMessage === 'function') {
+                userInput.value = `Template approved — start iteration 1 of campaign ${id}`;
+                sendMessage();
+            }
+        }
+
+        // Rejecting the template ends the campaign. There is no edit path and no
+        // regenerate path: the campaign is defined by its template, so refusing
+        // the template refuses the campaign. Start a new one to try again.
+        async function cancelCampaignTemplate() {
+            if (!pendingCampaignTemplate) return;
+            const id = pendingCampaignTemplate.campaignId;
+            const errBox = document.getElementById('campaign-template-error');
+
+            try {
+                const r = await fetch(`/api/campaign/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+                if (!r.ok) {
+                    const detail = await r.text().catch(() => '');
+                    if (errBox) {
+                        errBox.textContent = `Could not cancel: ${detail || r.status}`;
+                        errBox.classList.remove('hidden');
+                    }
+                    return;
+                }
+            } catch (e) {
+                if (errBox) {
+                    errBox.textContent = `Could not reach the server: ${e && e.message ? e.message : e}`;
+                    errBox.classList.remove('hidden');
+                }
+                return;
+            }
+
+            closeCampaignTemplateModal();
+            pendingCampaignTemplate = null;
+            if (activeCampaign && activeCampaign.id === id) {
+                activeCampaign.status = 'cancelled';
+                syncCampaignControlButtons();
+            }
+            addConversationMessage('System',
+                `Campaign ${id} cancelled — the template was not approved, so nothing ran.`,
+                'info');
+        }
+
         function approveAndRun() {
             // Read edited script content if user modified the textareas
             const la = document.getElementById('editable-lammps-script');
@@ -3163,6 +3568,11 @@
                     showScriptReviewPrompt();
                     break;
 
+                case 'campaign_template_ready':
+                    updateStatus('Campaign template ready for review');
+                    showCampaignTemplateCard(data);
+                    break;
+
                 case 'pbs_preview':
                     showPBSApprovalCard(data.pbs_script, data.run_folder);
                     break;
@@ -3241,6 +3651,75 @@
                     streamingGroups = [];
                     currentAgentMessages = {};
                     refreshSessions();
+                    break;
+                }
+
+                // Rebuild the banner + progress table from the server's disk
+                // truth. Emitted by campaign_get_state at the top of every
+                // iteration, so a campaign we never saw start — a resume, a
+                // page reload, the turn after a template approval — still gets
+                // its UI back, with the trials it already ran.
+                case 'campaign_state': {
+                    const objective = data.objective || {};
+                    const metricName = data.metric_name || objective.metric;
+                    const direction = objective.direction || 'minimize';
+                    const trials = Array.isArray(data.trials) ? data.trials : [];
+
+                    let bestValue = null, bestIteration = null;
+                    const iterations = trials.map(t => {
+                        if (t.failure_reason) {
+                            return {
+                                iteration: t.iteration,
+                                failed: true,
+                                reason: t.failure_reason,
+                                knobs: t.knobs || {},
+                            };
+                        }
+                        const v = (t.metrics && metricName) ? Number(t.metrics[metricName]) : null;
+                        if (v !== null && !Number.isNaN(v) &&
+                            (bestValue === null ||
+                             (direction === 'maximize' ? v > bestValue : v < bestValue))) {
+                            bestValue = v;
+                            bestIteration = t.iteration;
+                        }
+                        return {
+                            iteration: t.iteration,
+                            knobs: t.knobs || {},
+                            metrics: t.metrics || null,
+                            run_folder: t.run_folder,
+                            wall_clock_s: t.wall_clock_s,
+                        };
+                    });
+
+                    activeCampaign = {
+                        id: data.campaign_id,
+                        total: data.max_iterations,
+                        objective: objective,
+                        knobs: Array.isArray(data.knobs) ? data.knobs : [],
+                        status: data.status || 'running',
+                        completed: iterations.length,
+                        bestValue: bestValue,
+                        bestIteration: bestIteration,
+                        iterations: iterations,
+                    };
+                    showCampaignBanner();
+                    renderCampaignBanner(
+                        iterations.length
+                            ? `${iterations.length}/${data.max_iterations} done — best ${metricLabel()}=${formatMetric(bestValue)}`
+                            : `starting — 0/${data.max_iterations}`
+                    );
+                    updateCampaignProgressTable();
+                    syncCampaignControlButtons();
+                    break;
+                }
+
+                // Per-iteration proof of the substitution: the variable block
+                // exactly as it landed in the script that is about to run,
+                // read back off the filled text rather than echoed from the
+                // request. Swept knobs are highlighted; the full script sits
+                // behind a disclosure so 20 iterations don't flood the chat.
+                case 'campaign_iteration_script': {
+                    showIterationScriptCard(data);
                     break;
                 }
 

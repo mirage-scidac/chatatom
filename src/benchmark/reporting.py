@@ -35,17 +35,34 @@ def _read_plan(campaign_folder: str) -> Dict[str, Any]:
 def _read_trials(campaign_folder: str) -> List[Dict[str, Any]]:
     """Read trials.jsonl (append-only, one JSON per line). Silently skips
     blank lines. Missing file → empty list (a campaign that never ran a trial
-    still deserves a report — the skeleton just shows zero rows)."""
+    still deserves a report — the skeleton just shows zero rows).
+
+    Repeat rows are dropped: an interrupted or re-invoked turn can record the
+    same finished run twice, and counting it twice makes the report claim more
+    trials than were actually run. Keyed on (iteration, run_folder) rather than
+    iteration alone, because two loops racing on one campaign can give the same
+    iteration number to two different runs — both of which are real. Rows with
+    no run_folder (failed before LAMMPS started) are never collapsed.
+
+    Mirrors campaign_tools._read_trials; the two readers must agree or the
+    report and the stop check disagree about how many trials there were.
+    """
     path = os.path.join(campaign_folder, "trials.jsonl")
     if not os.path.exists(path):
         return []
     trials = []
+    seen = set()
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            trials.append(json.loads(line))
+            trial = json.loads(line)
+            key = (trial.get("iteration"), trial.get("run_folder"))
+            if trial.get("run_folder") and key in seen:
+                continue
+            seen.add(key)
+            trials.append(trial)
     return trials
 
 
