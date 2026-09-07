@@ -1,0 +1,815 @@
+<title>Campaign Mode Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --ground:    #EFF3F2;
+    --surface:   #FFFFFF;
+    --surface-2: #E3EAE8;
+    --ink:       #111A18;
+    --body:      #33413E;
+    --muted:     #64756F;
+    --line:      #C3D0CC;
+    --line-soft: #D8E1DE;
+
+    --det:       #0E6B63;   /* deterministic Python */
+    --det-soft:  #DBEBE8;
+    --llm:       #8A5A12;   /* model reasoning */
+    --llm-soft:  #F5E9D4;
+    --gate:      #33409B;   /* human gate */
+    --gate-soft: #E1E5F6;
+    --warn:      #A32F2F;   /* failure path */
+    --warn-soft: #F7E2E1;
+
+    --sans: 'Archivo', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:    #0E1413;
+      --surface:   #161F1D;
+      --surface-2: #1E2A27;
+      --ink:       #E9EFEC;
+      --body:      #BFCEC9;
+      --muted:     #8CA09A;
+      --line:      #2C3A37;
+      --line-soft: #232F2D;
+
+      --det:       #52C9BA;
+      --det-soft:  #10312D;
+      --llm:       #DCA84A;
+      --llm-soft:  #32270F;
+      --gate:      #94A3EF;
+      --gate-soft: #1A2040;
+      --warn:      #E88A85;
+      --warn-soft: #351A19;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:    #0E1413;
+    --surface:   #161F1D;
+    --surface-2: #1E2A27;
+    --ink:       #E9EFEC;
+    --body:      #BFCEC9;
+    --muted:     #8CA09A;
+    --line:      #2C3A37;
+    --line-soft: #232F2D;
+
+    --det:       #52C9BA;
+    --det-soft:  #10312D;
+    --llm:       #DCA84A;
+    --llm-soft:  #32270F;
+    --gate:      #94A3EF;
+    --gate-soft: #1A2040;
+    --warn:      #E88A85;
+    --warn-soft: #351A19;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--body);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 56px 28px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 44px;
+  }
+
+  /* ── masthead ─────────────────────────────────────────── */
+  header { display: flex; flex-direction: column; gap: 14px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--det);
+  }
+
+  h1 {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: clamp(34px, 5.4vw, 54px);
+    line-height: 1.02;
+    letter-spacing: -.025em;
+    color: var(--ink);
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 18px;
+    line-height: 1.55;
+    max-width: 64ch;
+    color: var(--body);
+    margin: 0;
+  }
+
+  .srcline {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+  }
+
+  /* ── sections ─────────────────────────────────────────── */
+  section { display: flex; flex-direction: column; gap: 18px; }
+
+  h2 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 25px;
+    letter-spacing: -.015em;
+    color: var(--ink);
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--det);
+    letter-spacing: .08em;
+    margin-right: 12px;
+    vertical-align: 3px;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 17px;
+    color: var(--ink);
+    margin: 8px 0 0;
+  }
+
+  p { margin: 0; max-width: 68ch; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--surface-2);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--ink);
+  }
+
+  strong { color: var(--ink); font-weight: 600; }
+
+  /* ── figures ──────────────────────────────────────────── */
+  figure {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 22px 22px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow-x: auto;
+  }
+
+  figure svg { display: block; width: 100%; min-width: 620px; height: auto; color: var(--body); }
+
+  figcaption {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--muted);
+    border-top: 1px solid var(--line-soft);
+    padding-top: 12px;
+    max-width: 78ch;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* svg vocabulary */
+  .n      { fill: var(--surface); stroke: var(--line); stroke-width: 1.4; }
+  .n-det  { fill: var(--det-soft);  stroke: var(--det);  stroke-width: 1.4; }
+  .n-llm  { fill: var(--llm-soft);  stroke: var(--llm);  stroke-width: 1.4; stroke-dasharray: 6 3; }
+  .n-gate { fill: var(--gate-soft); stroke: var(--gate); stroke-width: 1.4; }
+  .n-disk { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.4; stroke-dasharray: 2 3; }
+  .n-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.4; }
+  .panel  { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 3 4; }
+
+  .lbl  { font-family: var(--mono); font-size: 12px; fill: var(--ink); }
+  .lbl2 { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+  .cap  { font-family: var(--sans); font-size: 10.5px; font-weight: 600; letter-spacing: .13em; fill: var(--muted); }
+  .cap-det  { fill: var(--det); }
+  .cap-gate { fill: var(--gate); }
+  .cap-warn { fill: var(--warn); }
+  .edgelbl { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+
+  .e      { stroke: currentColor; stroke-width: 1.5; fill: none; }
+  .mk-warn { fill: var(--warn); }
+  .e-warn { stroke: var(--warn); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+  .rule   { stroke: var(--line); stroke-width: 1.2; }
+
+  /* ── legend ───────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 26px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 9px; }
+  .swatch { width: 22px; height: 13px; border-radius: 3px; display: inline-block; }
+  .sw-det  { background: var(--det-soft);  border: 1.4px solid var(--det); }
+  .sw-llm  { background: var(--llm-soft);  border: 1.4px dashed var(--llm); }
+  .sw-gate { background: var(--gate-soft); border: 1.4px solid var(--gate); }
+  .sw-disk { background: var(--surface-2); border: 1.4px dashed var(--line); }
+
+  /* ── stop ladder ──────────────────────────────────────── */
+  .ladder { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
+  .ladder li {
+    display: grid;
+    grid-template-columns: 34px minmax(150px, 200px) 1fr;
+    gap: 4px 18px;
+    align-items: baseline;
+    padding: 13px 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-bottom: none;
+  }
+  .ladder li:first-child { border-radius: 10px 10px 0 0; }
+  .ladder li:last-child  { border-bottom: 1px solid var(--line); border-radius: 0 0 10px 10px; }
+  .ladder .rank { font-family: var(--mono); font-size: 12px; color: var(--det); font-weight: 500; }
+  .ladder .reason { font-family: var(--mono); font-size: 12.5px; color: var(--ink); font-weight: 500; }
+  .ladder .cond { font-size: 14px; color: var(--body); }
+  .ladder li.off { background: var(--ground); }
+  .ladder li.off .rank { color: var(--muted); }
+  .ladder li.off .reason { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+  .ladder li.off .cond { color: var(--muted); }
+
+  /* ── tables ───────────────────────────────────────────── */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td { padding: 11px 16px; border-bottom: 1px solid var(--line-soft); vertical-align: top; color: var(--body); }
+  tr:last-child td { border-bottom: none; }
+  td.m { font-family: var(--mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+  td.who { font-family: var(--mono); font-size: 11.5px; }
+  .tag-det  { color: var(--det); }
+  .tag-llm  { color: var(--llm); }
+  .tag-gate { color: var(--gate); }
+
+  .note {
+    border-left: 3px solid var(--llm);
+    background: var(--surface);
+    padding: 14px 18px;
+    border-radius: 0 8px 8px 0;
+    font-size: 14.5px;
+    max-width: 76ch;
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.9;
+  }
+
+  @media (max-width: 620px) {
+    .page { padding: 36px 16px 72px; gap: 36px; }
+    .ladder li { grid-template-columns: 26px 1fr; }
+    .ladder .cond { grid-column: 2; }
+  }
+</style>
+
+<div class="page">
+
+  <header>
+    <div class="eyebrow">ChatMD · src/orchestrator</div>
+    <h1>Campaign Mode Map</h1>
+    <p class="standfirst">
+      An autonomous MD benchmarking run: the model designs the plan and proposes knob values,
+      but every irreversible decision — what the script says, when to stop, what counts as best —
+      is made by deterministic Python. Two human gates sit between them.
+    </p>
+    <div class="srcline">
+      <span>campaign_tools.py · 11 tools</span>
+      <span>skills/campaign.md</span>
+      <span>runs/&lt;campaign_id&gt;/</span>
+      <span>recursion_limit = 200</span>
+    </div>
+  </header>
+
+  <div class="legend">
+    <span><i class="swatch sw-det"></i> deterministic Python tool</span>
+    <span><i class="swatch sw-llm"></i> model reasoning / generation</span>
+    <span><i class="swatch sw-gate"></i> human gate</span>
+    <span><i class="swatch sw-disk"></i> file on disk</span>
+  </div>
+
+  <!-- ════════════════ 1 · LIFECYCLE ════════════════ -->
+  <section>
+    <h2><span class="num">01</span>Three turns, two gates</h2>
+    <p>
+      A campaign is not one long autonomous run. It is three chat turns separated by two points where
+      the run stops dead until a human acts, plus an optional fourth turn for visual analysis.
+      The loop only becomes autonomous <em>after</em> the template is approved.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 900 500" role="img"
+           aria-label="Lifecycle of a campaign: turn 1 designs the plan in chat, the user confirms, turn 2 starts the campaign and generates the LAMMPS template once, the user approves the template, turn 3 runs the iteration loop, then the report and narrative are written and control.json is set to done.">
+        <defs>
+          <marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- column headers -->
+        <text class="cap" x="40"  y="20">WHEN</text>
+        <text class="cap" x="250" y="20">WHAT HAPPENS</text>
+        <text class="cap" x="672" y="20">WHAT IT WRITES</text>
+        <line class="rule" x1="40" y1="30" x2="860" y2="30"/>
+
+        <!-- row 1 : turn 1 -->
+        <text class="lbl"  x="40" y="62">Turn 1</text>
+        <text class="lbl2" x="40" y="78">user asks</text>
+        <rect class="n-llm" x="250" y="44" width="400" height="48" rx="6"/>
+        <text class="lbl"  x="268" y="66">design the plan, print it as prose</text>
+        <text class="lbl2" x="268" y="82">objective · template · 4 knobs · max_iterations</text>
+        <text class="lbl2" x="672" y="66">nothing —</text>
+        <text class="lbl2" x="672" y="80">no tool is called</text>
+
+        <path class="e" d="M450,92 V116" marker-end="url(#f1a)"/>
+
+        <!-- gate 1 -->
+        <rect class="n-gate" x="250" y="120" width="400" height="46" rx="6"/>
+        <text class="cap cap-gate" x="268" y="141">HUMAN GATE 1</text>
+        <text class="lbl" x="268" y="158">user replies “confirm”</text>
+        <text class="lbl2" x="672" y="148">campaign_start is</text>
+        <text class="lbl2" x="672" y="162">never auto-called</text>
+
+        <path class="e" d="M450,166 V190" marker-end="url(#f1a)"/>
+
+        <!-- row 2 : turn 2 -->
+        <text class="lbl"  x="40" y="212">Turn 2</text>
+        <text class="lbl2" x="40" y="228">genesis</text>
+        <rect class="n-det" x="250" y="194" width="400" height="48" rx="6"/>
+        <text class="lbl"  x="268" y="216">start + generate the template ONCE</text>
+        <text class="lbl2" x="268" y="232">campaign_start → simulate → propose_template</text>
+        <text class="lbl2" x="672" y="210">plan.json</text>
+        <text class="lbl2" x="672" y="224">control.json</text>
+        <text class="lbl2" x="672" y="238">template.lammps.pending</text>
+
+        <path class="e" d="M450,242 V266" marker-end="url(#f1a)"/>
+
+        <!-- gate 2 -->
+        <rect class="n-gate" x="250" y="270" width="400" height="46" rx="6"/>
+        <text class="cap cap-gate" x="268" y="291">HUMAN GATE 2</text>
+        <text class="lbl" x="268" y="308">Approve the read-only script card</text>
+        <text class="lbl2" x="672" y="298">template.lammps</text>
+        <text class="lbl2" x="672" y="312">template_ovito.py</text>
+
+        <path class="e" d="M450,316 V340" marker-end="url(#f1a)"/>
+
+        <!-- row 3 : loop -->
+        <text class="lbl"  x="40" y="362">Turn 3+</text>
+        <text class="lbl2" x="40" y="378">autonomous</text>
+        <rect class="n-det" x="250" y="344" width="400" height="48" rx="6"/>
+        <text class="lbl"  x="268" y="366">iteration loop × N, one ReAct trace</text>
+        <text class="lbl2" x="268" y="382">6 tool calls per trial, no script generation</text>
+        <text class="lbl2" x="672" y="368">trials.jsonl · one line</text>
+        <text class="lbl2" x="672" y="382">appended per trial</text>
+        <!-- loop arrow -->
+        <path class="e" d="M250,380 H214 V356 H244" marker-end="url(#f1a)"/>
+        <text class="edgelbl" x="208" y="342" text-anchor="end">×N</text>
+
+        <path class="e" d="M450,392 V416" marker-end="url(#f1a)"/>
+
+        <!-- row 4 : report -->
+        <text class="lbl"  x="40" y="440">End</text>
+        <text class="lbl2" x="40" y="456">same turn</text>
+        <rect class="n" x="250" y="420" width="400" height="48" rx="6"/>
+        <text class="lbl"  x="268" y="442">report facts, then model narrative</text>
+        <text class="lbl2" x="268" y="458">generate_report → save_narrative → status = done</text>
+        <text class="lbl2" x="672" y="436">report.png</text>
+        <text class="lbl2" x="672" y="450">report.md</text>
+        <text class="lbl2" x="672" y="464">control.json = done</text>
+      </svg>
+      <figcaption>
+        <b>The two gates are load-bearing.</b> Gate 1 stops the model from spending compute on an
+        unconfirmed plan; gate 2 freezes the script before any trial runs. A <em>pause</em> exits the loop
+        without a report; a <em>cancel</em> exits and still reports what completed.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ════════════════ 2 · THE FREEZE ════════════════ -->
+  <section>
+    <h2><span class="num">02</span>The script is generated once — then never again</h2>
+    <p>
+      This is the design decision the whole mode is built around. If each iteration asked the model for a
+      fresh LAMMPS script, trials would differ in ways nobody tracked, and comparing a metric across them
+      would be meaningless. So generation happens exactly once, behind gate 2, and every iteration afterwards
+      is a plain string substitution into the approved bytes.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 900 560" role="img"
+           aria-label="Left: template genesis runs once in turn 2 through the LLM generator, reviewer and OVITO steps, then variable-block validation, staging, human approval, and the approved template on disk. Right: every iteration takes the approved template plus four knob values through bounds checking and pure string substitution to the filled script — with no model in the path.">
+        <defs>
+          <marker id="f2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- panels -->
+        <rect class="panel" x="30" y="34" width="400" height="500" rx="10"/>
+        <rect class="panel" x="470" y="34" width="400" height="500" rx="10"/>
+
+        <text class="cap cap-det" x="30"  y="20">ONCE · TURN 2 · TEMPLATE GENESIS</text>
+        <text class="cap cap-det" x="470" y="20">EVERY ITERATION · 1 … N</text>
+
+        <!-- LEFT column nodes -->
+        <rect class="n-llm" x="54" y="58" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="70" y="76">simulate(auto_approve=True)</text>
+        <text class="lbl2" x="70" y="91">the only simulate() call of the campaign</text>
+        <path class="e" d="M230,100 V116" marker-end="url(#f2a)"/>
+
+        <rect class="n-llm" x="54" y="120" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="70" y="138">generate_lammps → review → generate_ovito</text>
+        <text class="lbl2" x="70" y="153">graph/graph.py · three model calls</text>
+        <path class="e" d="M230,162 V178" marker-end="url(#f2a)"/>
+
+        <rect class="n-det" x="54" y="182" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="70" y="200">campaign_propose_template()</text>
+        <text class="lbl2" x="70" y="215">parse_variable_block · every knob declared?</text>
+        <path class="e" d="M230,224 V240" marker-end="url(#f2a)"/>
+
+        <rect class="n-disk" x="54" y="244" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="70" y="262">template.lammps.pending</text>
+        <text class="lbl2" x="70" y="277">control.json = awaiting_template_approval</text>
+        <path class="e" d="M230,286 V302" marker-end="url(#f2a)"/>
+
+        <rect class="n-gate" x="54" y="306" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="70" y="324">Approve — read-only card, two buttons</text>
+        <text class="lbl2" x="70" y="339">POST /api/campaign/{id}/template</text>
+        <path class="e" d="M230,348 V364" marker-end="url(#f2a)"/>
+
+        <rect class="n-disk" x="54" y="368" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="70" y="386">template.lammps</text>
+        <text class="lbl2" x="70" y="401">.pending removed · frozen for the campaign</text>
+
+        <text class="lbl2" x="70" y="440">Cancel instead of Approve:</text>
+        <text class="lbl2" x="70" y="456">reject_pending_template() renames the staged</text>
+        <text class="lbl2" x="70" y="472">files to .rejected, control.json = cancelled.</text>
+        <text class="lbl2" x="70" y="488">A closed campaign can never be re-approved —</text>
+        <text class="lbl2" x="70" y="504">the guard lives in both the tool and the endpoint.</text>
+
+        <!-- hand-off arrow between panels -->
+        <path class="e" d="M406,389 H446 V218 H488" marker-end="url(#f2a)"/>
+        <text class="edgelbl" transform="translate(440,336) rotate(-90)">read once, reused N times</text>
+
+        <!-- RIGHT column nodes -->
+        <rect class="n-llm" x="494" y="58" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="510" y="76">4 knob values proposed by the model</text>
+        <text class="lbl2" x="510" y="91">strain_rate · temperature · crack_length_frac · crack_width_a0</text>
+        <path class="e" d="M670,100 V116" marker-end="url(#f2a)"/>
+
+        <rect class="n-det" x="494" y="120" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="510" y="138">check_knob_bounds(plan, knobs)</text>
+        <text class="lbl2" x="510" y="153">out of range is rejected, never clamped</text>
+        <path class="e" d="M670,162 V178" marker-end="url(#f2a)"/>
+
+        <rect class="n-det" x="494" y="182" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="510" y="200">fill_variable_block(template, values)</text>
+        <text class="lbl2" x="510" y="215">string replacement · no LLM, no reviewer</text>
+        <path class="e" d="M670,224 V240" marker-end="url(#f2a)"/>
+
+        <rect class="n-det" x="494" y="244" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="510" y="262">parse_variable_block(filled)</text>
+        <text class="lbl2" x="510" y="277">read back what landed, emit it to the UI</text>
+        <path class="e" d="M670,286 V302" marker-end="url(#f2a)"/>
+
+        <rect class="n-det" x="494" y="306" width="352" height="42" rx="6"/>
+        <text class="lbl"  x="510" y="324">campaign_run_simulation()</text>
+        <text class="lbl2" x="510" y="339">review_passed = True is set by the fill, not a reviewer</text>
+
+        <text class="lbl2" x="510" y="380">Outside the CAMPAIGN VARIABLES block the</text>
+        <text class="lbl2" x="510" y="396">script is byte-identical across every trial —</text>
+        <text class="lbl2" x="510" y="412">including the velocity seed 12345, so thermal</text>
+        <text class="lbl2" x="510" y="428">microstates match too. That is what makes the</text>
+        <text class="lbl2" x="510" y="444">metric comparable from iteration 1 to N.</text>
+      </svg>
+      <figcaption>
+        <b>The difference between the two columns is the absence of a model.</b> Three model calls build
+        the script on the left; zero touch it on the right. Only the four numbers inside the marked variable
+        block move, and <code>campaign_fill_template</code> refuses any name that is not a planned knob.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ════════════════ 3 · THE LOOP ════════════════ -->
+  <section>
+    <h2><span class="num">03</span>One iteration, six tool calls</h2>
+    <p>
+      After approval the orchestrator runs the whole campaign inside a single ReAct trace — which is why
+      the recursion limit is raised to 200 (roughly 20 iterations × 6 tools plus wrapping). The order is
+      fixed, and the model steers only at step 2.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 900 420" role="img"
+           aria-label="The iteration cycle: get_state, then the model writes a hypothesis and picks knobs, then fill_template, run_simulation, measure_metrics, record_trial, check_stop, which either loops back to get_state or exits to report generation. Two dashed failure edges: rejected knobs return to the reasoning step without recording a trial, and a LAMMPS error skips measurement and records the trial with no metrics.">
+        <defs>
+          <marker id="f3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="currentColor"/>
+          </marker>
+          <marker id="f3w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="mk-warn" d="M0,1 L9,5 L0,9 z"/>
+          </marker>
+        </defs>
+
+        <!-- failure edge: rejected knobs -->
+        <path class="e-warn" d="M557,66 V32 H343 V62" marker-end="url(#f3w)"/>
+        <text class="edgelbl cap-warn" x="362" y="26">rejected knobs — corrected, not recorded as a trial</text>
+
+        <!-- top row -->
+        <rect class="n-det" x="40" y="66" width="178" height="48" rx="6"/>
+        <text class="lbl"  x="52" y="88">1 get_state()</text>
+        <text class="lbl2" x="52" y="104">trials · best · status</text>
+
+        <path class="e" d="M218,90 H248" marker-end="url(#f3a)"/>
+
+        <rect class="n-llm" x="254" y="66" width="178" height="48" rx="6"/>
+        <text class="lbl"  x="266" y="88">2 hypothesis</text>
+        <text class="lbl2" x="266" y="104">+ knobs, streamed</text>
+
+        <path class="e" d="M432,90 H462" marker-end="url(#f3a)"/>
+
+        <rect class="n-det" x="468" y="66" width="178" height="48" rx="6"/>
+        <text class="lbl"  x="480" y="88">3 fill_template()</text>
+        <text class="lbl2" x="480" y="104">substitute 4 values</text>
+
+        <path class="e" d="M646,90 H676" marker-end="url(#f3a)"/>
+
+        <rect class="n-det" x="682" y="66" width="178" height="48" rx="6"/>
+        <text class="lbl"  x="694" y="88">4 run_simulation()</text>
+        <text class="lbl2" x="694" y="104">LAMMPS, live frames</text>
+
+        <!-- right connector -->
+        <path class="e" d="M771,114 V165 H750 V212" marker-end="url(#f3a)"/>
+
+        <!-- failure edge: lammps error -->
+        <path class="e-warn" d="M712,114 L534,212" marker-end="url(#f3w)"/>
+        <text class="edgelbl cap-warn" x="566" y="150">lammps_error →</text>
+        <text class="edgelbl cap-warn" x="566" y="164">metrics = None</text>
+
+        <!-- bottom row -->
+        <rect class="n-det" x="640" y="216" width="220" height="48" rx="6"/>
+        <text class="lbl"  x="654" y="238">5 measure_metrics()</text>
+        <text class="lbl2" x="654" y="254">OVITO in a subprocess · 120 s cap</text>
+
+        <path class="e" d="M640,240 H574" marker-end="url(#f3a)"/>
+
+        <rect class="n-det" x="340" y="216" width="220" height="48" rx="6"/>
+        <text class="lbl"  x="354" y="238">6 record_trial()</text>
+        <text class="lbl2" x="354" y="254">append trials.jsonl · is_new_best</text>
+
+        <path class="e" d="M340,240 H274" marker-end="url(#f3a)"/>
+
+        <rect class="n-det" x="40" y="216" width="220" height="48" rx="6"/>
+        <text class="lbl"  x="54" y="238">7 check_stop()</text>
+        <text class="lbl2" x="54" y="254">the only stop authority</text>
+
+        <!-- loop back -->
+        <path class="e" d="M150,216 V165 H129 V118" marker-end="url(#f3a)"/>
+        <text class="edgelbl" x="160" y="170">should_stop = false</text>
+
+        <!-- exit -->
+        <path class="e" d="M150,264 V352 H552" marker-end="url(#f3a)"/>
+        <text class="edgelbl" x="168" y="344">should_stop = true</text>
+
+        <rect class="n" x="560" y="328" width="300" height="48" rx="6"/>
+        <text class="lbl"  x="574" y="350">generate_report → narrative → save</text>
+        <text class="lbl2" x="574" y="366">skipped entirely when the reason is user_paused</text>
+      </svg>
+      <figcaption>
+        <b>Step 2 is the only place the model changes the outcome.</b> Everything else is a tool with a
+        deterministic body. A rejected fill is not a failed experiment — nothing ran, so nothing is recorded,
+        and the consecutive-failure count stays clean.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ════════════════ 4 · STOPPING ════════════════ -->
+  <section>
+    <h2><span class="num">04</span>Who decides to stop</h2>
+    <p>
+      Not the model. <code>campaign_check_stop()</code> reads <code>plan.json</code>,
+      <code>control.json</code> and <code>trials.jsonl</code> from disk and evaluates guards in a fixed
+      order — first match wins. Two of the seven written guards are currently commented out in the source.
+    </p>
+
+    <ol class="ladder">
+      <li><span class="rank">1</span><span class="reason">user_cancelled</span><span class="cond">control.json says cancelled — exits, and the report is still generated</span></li>
+      <li><span class="rank">2</span><span class="reason">user_paused</span><span class="cond">control.json says paused — exits with <em>no</em> report, resumable later</span></li>
+      <li><span class="rank">3</span><span class="reason">max_iterations</span><span class="cond">trial count has reached <code>plan.max_iterations</code></span></li>
+      <li><span class="rank">4</span><span class="reason">target_hit</span><span class="cond">an explicit <code>objective.target</code> is set and the best value meets it, direction-aware</span></li>
+      <li><span class="rank">5</span><span class="reason">consecutive_failures</span><span class="cond">three trials in a row failed — aborts cleanly and reports what completed</span></li>
+      <li class="off"><span class="rank">6</span><span class="reason">no_improvement</span><span class="cond">disabled: the metric can pin at 0.0, so patience fired on an artifact rather than real convergence</span></li>
+      <li class="off"><span class="rank">7</span><span class="reason">convergence</span><span class="cond">disabled for the same reason — campaigns now run to max_iterations unless a human or a failure stops them</span></li>
+    </ol>
+
+    <div class="note">
+      Both disabled guards are commented out in place rather than deleted, with the reason written next to
+      them: metric saturation made plateau-detection cut campaigns short. They come back when the crack
+      metric is trustworthy.
+    </div>
+  </section>
+
+  <!-- ════════════════ 5 · CONTROL PLANE ════════════════ -->
+  <section>
+    <h2><span class="num">05</span>How a human interrupts a running loop</h2>
+    <p>
+      The loop is inside a single blocking trace, so control does not go through the chat — it goes
+      through a file. Three HTTP endpoints flip <code>control.json</code>, and the loop notices at its
+      next <code>check_stop()</code>. Resume needs a second action, because flipping the flag back does
+      not restart a trace that has already ended.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 900 340" role="img"
+           aria-label="Control plane: pause, resume and cancel buttons in the browser post to campaign endpoints, which write control.json; the running loop reads control.json at its next check_stop call. Resume additionally requires the frontend to send a chat message to re-invoke the orchestrator, and cancel also renames any staged template to rejected.">
+        <defs>
+          <marker id="f4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,1 L9,5 L0,9 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <text class="cap" x="40"  y="20">BROWSER</text>
+        <text class="cap" x="300" y="20">HTTP</text>
+        <text class="cap" x="560" y="20">DISK</text>
+        <text class="cap" x="740" y="20">LOOP</text>
+
+        <!-- buttons -->
+        <rect class="n-gate" x="40" y="40" width="180" height="38" rx="6"/>
+        <text class="lbl" x="54" y="64">Pause</text>
+        <rect class="n-gate" x="40" y="90" width="180" height="38" rx="6"/>
+        <text class="lbl" x="54" y="114">Resume</text>
+        <rect class="n-gate" x="40" y="140" width="180" height="38" rx="6"/>
+        <text class="lbl" x="54" y="164">Cancel</text>
+        <rect class="n-gate" x="40" y="212" width="180" height="38" rx="6"/>
+        <text class="lbl" x="54" y="236">Approve template</text>
+
+        <!-- endpoints -->
+        <path class="e" d="M220,59 H288"  marker-end="url(#f4a)"/>
+        <path class="e" d="M220,109 H288" marker-end="url(#f4a)"/>
+        <path class="e" d="M220,159 H288" marker-end="url(#f4a)"/>
+        <path class="e" d="M220,231 H288" marker-end="url(#f4a)"/>
+
+        <rect class="n-det" x="294" y="40" width="220" height="38" rx="6"/>
+        <text class="lbl" x="306" y="64">POST …/{id}/pause</text>
+        <rect class="n-det" x="294" y="90" width="220" height="38" rx="6"/>
+        <text class="lbl" x="306" y="114">POST …/{id}/resume</text>
+        <rect class="n-det" x="294" y="140" width="220" height="38" rx="6"/>
+        <text class="lbl" x="306" y="164">POST …/{id}/cancel</text>
+        <rect class="n-det" x="294" y="212" width="220" height="38" rx="6"/>
+        <text class="lbl" x="306" y="236">POST …/{id}/template</text>
+
+        <!-- all four endpoints write the same file: merge onto one bus -->
+        <path class="e" d="M514,59  H536"/>
+        <path class="e" d="M514,109 H536"/>
+        <path class="e" d="M514,159 H536"/>
+        <path class="e" d="M514,231 H536"/>
+        <path class="e" d="M536,59 V231"/>
+        <path class="e" d="M536,154 H554" marker-end="url(#f4a)"/>
+        <text class="edgelbl" x="532" y="144" text-anchor="end">writes status</text>
+
+        <rect class="n-disk" x="560" y="130" width="150" height="48" rx="6"/>
+        <text class="lbl"  x="572" y="152">control.json</text>
+        <text class="lbl2" x="572" y="168">status + updated_at</text>
+
+        <!-- to check_stop -->
+        <path class="e" d="M710,154 H752" marker-end="url(#f4a)"/>
+        <rect class="n-det" x="758" y="130" width="102" height="48" rx="6"/>
+        <text class="lbl"  x="768" y="152">check_stop</text>
+        <text class="lbl2" x="768" y="168">next call</text>
+
+        <line class="rule" x1="40" y1="272" x2="860" y2="272"/>
+        <text class="lbl2" x="40" y="294">Resume needs a second action: the POST clears the flag, but the ReAct trace has already exited —</text>
+        <text class="lbl2" x="40" y="310">the frontend must also send “Resume campaign &lt;id&gt;” as a chat message to re-invoke the orchestrator.</text>
+        <text class="lbl2" x="40" y="326">Cancel also renames a staged template to .rejected. Approve additionally writes template.lammps.</text>
+      </svg>
+      <figcaption>
+        <b>control.json is the interrupt line.</b> It is the one piece of state written from outside the
+        graph, which is exactly why the stop decision reads it from disk on every iteration instead of
+        trusting anything held in memory.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ════════════════ 6 · STATE ════════════════ -->
+  <section>
+    <h2><span class="num">06</span>Everything durable is a file</h2>
+    <p>
+      The model is told never to remember trial history. It calls <code>campaign_get_state()</code> at the
+      top of every iteration instead, so a restarted server, a reloaded page or a resumed session all read
+      the same truth.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>runs/&lt;campaign_id&gt;/</th><th>written by</th><th>when</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="m">plan.json</td><td class="who tag-det">campaign_start</td><td>once — immutable after that</td></tr>
+          <tr><td class="m">control.json</td><td class="who tag-det">campaign_start · HTTP · save_narrative</td><td>running / awaiting_template_approval / paused / cancelled / done</td></tr>
+          <tr><td class="m">template.lammps</td><td class="who tag-gate">approval endpoint</td><td>once, at gate 2 — frozen for the campaign</td></tr>
+          <tr><td class="m">template_ovito.py</td><td class="who tag-gate">approval endpoint</td><td>same; placeholders already resolved to literals</td></tr>
+          <tr><td class="m">template.json</td><td class="who tag-det">propose_template</td><td>variable values, knob names, dump pattern, camera</td></tr>
+          <tr><td class="m">trials.jsonl</td><td class="who tag-det">record_trial</td><td>one line appended per trial, failures included</td></tr>
+          <tr><td class="m">run_&lt;timestamp&gt;/</td><td class="who tag-det">run_simulation</td><td>per-iteration LAMMPS output, nested in the campaign folder</td></tr>
+          <tr><td class="m">report.png</td><td class="who tag-det">generate_report</td><td>matplotlib, at end of loop</td></tr>
+          <tr><td class="m">report.md</td><td class="who tag-det">generate_report</td><td>facts skeleton…</td></tr>
+          <tr><td class="m">report.md <em>(appended)</em></td><td class="who tag-llm">save_narrative</td><td>…then the model's “What was learned” section</td></tr>
+          <tr><td class="m">viz_report.html · .md</td><td class="who tag-llm">visualize_all</td><td>opt-in, only if the user asks after completion</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      Duplicate protection lives in the reader, not the writer: <code>_read_trials</code> drops a row whose
+      <code>(iteration, run_folder)</code> pair it has already seen, so an interrupted turn that records the
+      same finished run twice cannot inflate the trial count and end the campaign early. Rows with no
+      run_folder are never collapsed — two distinct failures look alike but are both real.
+    </div>
+  </section>
+
+  <!-- ════════════════ 7 · EVENTS ════════════════ -->
+  <section>
+    <h2><span class="num">07</span>What the browser sees</h2>
+    <p>
+      Tools push SSE events onto the session queue as they run, so the banner, the progress table and the
+      live trajectory viewer stay in step with a loop that never returns to the chat until it is finished.
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>event</th><th>emitted by</th><th>effect in the UI</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="m">campaign_started</td><td class="who">campaign_start</td><td>raises the campaign banner</td></tr>
+          <tr><td class="m">campaign_state</td><td class="who">get_state</td><td>rebuilds banner + progress table every iteration — the recovery path after a reload or resume</td></tr>
+          <tr><td class="m">campaign_template_ready</td><td class="who">propose_template</td><td>the read-only approval card at gate 2</td></tr>
+          <tr><td class="m">campaign_iteration_script</td><td class="who">fill_template</td><td>shows the filled variable block — the evidence this trial ran the numbers the hypothesis claimed</td></tr>
+          <tr><td class="m">campaign_iteration_complete</td><td class="who">record_trial</td><td>appends a row, updates best-so-far</td></tr>
+          <tr><td class="m">campaign_iteration_failed</td><td class="who">record_trial</td><td>same row, marked failed</td></tr>
+          <tr><td class="m">campaign_paused · _cancelled</td><td class="who">check_stop</td><td>banner state change</td></tr>
+          <tr><td class="m">campaign_complete</td><td class="who">save_narrative</td><td>final graph inline + report links</td></tr>
+          <tr><td class="m">campaign_viz_iteration · _complete</td><td class="who">visualize_all</td><td>per-iteration visual analysis progress</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    Drawn from: src/orchestrator/campaign_tools.py · src/orchestrator/campaign_template.py ·
+    src/orchestrator/skills/campaign.md · src/orchestrator/agent.py · src/graph/graph.py ·
+    src/benchmark/reporting.py · src/app.py · index.html
+  </footer>
+
+</div>

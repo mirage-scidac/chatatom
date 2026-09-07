@@ -711,10 +711,14 @@ async def run_graph_async(initial_state: dict, sse_q: _queue.Queue,
             config={
                 "configurable": {"thread_id": session_id},
                 # Bumped from LangGraph's default of 25 so a campaign
-                # turn (up to ~20 iters × 6 tools + wrapping ≈ 125 steps)
-                # fits in a single ReAct trace. Standalone chat turns
-                # never come close to this ceiling; the change is safe.
-                "recursion_limit": 200,
+                # turn fits in a single ReAct trace. Each iteration is 6
+                # sequential tool calls, and every tool call costs TWO
+                # super-steps in create_react_agent (agent node + tool
+                # node) — so ~12 steps/iter, plus ~25 for campaign_start,
+                # template genesis and the final report. 300 covers ~23
+                # iterations. Standalone chat turns never come close to
+                # this ceiling; the change is safe.
+                "recursion_limit": 300,
             },
             version="v2",
         ):

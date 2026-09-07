@@ -37,4 +37,4 @@ pyyaml = ">=6.0,<7"                 # parse YAML frontmatter in orchestrator ski
 # --reload-dir src is critical: --reload watches the whole working directory by default,
 # which causes uvicorn to restart whenever LAMMPS writes to runs/ during a simulation
 # (killing the in-flight subprocess + WebSocket). Limit watch to src/ only.
-run-app = "uvicorn src.app:socket_app --host 0.0.0.0 --port 2002 --reload --reload-dir src"
+run-app = "uvicorn src.app:socket_app --host 127.0.0.1 --port 2002 --reload --reload-dir src"

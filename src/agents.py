@@ -244,8 +244,16 @@ class IterativeLammpsGeneration(dspy.Module):
                 if recent_issues:
                     feedback_parts.append("ISSUES TO FIX:\n" + "\n".join(f"- {i}" for i in recent_issues))
                 if recent_suggestions:
-                    feedback_parts.append("HOW TO FIX:\n" + "\n".join(f"- {s}" for s in recent_suggestions))
+                    feedback_parts.append("HOW TO FIX OPTIONAL SUGGESTIONS:\n" + "\n".join(f"- {s}" for s in recent_suggestions))
                 review_feedback = "\n\n".join(feedback_parts)
+
+                # DEBUG: the ONLY channel from reviewer -> generator. Everything
+                # else the reviewer produced (is_valid, severity, and any issue
+                # older than the last 3) is dropped before this point.
+                print("=" * 70)
+                print(f"[REVIEW_FEEDBACK] attempt {attempt} — verbatim review_feedback:")
+                print(review_feedback if review_feedback else "(empty)")
+                print("=" * 70)
 
                 gen_result = self.generator(
                     material=material,
@@ -263,7 +271,20 @@ class IterativeLammpsGeneration(dspy.Module):
                     review_feedback=review_feedback,
                 )
 
-            current_script = gen_result.lammps_script
+                # DEBUG: dump the generator call verbatim — the fully rendered
+                # prompt DSPy just sent to the LM, every input field included.
+                # Nothing here is reformatted by us, so what is absent from this
+                # dump is genuinely absent from what the generator was given.
+                dspy.inspect_history(n=1)
+
+            current_script = gen_result.lammps_script or ""
+            if not current_script.strip():
+                print("=" * 70)
+                print(f"[DEBUG] Generator returned EMPTY script on attempt {attempt}")
+                print("=" * 70)
+                dspy.inspect_history(n=1)
+                print("=" * 70)
+
             dump_filename_pattern = getattr(gen_result, 'dump_filename_pattern', '') or ''
             try:
                 total_steps = int(getattr(gen_result, 'total_steps', 0) or 0)
@@ -292,7 +313,8 @@ class IterativeLammpsGeneration(dspy.Module):
             # Review the script with KnowledgeBase context
             review_result = self.reviewer(
                 lammps_script=current_script,
-                intended_parameters=f"{material} at {temperature}K, {ensemble}, {duration_ps}ps",
+                # intended_parameters=f"{material} at {temperature}K, {ensemble}, {duration_ps}ps",
+                intended_parameters=f"{material}",
                 knowledge_context=reviewer_knowledge,
             )
 

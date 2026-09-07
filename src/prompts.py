@@ -89,7 +89,10 @@ class GenerateLAMMPSScript(dspy.Signature):
     )
     review_feedback: str = dspy.InputField(
         desc="Issues and fix instructions from the reviewer on previous attempts. "
-             "You MUST address every issue listed here. Empty on first attempt.",
+             "You MUST fix every CRITICAL error listed here. Ignore warnings — they "
+             "often flag choices that were specified deliberately in simulation_details. "
+             "NEVER change a value that appears in simulation_details, even if the "
+             "reviewer objects to it: simulation_details wins. Empty on the first attempt.",
         default=""
     )
 
@@ -379,6 +382,8 @@ MANDATORY KIM command sequence:
 3. kim interactions <species>   (AFTER create_box)
 4. mass <type> <mass_value>     (REQUIRED - KIM doesn't set masses automatically)
 5. velocity all create <temp> <seed>  (REQUIRED for NVT/NPT - use same temp as thermostat)
+6. boundary <x> <y> <z>  (any style: p/f/s/m - MUST be issued BEFORE create_box, LAMMPS errors out if it comes after)
+7. Damping: Tdamp = 100*timestep in every nvt/npt fix and Pdamp = 1000*timestep for the npt barostat (metal units, dt=0.001 ps -> Tdamp 0.1, Pdamp 1.0)
 """
 
     # Common atomic masses (metal units)
@@ -838,10 +843,10 @@ When the user mentions any of these keywords, treat the request as a crack or fa
 - "fatigue", "cyclic loading", "cyclic deformation", "strain cycling"
 
 Simulation type mapping:
-- Crack only (no monotonic loading no cycling) → 3-phase simulation:
-  Phase 1: Pre-stress equilibration (NPT, ~10 ps)
-  Phase 2: Crack seeding + relaxation (NVT, ~10 ps)
-  Phase 3: Crack propagation observation (NVT, user-specified or ~50 ps)
+# - Crack only (no monotonic loading no cycling) → 3-phase simulation:
+#   Phase 1: Pre-stress equilibration (NPT, ~10 ps)
+#   Phase 2: Crack seeding + relaxation (NVT, ~10 ps)
+#   Phase 3: Crack propagation observation (NVT, user-specified or ~50 ps)
 
 - Crack (monotonic loadding) → 3-phase simulation:
   Phase 1: Pre-stress equilibration (NPT, ~10 ps)
@@ -1042,15 +1047,22 @@ RESPONSE FORMAT:
 # constant so it can diverge (crack-specific / structured) later to feed
 # hypothesis generation, without affecting the standalone prompt.
 _VIZ_PROMPT = (
-    "You are looking at frames from a molecular dynamics simulation of a "
-    "crystalline material, ordered chronologically: (1) pristine crystal "
-    "before crack seeding, (2) the seeded crack after relaxation but BEFORE "
-    "any loading, (3) the final state at the end of tensile loading.\n\n"
-    "Write ONE integrated summary (3-6 sentences) describing what happened "
-    "across the whole run — especially how the crack changed between the "
-    "seeded (pre-loading) state and the final loaded state. Cover crack "
-    "morphology change, dislocation activity, stacking faults or twin "
-    "nucleation, phase transitions, or notable defects.\n\n"
+    "You are looking at rendered frames from a molecular dynamics simulation, "
+    "ordered chronologically: the FIRST image is the earliest state of the "
+    "system, the LAST image is its final state, and any image between them is "
+    "an intermediate state. Assume NOTHING about what the simulation does — it "
+    "may be equilibration, heating or melting, tensile loading, fracture, "
+    "indentation, or something else entirely. Infer the process from the "
+    "images themselves; do not assume a crack or an applied load is present.\n\n"
+    "Write ONE integrated summary (3-6 sentences) describing what changed from "
+    "the first state to the last. Report only what is actually visible: change "
+    "in shape, volume or cell dimensions; loss or retention of crystalline "
+    "order; surface roughening; voids or cracks opening or growing; "
+    "dislocations, stacking faults or twin nucleation; grain or phase changes; "
+    "large-scale disordering or melting. If a crack IS present, say how its "
+    "morphology changed. If a feature is absent, simply omit it — do not list "
+    "what you did not see, and never invent a mechanism the images do not "
+    "show.\n\n"
     "STRICT RULES: NO per-frame headings. NO bullet lists. NO sections. "
     "Reference frames only inline when strictly needed. Write flowing prose."
 )

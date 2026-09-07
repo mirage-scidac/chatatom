@@ -210,14 +210,14 @@
             width: min(1080px, 100%);
             max-height: 100%;
             background-color: #0f172a;
-            border: 1px solid rgba(129, 140, 248, 0.35);
+            border: 1px solid rgba(251, 191, 36, 0.35);
             border-radius: 0.75rem;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
             overflow: hidden;
         }
         [data-theme="light"] .campaign-modal {
             background-color: #ffffff;
-            border-color: rgba(79, 70, 229, 0.25);
+            border-color: rgba(217, 119, 6, 0.25);
         }
         /* Header and footer stay put; only the middle scrolls, so Approve is
            always reachable without scrolling back down 90 lines. */
@@ -225,11 +225,11 @@
         .campaign-modal-foot {
             flex: 0 0 auto;
             padding: 1rem 1.25rem;
-            background-color: rgba(30, 27, 75, 0.55);
+            background-color: rgba(69, 26, 3, 0.55);
         }
         [data-theme="light"] .campaign-modal-head,
         [data-theme="light"] .campaign-modal-foot {
-            background-color: #eef2ff;
+            background-color: #fffbeb;
         }
         .campaign-modal-head { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
         .campaign-modal-foot {
@@ -2742,7 +2742,7 @@
                     </div>
 
                     <div class="campaign-modal-foot">
-                        <button onclick="approveCampaignTemplate()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-sm font-medium">Approve Template</button>
+                        <button onclick="approveCampaignTemplate()" class="bg-amber-600 hover:bg-amber-500 text-slate-900 px-4 py-1.5 rounded text-sm font-medium">Approve Template</button>
                         <button onclick="cancelCampaignTemplate()" class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-1.5 rounded text-sm font-medium">Cancel Campaign</button>
                         <span class="text-gray-500 text-xs">Read-only — approving starts iteration 1.</span>
                         <div id="campaign-template-error" class="hidden text-red-300 text-xs w-full"></div>
@@ -2789,7 +2789,7 @@
             const chatContainer = document.getElementById('chat-container');
             const el = document.createElement('div');
             el.id = 'campaign-template-breadcrumb';
-            el.classList.add('mb-3', 'p-3', 'rounded', 'bg-indigo-900', 'border-l-4', 'border-indigo-400', 'chat-bubble');
+            el.classList.add('mb-3', 'p-3', 'rounded', 'bg-amber-900', 'border-l-4', 'border-amber-400', 'chat-bubble');
             el.innerHTML = `
                 <div class="flex items-center gap-3 flex-wrap">
                     <span class="text-lg">🧪</span>
@@ -2797,7 +2797,7 @@
                         Campaign template for <span class="font-mono text-xs">${String(pendingCampaignTemplate.campaignId).replace(/</g, '&lt;')}</span>
                         is waiting for your approval — nothing runs until you decide.
                     </span>
-                    <button onclick="reopenCampaignTemplateModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm font-medium">Review Template</button>
+                    <button onclick="reopenCampaignTemplateModal()" class="bg-amber-600 hover:bg-amber-500 text-slate-900 px-3 py-1 rounded text-sm font-medium">Review Template</button>
                 </div>
             `;
             chatContainer.appendChild(el);
