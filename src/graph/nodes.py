@@ -589,7 +589,7 @@ def analyze_results_node(state: SimulationState) -> dict:
         model=config.DEFAULT_MODEL,
         api_key=config.API_KEY,
         base_url=config.API_BASE_URL,
-        temperature=0.3,
+        **config.temp_kwargs(config.ANALYST_TEMPERATURE),
     )
     agent = create_react_agent(
         model=model,

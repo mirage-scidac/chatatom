@@ -32,10 +32,28 @@ DEFAULT_MODEL = "your-default-model-name"
 
 # ── Per-Agent Temperatures ───────────────────────────────────────────────────
 # Lower = more deterministic. 0.1 is a good default for code-heavy tasks.
-ORCHESTRATOR_TEMPERATURE     = 0.1
-LAMMPS_GENERATOR_TEMPERATURE = 0.1
-LAMMPS_REVIEWER_TEMPERATURE  = 0.1
-OVITO_SCRIPT_TEMPERATURE     = 0.1
+#
+# Reasoning models (the gpt5*/o-series) accept ONLY their own default and
+# reject any explicit value with a 400. Flip this one switch for those models:
+# every agent below then omits the parameter, values left intact for later.
+MODEL_REJECTS_TEMPERATURE = False
+
+ORCHESTRATOR_TEMPERATURE = 0.1   # Orchestrator ReAct agent
+DSPY_TEMPERATURE         = 0.1   # LAMMPS + OVITO generator/reviewer (one shared
+                                 # dspy.LM, so these cannot differ from each other)
+ANALYST_TEMPERATURE      = 0.3   # Results analyst
+VISION_TEMPERATURE       = 0.3   # Image / render summaries
+
+
+def temp_kwargs(value):
+    """Spread into an LLM constructor or request; empty when the temperature
+    must be omitted:
+
+        ChatOpenAI(model=..., **config.temp_kwargs(config.ANALYST_TEMPERATURE))
+    """
+    if MODEL_REJECTS_TEMPERATURE or value is None:
+        return {}
+    return {"temperature": value}
 
 
 # ── LAMMPS Execution ─────────────────────────────────────────────────────────

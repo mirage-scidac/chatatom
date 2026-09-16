@@ -1501,7 +1501,7 @@ def campaign_visualize_all(
                     stream = client.chat.completions.create(
                         model=model,
                         messages=[{"role": "user", "content": content}],
-                        temperature=0.3,
+                        **config.temp_kwargs(config.VISION_TEMPERATURE),
                         stream=True,
                     )
                     parts = []

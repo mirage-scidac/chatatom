@@ -194,7 +194,7 @@ def send_to_vision(frames, prompt: str = GENERIC_PROMPT,
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": content}],
-        temperature=0.3,
+        **config.temp_kwargs(config.VISION_TEMPERATURE),
     )
     return resp.choices[0].message.content or ""
 

@@ -119,7 +119,7 @@ def _build_model() -> ChatOpenAI:
         model=model_name,
         api_key=config.API_KEY,
         base_url=config.API_BASE_URL,
-        temperature=getattr(config, "ORCHESTRATOR_TEMPERATURE", 0.1),
+        **config.temp_kwargs(getattr(config, "ORCHESTRATOR_TEMPERATURE", None)),
     )
 
 
