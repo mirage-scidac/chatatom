@@ -198,6 +198,11 @@ class IterativeLammpsGeneration(dspy.Module):
             print(f"[MEMORY] Found relevant context for {material} {ensemble}")
 
         # Assemble KnowledgeBase context for generator and reviewer
+        # Toggled by config.ENABLE_LAMMPS_ERROR_RULE so the rule can be withheld
+        # from both agents without a code edit (A/B testing its effect).
+        error_rule = ([KnowledgeBase.LAMMPS_ERROR_RULE]
+                      if getattr(config, "ENABLE_LAMMPS_ERROR_RULE", True) else [])
+
         generator_knowledge = "\n".join([
             KnowledgeBase.KIM_MANDATORY_SEQUENCE,
             KnowledgeBase.ATOMIC_MASSES,
@@ -205,6 +210,7 @@ class IterativeLammpsGeneration(dspy.Module):
             KnowledgeBase.GRIFFITH_CRACK_TECHNIQUE,
             KnowledgeBase.CYCLIC_LOADING_TECHNIQUE,
             KnowledgeBase.CRACK_OUTPUT_REQUIREMENTS,
+            *error_rule,
         ])
 
         reviewer_knowledge = "\n".join([
@@ -213,7 +219,10 @@ class IterativeLammpsGeneration(dspy.Module):
             KnowledgeBase.GRIFFITH_CRACK_TECHNIQUE,
             KnowledgeBase.CYCLIC_LOADING_TECHNIQUE,
             KnowledgeBase.CRACK_OUTPUT_REQUIREMENTS,
+            *error_rule,
         ])
+
+        print(f"[KB] LAMMPS_ERROR_RULE: {'ON' if error_rule else 'OFF'}")
 
         for attempt in range(1, self.max_attempts + 1):
             if progress_callback:

@@ -50,7 +50,7 @@ def generate_lammps_node(state: SimulationState) -> dict:
     _q(state, {"type": "agent_start", "agent": "Generator"})
     _q(state, {"type": "status", "message": "Generating and reviewing script..."})
 
-    iterative_generator = IterativeLammpsGeneration(max_attempts=2)
+    iterative_generator = IterativeLammpsGeneration(max_attempts=3)
     progress_queue = queue.Queue()
 
     def _progress_callback(stage, attempt, max_attempts, **kwargs):

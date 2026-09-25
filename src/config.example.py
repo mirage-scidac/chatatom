@@ -56,6 +56,18 @@ def temp_kwargs(value):
     return {"temperature": value}
 
 
+# ── Knowledge Base ───────────────────────────────────────────────────────────
+# KnowledgeBase.LAMMPS_ERROR_RULE collects general LAMMPS scripting rules
+# (declaration order, lattice-vs-box units, barostat choice for non-cubic cells,
+# non-periodic boundaries, delete_atoms). It is injected into both the generator
+# and the reviewer contexts.
+#
+# Set False to withhold it from both, e.g. to A/B whether the rule changes the
+# generated scripts. Flipping this needs no code edit; uvicorn --reload-dir src
+# picks it up.
+ENABLE_LAMMPS_ERROR_RULE = True
+
+
 # ── LAMMPS Execution ─────────────────────────────────────────────────────────
 LAMMPS_CORES         = 4         # Default cores for parallel runs
 LAMMPS_USE_MPI       = True      # Use MPI when cores > 1

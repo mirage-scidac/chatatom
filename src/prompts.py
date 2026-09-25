@@ -116,7 +116,9 @@ class ReviewLAMMPSScript(dspy.Signature):
 
     REJECT if: pair_style/pair_coeff used, kim init after create_box,
     kim interactions before create_box, missing mass command,
-    NVT/NPT without velocity initialization, NPT combined with fix deform.
+    NVT/NPT without velocity initialization, NPT barostatting the SAME axis
+    that fix deform controls (barostatting the other axes is correct for
+    uniaxial tension).
 
     CHECK: Pdamp ~1000x timestep, CNA cutoff ~0.854*a0 (midpoint of 1st and 2nd NN),
     crack regions defined AFTER create_atoms. Griffith cracks may be seeded
@@ -660,6 +662,62 @@ can find them all. Use a common prefix and extension:
 For dump_filename_pattern, report a unified pattern that matches ALL phase
 dump files. Example: if using dump.*.prestress and dump.*.cracked, report
 dump_filename_pattern as 'dump.*.*' so the monitor finds files from all phases.
+"""
+
+    # General LAMMPS scripting rules — failure modes that run to completion
+    LAMMPS_ERROR_RULE = """
+LAMMPS SCRIPTING RULES:
+
+ORDERING
+- Define every variable, compute and fix ABOVE its first reference. LAMMPS parses
+  top to bottom.
+- 'variable X equal f_ID' stores the FORMULA and re-evaluates on every read, so it
+  fails once the fix is destroyed. Snapshot with 'variable X equal $(f_ID)'.
+
+UNITS
+- region, create_atoms and fix deform default to LATTICE units. Anything derived
+  from lx/ly/lz or a lattice constant needs 'units box', or it silently matches
+  the wrong atoms.
+
+CRYSTAL AND BAROSTAT
+- fcc: Al Cu Ni Ag Au | bcc: Fe W Mo Nb Cr | hcp: Ti Zn Mg Zr Co | diamond: Si Ge C
+- A non-cubic cell needs 'aniso', 'tri', or independent x/y/z on the barostat.
+  'iso' scales all axes together and FREEZES the cell shape — an HCP c/a started
+  at the ideal 1.63299 is still exactly 1.63299 at the end of the run.
+
+BOUNDARIES
+- Non-periodic directions need 's', or 'f' WITH vacuum padding. 'f' with the box
+  flush against the crystal aborts with "ERROR: Lost atoms" on the first step.
+
+MODIFYING THE SYSTEM
+- Use 'delete_atoms ... compress no' to keep atom IDs stable across phases.
+- Do NOT call 'velocity create' afterwards: 'loop all' requires contiguous IDs, and
+  the surviving atoms already carry equilibrated velocities.
+
+DEFORMATION AND BAROSTAT
+- 'fix deform' and the barostat must not control the SAME box dimension. LAMMPS
+  aborts with "Must not have multiple fixes change box parameter x".
+- Barostatting the OTHER axes is correct and required for uniaxial STRESS, i.e. a
+  real tensile test where the lateral axes contract by Poisson:
+      fix load all npt temp ${temp} ${temp} 0.1 y 1.0 1.0 1.0 z 1.0 1.0 1.0
+      fix pull all deform 1 x erate 0.01 units box
+- Plain 'fix nvt' + 'fix deform x' pins the lateral axes instead. That is uniaxial
+  STRAIN, and its slope is C11, not Young's modulus — for Al about 108 GPa instead
+  of 63. Use it only when the lateral constraint is what you intend.
+
+SUBSTITUTION
+- '${name}' reads a VARIABLE you defined; '$(expr)' evaluates an expression NOW.
+  Thermo keywords are NOT variables: '${lx}', '${step}', '${press}' abort the run
+  and write NO message to the log. Use '$(lx)'. '${v_name}' is wrong too — it
+  looks for a variable literally called "v_name".
+
+  
+- A compute holds NO value until a run initializes it. Reading one first aborts:
+  "Variable formula compute cannot be invoked before initialization by a run".
+  Put 'run 0' before the read.
+
+- 'lattice hcp <a>' always builds the IDEAL c/a = 1.63299 and has NO c/a keyword
+
 """
 
 
