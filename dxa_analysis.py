@@ -10,8 +10,9 @@ into a `dxa_analysis/` subfolder:
   * dxa_segments.csv  — one row per individual dislocation line per frame
                         (id, length, true Burgers vector). Only with --segments,
                         because this file gets large.
-  * dxa_density.png   — dislocation density vs timestep (top panel) and line
-                        length per Burgers family vs timestep (bottom panel)
+  * dxa_density.png   — two panels side by side: (a) dislocation density vs
+                        timestep, (b) line length per Burgers family vs
+                        timestep. Styled for print — see PLOT_STYLE.
   * snapshots/        — a few rendered frames (first / peak-density / last) with
                         perfect-lattice atoms deleted so the extracted
                         dislocation lines and stacking faults are visible
@@ -45,6 +46,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import sys
 
 # Frame discovery is identical to the CNA script's — reuse it rather than
@@ -63,6 +65,11 @@ DXA_STRUCT = {
     4: "CubicDiamond",
     5: "HexagonalDiamond",
 }
+
+# Inverse of DXA_STRUCT: a --lattice name -> the Structure Type integer DXA
+# gives perfect atoms of that lattice. Derived from DXA_STRUCT rather than
+# written out again, so the two cannot drift apart.
+LATTICE_ID = {name: tid for tid, name in DXA_STRUCT.items() if tid}
 
 # Attribute suffixes OVITO uses for the per-structure atom counts. 'OTHER' is
 # upper-case; the rest are not.
@@ -84,8 +91,77 @@ BURGERS_LABEL = {
     "other": "Other",
 }
 
+# Matches the Burgers notation OVITO emits: an optional n/m followed by a
+# bracketed direction, e.g. '1/2<110>' or a bare '<100>'.
+_BURGERS_RE = re.compile(r"(?:(\d+)/(\d+))?<([^>]+)>")
+
+
+def math_burgers(label):
+    """Rewrite '1/2<110>' as mathtext, giving a stacked fraction and true angle
+    brackets instead of ASCII less-than/greater-than.
+
+    Only for plot labels. BURGERS_LABEL itself stays ASCII because the terminal
+    summary prints from the same table, where mathtext would show as raw
+    backslashes. Text outside the match ('Perfect ', ' (BCC)') is left alone.
+    """
+    def _sub(m):
+        num, den, direction = m.groups()
+        frac = rf"\frac{{{num}}}{{{den}}}" if num else ""
+        return rf"${frac}\langle {direction} \rangle$"
+
+    return _BURGERS_RE.sub(_sub, label)
+
+
 LENGTH_PREFIX = "DislocationAnalysis.length."
 ANG2_TO_M2 = 1.0e20  # 1 Angstrom^-2 = 1e20 m^-2
+
+# Per-family line colors, keyed by Burgers family rather than by position, so
+# a family keeps its color no matter which others happen to be present in a
+# given run. All families draw solid and are told apart by color alone.
+#
+# The first three are bright and saturated and go to the families that carry
+# the plot: in both the Cu and Al runs Shockley dominates by roughly an order
+# of magnitude, with Stair-rod and Perfect next. The last three are the minor
+# curves, so they take deeper, lower-key values that stay legible without
+# competing for attention.
+PLOT_COLORS = {
+    "1/2<110>": "#0066FF",  # Perfect
+    "1/6<112>": "#FF2D2D",  # Shockley
+    "1/6<110>": "#00C853",  # Stair-rod
+    "1/3<100>": "#A6761D",  # Hirth    - bronze
+    "1/3<111>": "#8B008B",  # Frank    - dark magenta
+    "other": "#666666",     #          - neutral gray
+}
+
+# Anything not in PLOT_COLORS — the BCC families, or a family OVITO reports
+# that is not in BURGERS_LABEL at all — draws from this cycle instead.
+PLOT_FALLBACK_COLORS = [
+    "#14305e",  # navy
+    "#8f1d21",  # brick
+    "#1c5b2e",  # forest
+    "#8a4a00",  # umber
+    "#0f5359",  # teal
+]
+
+# Applied through rc_context inside plot_density, never globally.
+PLOT_STYLE = {
+    "font.family": "sans-serif",
+    # DejaVu is matplotlib's bundled fallback and is always present; the two
+    # ahead of it are what journals ask for and win if they are installed.
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    # Sized for a figure placed at roughly this width on the page. Going much
+    # larger reads as oversized once the typesetter scales the panel down.
+    "font.size": 12,
+    "axes.labelsize": 13,
+    "axes.linewidth": 1.1,
+    "xtick.labelsize": 11,
+    "ytick.labelsize": 11,
+    "legend.fontsize": 11,
+    # Embed real glyphs instead of Type 3 outlines, which several publishers
+    # reject outright in submitted vector figures.
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+}
 
 LATTICES = ["FCC", "HCP", "BCC", "CubicDiamond", "HexagonalDiamond"]
 
@@ -214,9 +290,13 @@ def render_snapshot(path, out_png, lattice="FCC", line_sep=2.5, circuit_len=14,
         _build_modifier(lattice, line_sep, circuit_len, stretchability,
                         only_perfect)
     )
-    # Structure Type 1 is the reference lattice for every DXA input structure.
+    # Delete the perfect-lattice atoms so the defects and the extracted
+    # dislocation lines are visible. The Structure Type enum is fixed (see
+    # DXA_STRUCT) and does NOT renumber with input_crystal_structure, so FCC
+    # is 1 but BCC is 3 — resolve it from the lattice that was requested.
+    perfect = LATTICE_ID[lattice]
     pipeline.modifiers.append(
-        ExpressionSelectionModifier(expression="StructureType==1")
+        ExpressionSelectionModifier(expression=f"StructureType=={perfect}")
     )
     pipeline.modifiers.append(DeleteSelectedModifier())
 
@@ -304,30 +384,62 @@ def plot_density(path, rows, families):
     active = [f for f in families
               if any(r["dxa"]["lengths"].get(f, 0.0) > 0 for r in rows)]
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.0, 7.0), sharex=True)
+    # rc_context rather than rcParams.update: the Analyst agent imports this
+    # module in-process, so a global style change here would follow every other
+    # figure drawn afterwards in the same server.
+    with plt.rc_context(PLOT_STYLE):
+        # Side by side, and deliberately not sharex: each panel carries its own
+        # Timestep axis so either one can be lifted out and used on its own.
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10.0, 4.2))
 
-    ax1.plot(steps, density, "-o", ms=3, lw=1.8, color="#1f4e9c")
-    ax1.set_ylabel(r"Dislocation density (m$^{-2}$)", fontsize=13)
-    ax1.tick_params(axis="both", labelsize=11, direction="in",
-                    top=True, right=True)
-    ax1.grid(True, alpha=0.25, lw=0.6)
+        ax1.plot(steps, density, "-o", ms=3.5, lw=2.2, color="#14305e",
+                 markerfacecolor="white", markeredgewidth=1.2, zorder=3)
+        ax1.set_xlabel("Timestep")
+        ax1.set_ylabel(r"Dislocation density (m$^{-2}$)")
 
-    cmap = plt.get_cmap("tab10")
-    for i, fam in enumerate(active):
-        ax2.plot(steps, [r["dxa"]["lengths"].get(fam, 0.0) for r in rows],
-                 "-", lw=1.4, color=cmap(i % 10),
-                 label=BURGERS_LABEL.get(fam, fam))
-    ax2.set_xlabel("Timestep", fontsize=13)
-    ax2.set_ylabel("Line length (Å)", fontsize=13)
-    ax2.tick_params(axis="both", labelsize=11, direction="in",
-                    top=True, right=True)
-    ax2.grid(True, alpha=0.25, lw=0.6)
-    if active:
-        ax2.legend(fontsize=10, frameon=False)
+        n_unmapped = 0
+        for fam in active:
+            color = PLOT_COLORS.get(fam)
+            if color is None:
+                color = PLOT_FALLBACK_COLORS[
+                    n_unmapped % len(PLOT_FALLBACK_COLORS)]
+                n_unmapped += 1
+            ax2.plot(steps, [r["dxa"]["lengths"].get(fam, 0.0) for r in rows],
+                     "-", lw=1.9, color=color,
+                     label=math_burgers(BURGERS_LABEL.get(fam, fam)))
+        ax2.set_xlabel("Timestep")
+        ax2.set_ylabel("Line length (Å)")
+        if active:
+            ax2.legend(frameon=False, handlelength=2.0, borderaxespad=0.5,
+                       labelspacing=0.35)
 
-    fig.tight_layout()
-    fig.savefig(path, dpi=300)
-    plt.close(fig)
+        # Panel letters, placed in axes coordinates so they stay put whatever
+        # the data range is. Captions almost always refer to (a) and (b).
+        for ax, tag in ((ax1, "(a)"), (ax2, "(b)")):
+            ax.text(0.03, 0.95, tag, transform=ax.transAxes,
+                    fontsize=PLOT_STYLE["axes.labelsize"], fontweight="bold",
+                    va="top", ha="left")
+
+        # Manuscript conventions: black frame on all four sides, ticks turned
+        # inward with minor ticks shown, no grid. tick_params is called twice
+        # because which="both" cannot take separate major/minor lengths.
+        for ax in (ax1, ax2):
+            ax.minorticks_on()
+            for side in ax.spines.values():
+                side.set_linewidth(1.1)
+                side.set_color("black")
+            ax.tick_params(which="major", direction="in", length=5.5,
+                           width=1.1, top=True, right=True, color="black")
+            ax.tick_params(which="minor", direction="in", length=3.0,
+                           width=0.8, top=True, right=True, color="black")
+            # The 1e17 multiplier matplotlib parks above the axis defaults to a
+            # size that disappears next to the enlarged tick labels.
+            ax.yaxis.get_offset_text().set_size(PLOT_STYLE["ytick.labelsize"])
+
+        fig.tight_layout()
+        fig.subplots_adjust(wspace=0.28)
+        fig.savefig(path, dpi=600)
+        plt.close(fig)
     return path
 
 

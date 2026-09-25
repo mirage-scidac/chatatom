@@ -536,7 +536,7 @@ def _exec_stress_strain(run_name: str, axis: str, fit_max_strain: float) -> str:
     csv_path = prefix + ".csv"
     ss.write_csv(csv_path, block, strain, stress, length_col)
     png_path = ss.plot(prefix + ".png", strain, stress, modulus,
-                       fit_max_strain, run_display)
+                       fit_max_strain)
 
     # Push the curve into chat. /runs is mounted statically by app.py and
     # agent_content is markdown-rendered, so an <img> needs no frontend change.

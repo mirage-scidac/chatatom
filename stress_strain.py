@@ -44,6 +44,28 @@ _AXIS_COLUMNS = {
 
 BAR_TO_GPA = 1.0e-4  # 1 GPa = 1e4 bar
 
+# Mirrors dxa_analysis.PLOT_STYLE so the two figures sit together in one paper.
+# Duplicated rather than imported on purpose: importing dxa_analysis would pull
+# in ovito transitively, and this script must stay runnable without it.
+#
+# Sizes are deliberately absent. They are passed explicitly at each call below,
+# where they are set larger than DXA's because this is one 7-inch panel against
+# DXA's two ~4.4-inch ones, so the same point size reads smaller once the figure
+# is scaled to a column width.
+PLOT_STYLE = {
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "axes.linewidth": 1.1,
+    # Embed real glyphs instead of Type 3 outlines, which several publishers
+    # reject outright in submitted vector figures. No effect on PNG output.
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+}
+
+# 150 is fine on screen but soft in print; most journals want >= 300 for raster
+# line art. Matches the dpi dxa_analysis saves at.
+PLOT_DPI = 600
+
 
 def parse_thermo_blocks(log_path):
     """Parse every thermo table in a LAMMPS log into a list of blocks.
@@ -181,7 +203,7 @@ def write_csv(path, block, strain, stress, length_col):
             ])
 
 
-def plot(path, strain, stress, modulus, fit_max_strain, title):
+def plot(path, strain, stress, modulus, fit_max_strain):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -190,26 +212,61 @@ def plot(path, strain, stress, modulus, fit_max_strain, title):
         print(f"[plot] matplotlib unavailable ({exc}); skipping PNG.")
         return None
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(strain, stress, "-", color="#1f77b4", lw=1.5, label="stress-strain")
+    # rc_context rather than rcParams.update: the Analyst agent imports this
+    # module in-process, so a global style change here would follow every other
+    # figure drawn afterwards in the same server.
+    with plt.rc_context(PLOT_STYLE):
+        # Colors match dxa_analysis.plot_density so the two figures sit together
+        # in a manuscript without looking like they came from different papers.
+        fig, ax = plt.subplots(figsize=(7, 5))
+        ax.plot(strain, stress, "-", color="#14305e", lw=2.2,
+                label="stress-strain")
 
-    if modulus is not None:
-        xs = [e for e in strain if 0.0 <= e <= fit_max_strain]
-        if xs:
-            x_end = max(xs)
-            ax.plot([0, x_end], [0, modulus * x_end], "--",
-                    color="#d62728", lw=1.2,
-                    label=f"elastic fit E = {modulus:.1f} GPa")
+        if modulus is not None:
+            xs = [e for e in strain if 0.0 <= e <= fit_max_strain]
+            if xs:
+                x_end = max(xs)
+                ax.plot([0, x_end], [0, modulus * x_end], "--",
+                        color="#8f1d21", lw=1.9,
+                        label=f"elastic fit E = {modulus:.1f} GPa")
 
-    ax.set_xlabel("Strain", fontsize=16)
-    ax.set_ylabel("Stress (GPa)", fontsize=16)
-    ax.set_title(f"Stress vs Strain — {title}", fontsize=18)
-    ax.tick_params(axis="both", labelsize=13)
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=14)
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
+        # Larger than the 13/11 used in dxa_analysis, on purpose: this is a
+        # single 7-inch panel where DXA draws two ~4.4-inch ones, so the same
+        # point size reads smaller here once scaled to a column width.
+        ax.set_xlabel("Strain", fontsize=16)
+        ax.set_ylabel("Stress (GPa)", fontsize=16)
+        # No title. The PNG goes to a journal as-is, where the caption carries
+        # the description and an in-figure heading is redundant at best. Which
+        # run the figure came from is identified by the folder it is written
+        # into, and by the "Run:" line of the terminal summary.
+        ax.legend(fontsize=13, loc="lower right", frameon=False)
+
+        # Same conventions as dxa_analysis.plot_density: black frame on all four
+        # sides, ticks turned inward with minor ticks shown. tick_params is
+        # called twice because which="both" cannot take separate major and
+        # minor lengths. Unlike DXA, this panel also carries a light grid; see
+        # below.
+        ax.minorticks_on()
+        for side in ax.spines.values():
+            side.set_linewidth(1.1)
+            side.set_color("black")
+        ax.tick_params(which="major", direction="in", length=5.5, width=1.1,
+                       top=True, right=True, color="black", labelsize=14)
+        ax.tick_params(which="minor", direction="in", length=3.0, width=0.8,
+                       top=True, right=True, color="black")
+
+        # Light grid, drawn behind the curve so it never breaks the data line.
+        # Major gridlines only: at the minor-tick density set above a minor grid
+        # reads as hatching rather than as a reference. A solid light gray is
+        # used instead of a dashed darker one because dashes at this spacing
+        # alias into a dotted texture once the 600-dpi figure is downscaled by
+        # the typesetter.
+        ax.set_axisbelow(True)
+        ax.grid(True, which="major", color="#D9D9D9", lw=0.6)
+
+        fig.tight_layout()
+        fig.savefig(path, dpi=PLOT_DPI)
+        plt.close(fig)
     return path
 
 
@@ -261,9 +318,8 @@ def main(argv=None):
 
     png_path = None
     if not args.no_plot:
-        title = os.path.basename(os.path.normpath(args.run_dir))
         png_path = plot(prefix + ".png", strain, stress, modulus,
-                        args.fit_max_strain, title)
+                        args.fit_max_strain)
 
     print("=" * 60)
     print(f"Run:            {args.run_dir}")
