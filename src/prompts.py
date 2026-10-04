@@ -701,9 +701,7 @@ DEFORMATION AND BAROSTAT
   real tensile test where the lateral axes contract by Poisson:
       fix load all npt temp ${temp} ${temp} 0.1 y 1.0 1.0 1.0 z 1.0 1.0 1.0
       fix pull all deform 1 x erate 0.01 units box
-- Plain 'fix nvt' + 'fix deform x' pins the lateral axes instead. That is uniaxial
-  STRAIN, and its slope is C11, not Young's modulus — for Al about 108 GPa instead
-  of 63. Use it only when the lateral constraint is what you intend.
+
 
 SUBSTITUTION
 - '${name}' reads a VARIABLE you defined; '$(expr)' evaluates an expression NOW.
@@ -711,10 +709,13 @@ SUBSTITUTION
   and write NO message to the log. Use '$(lx)'. '${v_name}' is wrong too — it
   looks for a variable literally called "v_name".
 
-  
-- A compute holds NO value until a run initializes it. Reading one first aborts:
-  "Variable formula compute cannot be invoked before initialization by a run".
-  Put 'run 0' before the read.
+COMPUTES
+- A compute has no value until a run starts it.
+  'dump ... c_ID' then 'run N' is fine: the run starts the compute, and the
+  dump saves step 0, which is the starting structure.
+  'write_dump ... c_ID' and 'variable X equal c_ID' fail if no run has happened
+  yet; after a run they work. To save the starting structure use the dump's
+  step 0, not write_dump. To read a compute before any run, put 'run 0' above it.
 
 - 'lattice hcp <a>' always builds the IDEAL c/a = 1.63299 and has NO c/a keyword
 
