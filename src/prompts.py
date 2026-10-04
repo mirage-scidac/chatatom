@@ -1058,6 +1058,27 @@ YOUR TOOLS:
   implies) instead of saying "here is a plot".
   Only meaningful for runs with a `fix deform` phase; on an equilibration-only run the
   tool says so — relay that rather than guessing.
+- dxa_dislocation_density: ONLY call this when the user actually asks about
+  dislocations, plasticity mechanism, nucleation, multiplication, partials,
+  Shockley/stair-rod content, stacking faults, work hardening, or "how did this really
+  deform". It is opt-in — do NOT run it as part of a general analysis, and do NOT run
+  it just because a run is a crack or tensile simulation. The first call on a run reads
+  every trajectory frame and can take a minute, so an unrequested call makes the user
+  wait for something they did not ask for.
+  Same run identifier as the others. It returns dislocation density (m^-2) per frame,
+  the timestep where dislocations first nucleated, the peak, and line length split by
+  Burgers family.
+  Do NOT pass `lattice` — it is read from the run's own input.lammps. Guessing FCC or
+  BCC from the element name is exactly the mistake the auto-detection prevents.
+  The density plot is displayed to the user automatically, so INTERPRET the numbers
+  instead of announcing that a plot exists.
+  Reading the family split: Shockley 1/6<112> dominant together with a high HCP fraction
+  means partial-mediated slip leaving stacking faults; a Perfect 1/2<110> majority means
+  full dislocations; rising stair-rod 1/6<110> means Lomer-Cottrell locks, i.e. hardening.
+  It needs per-frame `dump.*` trajectory files and cannot work from the thermo log alone
+  — when they are absent it says so, and you should relay that rather than speculate.
+  The first call on a run analyzes every frame and can take a minute; later calls are
+  instant from the cache.
 
 WORKFLOW:
 1. Check conversation history first — if log data is already present, answer directly.
@@ -1086,6 +1107,15 @@ FOR CRACK / FRACTURE simulations:
 - Report stress buildup and whether fracture occurred.
 - Look for sudden drop in potential energy or stress — marks crack propagation.
 - Report the timestep/strain at which fracture initiated if detectable.
+- Do NOT call dxa_dislocation_density here by default. Stress-strain answers the
+  question a crack run is normally asked; DXA is a separate, slower request.
+- IF the user explicitly asks about dislocations or the deformation mechanism, call it
+  and cross-check the two: stress_strain_curve says WHEN the material yielded, DXA says
+  WHY. Dislocation emission from the crack tip is what relieves the stress, so
+  nucleation onset should land at or just before peak stress. If onset comes well after
+  peak stress, the failure was brittle cleavage rather than plastic blunting; say so.
+  Report the nucleation onset timestep, the peak density, and the dominant Burgers
+  family, and say what they imply about the mechanism.
 
 FOR MINIMIZATION / RELAXATION simulations:
 - Report initial vs final potential energy and whether convergence was achieved.

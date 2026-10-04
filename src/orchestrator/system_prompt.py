@@ -91,7 +91,7 @@ _ANALYSIS_RULE = """\
 # Questions about simulation results (CRITICAL — read carefully)
 
 Whenever the user asks ANYTHING about simulation results — numbers,
-thermodynamics, equilibration, crack growth, temperatures, energies,
+thermodynamics, equilibration, crack growth, dislocation density analysis, temperatures, energies,
 stress values, "did X happen", "show me run N", "compare runs", "was
 it correct" — you MUST call `analyze_runs(query)`. ALWAYS. Even on
 follow-up questions after a prior analysis in the same conversation.
