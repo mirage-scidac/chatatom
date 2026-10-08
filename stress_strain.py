@@ -222,13 +222,18 @@ def plot(path, strain, stress, modulus, fit_max_strain):
         ax.plot(strain, stress, "-", color="#14305e", lw=2.2,
                 label="stress-strain")
 
-        if modulus is not None:
-            xs = [e for e in strain if 0.0 <= e <= fit_max_strain]
-            if xs:
-                x_end = max(xs)
-                ax.plot([0, x_end], [0, modulus * x_end], "--",
-                        color="#8f1d21", lw=1.9,
-                        label=f"elastic fit E = {modulus:.1f} GPa")
+        # Dashed overlay of the fitted elastic slope, kept off the figure but
+        # not deleted. The slope is still computed and still appears in the
+        # text summary; only the line and its "E = ... GPa" label are
+        # suppressed, since under laterally constrained loading that slope is
+        # not Young's modulus. Uncomment to restore.
+        # if modulus is not None:
+        #     xs = [e for e in strain if 0.0 <= e <= fit_max_strain]
+        #     if xs:
+        #         x_end = max(xs)
+        #         ax.plot([0, x_end], [0, modulus * x_end], "--",
+        #                 color="#8f1d21", lw=1.9,
+        #                 label=f"elastic fit E = {modulus:.1f} GPa")
 
         # Larger than the 13/11 used in dxa_analysis, on purpose: this is a
         # single 7-inch panel where DXA draws two ~4.4-inch ones, so the same

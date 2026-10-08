@@ -19,6 +19,7 @@ import sys
 import os
 import glob
 import subprocess
+import textwrap
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
@@ -452,10 +453,10 @@ def stress_strain_curve(run_name: str, axis: str = "y",
                         fit_max_strain: float = 0.01) -> str:
     """Compute the engineering stress-strain curve for a tensile-loading run.
 
-    Call this whenever the user asks about Young's modulus, yield or peak
-    stress, strain at failure, stiffness, or wants stress plotted against
-    strain. Do NOT try to answer those from raw pressure numbers in the log —
-    this tool derives strain from the box length and is the only correct source.
+    Call this whenever the user asks about yield or peak stress, strain at
+    failure, or wants stress plotted against strain. Do NOT try to answer
+    those from raw pressure numbers in the log — this tool derives strain
+    from the box length and is the only correct source.
 
     Only works on runs that contain a `fix deform` loading phase; a pure
     equilibration run has no strain and the tool will say so.
@@ -468,14 +469,57 @@ def stress_strain_curve(run_name: str, axis: str = "y",
                   list_recent_runs output, OR 'latest', OR a path to a run
                   folder (needed for campaign runs under runs/benchmark_*/).
         axis: Loading axis — 'x', 'y', or 'z'. Defaults to 'y'.
-        fit_max_strain: Upper strain bound for the elastic (Young's modulus)
-                        least-squares fit. Defaults to 0.01.
+        fit_max_strain: Upper strain bound for the elastic least-squares fit.
+                        Defaults to 0.01. The fitted slope is not reported.
     """
     print(f"[analyze_results] tool: stress_strain_curve(run_name={run_name}, axis={axis})")
     try:
         return _exec_stress_strain(run_name, axis, fit_max_strain)
     except Exception as e:  # noqa: BLE001 — a raised tool aborts the agent turn
         return f"Stress-strain analysis failed: {e}"
+
+
+_SS_CURVE_POINTS = 40
+
+
+def _stress_curve_lines(strain, stress, npts=_SS_CURVE_POINTS):
+    """The curve itself, coarse enough to read and cheap enough to send.
+
+    Peak stress alone cannot say whether the material softened afterwards, how
+    sharply, or whether the rise was linear — and the agent has no vision, so
+    the PNG tells it nothing. Without these points it either stays silent on
+    the shape or invents it.
+
+    Block means rather than every Nth row: the per-point thermal scatter on
+    run_2026_08_12_102150 is 0.019 GPa, so sampled raw points carry noise that
+    averaging over a block removes. 40 points reproduces that run's peak to
+    8.649 against a true 8.680, and puts 8 points through the post-peak
+    collapse — enough to show it as a smooth acceleration rather than a cliff,
+    which is the brittle/ductile distinction. 20 points leaves only 3 there and
+    60 adds nothing 40 did not already show. Cost is ~115 tokens against
+    ~20,000 for the raw 1001-row CSV.
+
+    The window scales with the run, so this is 40 points whether the log holds
+    200 thermo lines or 20000; a run shorter than npts passes its own points.
+    """
+    n = len(stress)
+    if n < 4:
+        return []
+    k = max(1, n // npts)
+    pairs = []
+    for i in range(0, n, k):
+        es, ss_ = strain[i:i + k], stress[i:i + k]
+        pairs.append(f"{sum(es) / len(es):.4f},{sum(ss_) / len(ss_):.2f}")
+
+    pad = " " * 17
+    out = [
+        f"curve:           {len(pairs)} points, block means over {k} thermo line(s) each.",
+        f"{pad}Read SHAPE from these; quote peak stress from the line above.",
+        f"{pad}Do NOT infer an elastic modulus from them — the lateral axes",
+        f"{pad}are held fixed during loading.",
+    ]
+    out += [pad + line for line in textwrap.wrap(" ".join(pairs), 88)]
+    return out
 
 
 def _exec_stress_strain(run_name: str, axis: str, fit_max_strain: float) -> str:
@@ -554,17 +598,18 @@ def _exec_stress_strain(run_name: str, axis: str, fit_max_strain: float) -> str:
         except ValueError:
             pass  # run folder on a different drive; skip the image, keep the numbers
 
-    modulus_str = (f"{modulus:.1f} GPa (least-squares fit over strain <= {fit_max_strain})"
-                   if modulus is not None else "n/a (not enough low-strain points)")
-
+    # The elastic slope is deliberately NOT reported to the agent. It is still
+    # computed above, but under this loading the lateral axes are held fixed,
+    # so the slope is not Young's modulus and reporting it under that name
+    # invites the agent to quote it as one.
     return "\n".join([
         f"run:             {run_display}",
         f"loading axis:    {axis}  (stress = -{press_col}, strain from {length_col})",
         f"data points:     {len(strain)}  (loading phase only)",
         f"L0 ({length_col}):          {block[length_col][0]:.4f} Angstrom",
         f"max strain:      {max(strain):.4f}",
-        f"Young's modulus: {modulus_str}",
         f"peak stress:     {peak_stress:.3f} GPa at strain {peak_strain:.4f}",
+    ] + _stress_curve_lines(strain, stress) + [
         f"csv:             {csv_path}",
         f"png:             {png_path or 'not written (matplotlib unavailable)'}",
     ])
