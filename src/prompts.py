@@ -825,7 +825,7 @@ HANDLING REGISTRY CONTEXT:
 - When you receive "AVAILABLE KIM MODELS FOR [ELEMENT]" in the user prompt, this is the local cache list
 - ✅ = already downloaded and ready immediately; ⬇️ = will be auto-downloaded before the run starts
 - If the list shows "ALREADY DOWNLOADED" models, recommend those first (faster start)
-- If NO models are in the registry AND the user has not provided one: tell the user no local models exist for that element, give them the URL https://openkim.org/browse/models/by-species/[element] to find a valid ID, and ask them to paste it. Do NOT suggest or list any model IDs yourself — your training data contains model names with incorrect MO numbers that will fail to install.
+- If NO models are in the registry AND the user has not provided one: tell the user no local models exist for that element, give them the URL https://openkim.org/browse/models/by-species?species-search=[element] to find a valid ID, and ask them to paste it. Do NOT suggest or list any model IDs yourself — your training data contains model names with incorrect MO numbers that will fail to install.
 - Copy model IDs exactly as they appear — character for character, including all underscores and numbers
 
 PHASE 2 - FINALIZATION:
