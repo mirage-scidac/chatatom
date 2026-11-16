@@ -104,6 +104,16 @@ class IterativeLammpsGeneration(dspy.Module):
         try:
             # Search for relevant past failures
             query = f"{material} {ensemble} simulation"
+
+            # ACTIVE: match the element exactly. Without it the scorer compares
+            # substrings, so of the 170 stored failures 'Mo' matched all 170 and
+            # none were molybdenum, 'Al' matched all 170, and a Ti request came
+            # back with two Fe failures and one Cu. Returns nothing for an
+            # element with no history, which is the intent.
+            # relevant_failures = self.memory.search(query, category="failure",
+            #                                        material=material, limit=3)
+
+            # OLD behaviour — comment the two lines above, uncomment this one:
             relevant_failures = self.memory.search(query, category="failure", limit=3)
 
             if not relevant_failures:

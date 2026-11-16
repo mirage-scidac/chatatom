@@ -455,6 +455,8 @@ For FCC crystals:
   Correct CNA cutoff = (1st_NN + 2nd_NN) / 2 = (a0/sqrt(2) + a0) / 2
                       ≈ 0.854 * a0
 
+For BCC crystals:
+  CNA cutoff = 1.207 * a0
 Per-element values:
   Cu (a0 = 3.615 Å): cutoff = 3.086 Å
   Al (a0 = 4.050 Å): cutoff = 3.457 Å
@@ -671,9 +673,12 @@ LAMMPS SCRIPTING RULES:
 ORDERING
 - Define every variable, compute and fix ABOVE its first reference. LAMMPS parses
   top to bottom.
-- 'variable X equal f_ID' stores the FORMULA and re-evaluates on every read, so it
-  fails once the fix is destroyed. Snapshot with 'variable X equal $(f_ID)'.
 
+- 'variable X equal <expr>' stores the FORMULA, not a number, and re-evaluates on
+  every read — including 'f_ID' and 'c_ID', which also fail once the fix or compute
+  is gone. Freeze it where the measurement is taken: 'variable X equal $(<expr>)'.
+  $() evaluates immediately, so a compute needs a run above it.
+  
 UNITS
 - region, create_atoms and fix deform default to LATTICE units. Anything derived
   from lx/ly/lz or a lattice constant needs 'units box', or it silently matches
@@ -682,16 +687,15 @@ UNITS
 CRYSTAL AND BAROSTAT
 - fcc: Al Cu Ni Ag Au | bcc: Fe W Mo Nb Cr | hcp: Ti Zn Mg Zr Co | diamond: Si Ge C
 - A non-cubic cell needs 'aniso', 'tri', or independent x/y/z on the barostat.
-  'iso' scales all axes together and FREEZES the cell shape — an HCP c/a started
-  at the ideal 1.63299 is still exactly 1.63299 at the end of the run.
+  'iso' scales all axes together and FREEZES the cell shape
 
 BOUNDARIES
 - Non-periodic directions need 's', or 'f' WITH vacuum padding. 'f' with the box
-  flush against the crystal aborts with "ERROR: Lost atoms" on the first step.
+  flush against the crystal aborts with "ERROR: Lost atoms" on the first step
 
 MODIFYING THE SYSTEM
 - Use 'delete_atoms ... compress no' to keep atom IDs stable across phases.
-- Do NOT call 'velocity create' afterwards: 'loop all' requires contiguous IDs, and
+- No need to call 'velocity create' afterwards: 'loop all' requires contiguous IDs, and
   the surviving atoms already carry equilibrated velocities.
 
 DEFORMATION AND BAROSTAT
@@ -702,11 +706,10 @@ DEFORMATION AND BAROSTAT
       fix load all npt temp ${temp} ${temp} 0.1 y 1.0 1.0 1.0 z 1.0 1.0 1.0
       fix pull all deform 1 x erate 0.01 units box
 
-
 SUBSTITUTION
 - '${name}' reads a VARIABLE you defined; '$(expr)' evaluates an expression NOW.
-  Thermo keywords are NOT variables: '${lx}', '${step}', '${press}' abort the run
-  and write NO message to the log. Use '$(lx)'. '${v_name}' is wrong too — it
+  Thermo keywords are NOT variables: '${lx}', '${step}', '${press}' abort the run.
+  Use '$(lx)'. '${v_name}' is wrong too — it
   looks for a variable literally called "v_name".
 
 COMPUTES
@@ -923,8 +926,8 @@ Required parameters to extract for crack simulations:
 - Temperature (default: 300 K)
 - Pre-stress pressure targets (default: 1.0 bar, applied equally in x, y, AND z —
   keep all three axes at the same value; never leave z at 0 bar or un-barostatted)
-- Crack geometry: length fraction (default: 0.3 of L_x), width (default: 2 lattice parameters in y)
-- Crack seeding method: neigh_modify exclude (default) OR delete_atoms if the user explicitly asks to delete/remove atoms or carve a void
+- Crack geometry: length fraction (default: any value between 0.1 - 0.3 of L_x), width (default: any value between 1 - 2 lattice parameters in y)
+- Crack seeding method: neigh_modify exclude (default) OR delete_atoms. Mention in the proposal that delete_atoms can also be chosen, and state which one you have chosen. Use delete_atoms if the user explicitly asks to delete/remove atoms
 - System size: minimum 40x40x5 unit cells (crack simulations need large boxes)
 
 Additional parameters for fatigue:
@@ -951,6 +954,7 @@ SIMULATION PARAMETERS:
 - Duration: [value] [units]
 - Total steps: [calculated total timesteps]
 - System size: [value] unit cells (approximately [N] atoms)
+- Boundary: [p p p / p p f / s s s] — [what each non-periodic direction implies]
 - Thermo output: every [N] steps
 - Trajectory output: every [N] steps
 

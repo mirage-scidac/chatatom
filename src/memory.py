@@ -44,8 +44,14 @@ class MemoryBackend(ABC):
         pass
 
     @abstractmethod
-    def search(self, query: str, category: str = None, limit: int = 5) -> List[MemoryEntry]:
-        """Search for relevant memories."""
+    def search(self, query: str, category: str = None, material: str = None,
+               limit: int = 5) -> List[MemoryEntry]:
+        """Search for relevant memories.
+
+        material: keep only records whose metadata["material"] equals it
+        exactly. Default None leaves every record eligible, so callers that
+        do not pass it are unaffected.
+        """
         pass
 
     @abstractmethod
@@ -102,7 +108,8 @@ class SimpleMemory(MemoryBackend):
         self._save(data)
         return memory_id
 
-    def search(self, query: str, category: str = None, limit: int = 5) -> List[MemoryEntry]:
+    def search(self, query: str, category: str = None, material: str = None,
+               limit: int = 5) -> List[MemoryEntry]:
         """Simple keyword-based search (no embeddings)."""
         data = self._load()
         results = []
@@ -111,6 +118,13 @@ class SimpleMemory(MemoryBackend):
 
         for mem in data["memories"]:
             if category and mem["category"] != category:
+                continue
+            # Exact element match, same style as the category filter above.
+            # The scorer below tests substrings against content + the metadata
+            # dumped to JSON, so a short symbol matches almost everything:
+            # 'Mo' hits every EAM_Dynamo_* and __MO_ id, 'Al' hits metal /
+            # crystal / initial. Skipped entirely when material is None.
+            if material and mem.get("metadata", {}).get("material") != material:
                 continue
 
             # Simple relevance: count keyword matches
@@ -189,13 +203,16 @@ class Mem0Memory(MemoryBackend):
         )
         return result.get("id", "unknown")
 
-    def search(self, query: str, category: str = None, limit: int = 5) -> List[MemoryEntry]:
+    def search(self, query: str, category: str = None, material: str = None,
+               limit: int = 5) -> List[MemoryEntry]:
         """Search memories using Mem0's semantic search."""
         results = self.memory.search(query, user_id=self.user_id, limit=limit * 2)
 
         entries = []
         for r in results:
             mem_category = r.get("metadata", {}).get("category", "unknown")
+            if material and r.get("metadata", {}).get("material") != material:
+                continue
             if category and mem_category != category:
                 continue
 

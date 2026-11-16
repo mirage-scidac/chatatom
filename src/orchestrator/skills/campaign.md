@@ -104,8 +104,9 @@ Print the plan in chat so the user can read/edit it. Example format:
      • System size: 60 × 30 × 3 unit cells
      • KIM model: EAM_Dynamo_ErcolessiAdams_1994_Al__MO_123629422045_005
      • Timestep: 0.001 ps
+     • Boundary Conditions: P P P
      • Phase 1: NPT, 5 ps, 300 K, 1 bar (pre-stress equilibration in all x, y, and z)
-     • Phase 2: NVT, 5 ps, 300 K (crack seed + relaxation)
+     • Phase 2: NVT, 5 ps, 300 K (crack seed neighbour exclusion + relaxation)
      • Phase 3: NVT, 15 ps (monotonic tensile loading)
      • Dump: every 1500 steps, properties c_pe, c_stress[1..6], c_cna
      • CNA cutoff: 0.854 × 4.05 = 3.457 Å
@@ -115,8 +116,8 @@ Print the plan in chat so the user can read/edit it. Example format:
    TUNABLE KNOBS (vary across iterations):
      • strain_rate: [1e-3, 2e-2] /ps
      • temperature: [100, 700] K
-     • crack_length_frac: [0.1, 0.6]
-     • crack_width_a0: [2, 8] × a₀
+     • crack_length_frac: [0.1, 0.5]
+     • crack_width_a0: [2, 8] × a₀ 
 
    ITERATIONS: 20 max
   STOP CRITERIA: runs to max iterations; stops early only if you
