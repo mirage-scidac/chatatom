@@ -1,5 +1,5 @@
 """
-ChatMD FastAPI application.
+ChatAtom FastAPI application.
 
 Serves the chat UI, sessions, KIM potentials, feedback, and the LangGraph
 simulation pipeline. Provides:

@@ -1,6 +1,6 @@
-"""ChatMD orchestrator — a langgraph create_react_agent.
+"""ChatAtom orchestrator — a langgraph create_react_agent.
 
-The main entry point for ChatMD. app.py builds this graph at startup
+The main entry point for ChatAtom. app.py builds this graph at startup
 (with an AsyncSqliteSaver checkpointer) and invokes it for every chat
 request.
 
