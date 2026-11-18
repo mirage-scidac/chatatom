@@ -1,4 +1,4 @@
-# ChatMD
+# ChatAtom
 
 A web-based application that allows users to run molecular dynamics simulations with LAMMPS using KIM (Knowledge Base of Interatomic Models) potentials and visualize the results with OVITO using natural language commands.
 
