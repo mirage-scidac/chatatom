@@ -6,14 +6,15 @@ A web-based application that allows users to run molecular dynamics simulations 
 
 ## Installation
 
-This project uses Conda for managing the environment and complex dependencies, and `uv` for fast Python package installation.
+This project uses [pixi](https://pixi.sh) to manage the entire environment (Python, LAMMPS, KIM API, OVITO, and all Python packages).
 
 ### Pixi Quickstart
 
-The repository includes a [`pixi.toml`](pixi.toml) environment definition and generated lockfile. To create the environment and run the app:
+The repository includes a [`pixi.toml`](pixi.toml) environment definition and generated lockfile. To create the environment, configure it, and run the app:
 
 ```bash
 pixi install
+cp src/config.example.py src/config.py   # then edit src/config.py (see Configuration)
 pixi run run-app
 ```
 
@@ -23,7 +24,7 @@ API docs (auto-generated) at `http://localhost:2002/docs`.
 `run-app` is a pixi task that runs:
 
 ```bash
-uvicorn src.app:socket_app --host 0.0.0.0 --port 2002 --reload --reload-dir src
+uvicorn src.app:socket_app --host 127.0.0.1 --port 2002 --reload --reload-dir src
 ```
 
 `--reload-dir src` is important: `--reload` watches the working directory for code changes, but limiting it to `src/` prevents uvicorn from restarting when LAMMPS writes new files into `runs/` during a simulation (which would kill the in-flight subprocess + WebSocket connection).
@@ -170,7 +171,6 @@ pixi run python -m pytest
 - **KIM Model Not Found**: Install via `pixi run kim-api-collections-management install user <MODEL_ID>` — or use the KIM Potentials panel in the UI.
 - **KIM API Issues**: KIM API ships in the pixi environment automatically. If broken, try `pixi install` to refresh.
 - **LAMMPS KIM Support**: The conda-forge LAMMPS package includes KIM support by default; pixi pulls this version.
-- **OVITO License**: The `ovito` package requires a license. Place your `ovito.lic` file in a standard location (e.g., `~/.config/ovito/`) or in the project folder. See the OVITO documentation for more details.
 
 ## Documentation
 - [OpenKIM Website](https://openkim.org) - Browse available interatomic models
