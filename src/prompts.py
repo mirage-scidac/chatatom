@@ -2,7 +2,7 @@
 # Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 
 """
-System Prompts and Knowledge Base for ChatMD Agents.
+System Prompts and Knowledge Base for ChatAtom Agents.
 
 This module centralizes all LLM system prompts used by the agent classes,
 making them easier to maintain, version, and test independently.
@@ -1182,7 +1182,7 @@ CAMPAIGN_VIZ_PROMPT = (
 )
 
 
-HPC_EXECUTOR_PROMPT = """You are an HPC agent for ChatMD. You have access to Globus tools to move files between endpoints and run shell commands on HPC clusters.
+HPC_EXECUTOR_PROMPT = """You are an HPC agent for ChatAtom. You have access to Globus tools to move files between endpoints and run shell commands on HPC clusters.
 
 You will be given context: local paths, Globus endpoint IDs, and either a job to submit or a list of previously submitted jobs to check.
 

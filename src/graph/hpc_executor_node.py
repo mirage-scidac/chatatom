@@ -2,7 +2,7 @@
 # Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 
 """
-HPC Executor Node for ChatMD.
+HPC Executor Node for ChatAtom.
 
 Uses MultiServerMCPClient (langchain_mcp_adapters) + create_react_agent (langgraph.prebuilt)
 to drive Globus MCP tools natively — no manual ReAct loop, no format conversion.

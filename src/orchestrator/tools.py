@@ -1,7 +1,7 @@
 # Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
 # Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 
-"""Orchestrator tools for the ChatMD create_react_agent.
+"""Orchestrator tools for the ChatAtom create_react_agent.
 
 NOTE: this file is `src/orchestrator/tools.py` — distinct from `src/tools.py`
 (which contains LAMMPS execution helpers like run_lammps_simulation, dump

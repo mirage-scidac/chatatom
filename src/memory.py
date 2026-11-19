@@ -3,7 +3,7 @@
 
 # src/memory.py
 """
-Memory abstraction layer for ChatMD.
+Memory abstraction layer for ChatAtom.
 
 Provides persistent memory storage with support for:
 - SimpleMemory: JSON file-based storage with keyword search

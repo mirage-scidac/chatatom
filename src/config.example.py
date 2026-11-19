@@ -1,7 +1,7 @@
 # Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
 # Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 
-# ChatMD Configuration Template
+# ChatAtom Configuration Template
 # ─────────────────────────────────────────────────────────────────────────────
 # Copy this file to `config.py` and fill in your own values:
 #     cp src/config.example.py src/config.py
@@ -111,7 +111,7 @@ GLOBUS_LOCAL_ENDPOINT      = "your-local-globus-endpoint-uuid"
 GLOBUS_HPC_ENDPOINT        = "your-hpc-globus-endpoint-uuid"
 GLOBUS_COMPUTE_ENDPOINT_ID = "your-globus-compute-endpoint-uuid"
 
-HPC_RUN_BASE_DIR    = "/path/to/your/runs/on/hpc"   # Where ChatMD writes run folders on HPC
+HPC_RUN_BASE_DIR    = "/path/to/your/runs/on/hpc"   # Where ChatAtom writes run folders on HPC
 HPC_DEFAULT_NODES   = 1
 HPC_DEFAULT_CORES   = 8
 HPC_DEFAULT_WALLTIME = "00:30:00"
