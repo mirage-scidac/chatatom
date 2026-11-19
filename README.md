@@ -1,4 +1,4 @@
-# ChatAtom
+<h1><img src="assets/chatatom-title.svg" alt="ChatAtom" height="56"></h1>
 
 A web-based application that allows users to run molecular dynamics simulations with LAMMPS using KIM (Knowledge Base of Interatomic Models) potentials and visualize the results with OVITO using natural language commands.
 
@@ -147,8 +147,7 @@ This application uses the Knowledge Base of Interatomic Models (KIM) for all mol
 - **Verified models** with proper documentation
 - **Automatic parameter handling** (no manual pair coefficients)
 
-Additional KIM models can be installed as needed. See the [KIM documentation](docs/kim_potential/kim_potential_reference.md) for more details.
-
+Additional KIM models can be installed as needed. 
 ### Finding More KIM Models
 
 Browse available models at [OpenKIM.org](https://openkim.org) and install them using:
@@ -174,7 +173,5 @@ pixi run python -m pytest
 - **OVITO License**: The `ovito` package requires a license. Place your `ovito.lic` file in a standard location (e.g., `~/.config/ovito/`) or in the project folder. See the OVITO documentation for more details.
 
 ## Documentation
-
-- [KIM Potential Reference](docs/kim_potential/kim_potential_reference.md) - Comprehensive guide to using KIM potentials
 - [OpenKIM Website](https://openkim.org) - Browse available interatomic models
 - [LAMMPS KIM Documentation](https://docs.lammps.org/kim_commands.html) - Official LAMMPS KIM command reference
