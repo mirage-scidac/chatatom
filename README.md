@@ -173,5 +173,5 @@ pixi run python -m pytest
 - **LAMMPS KIM Support**: The conda-forge LAMMPS package includes KIM support by default; pixi pulls this version.
 
 ## Documentation
-- [OpenKIM Website](https://openkim.org) - Browse available interatomic models
+- [OpenKIM Website](https://openkim.org) - Browse available interatomic models.
 - [LAMMPS KIM Documentation](https://docs.lammps.org/kim_commands.html) - Official LAMMPS KIM command reference
