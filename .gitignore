@@ -214,3 +214,6 @@ data/*.db-wal
 
 # Local secrets — never commit. Use src/config.example.py as a template.
 src/config.py
+
+# third-party reference material, kept out of the public repo
+docs/
