@@ -54,9 +54,9 @@ ACTIVE_GRAPH = None
 # ─── App setup ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="ChatMD",
+    title="ChatAtom",
     version="1.0.0",
-    description="ChatMD backend — chat, simulation orchestration, HPC integration",
+    description="ChatAtom backend — chat, simulation orchestration, HPC integration",
 )
 
 app.add_middleware(
@@ -70,8 +70,8 @@ app.add_middleware(
 # Serve the runs/ folder statically so the frontend can link directly
 # to per-campaign report.png / report.md and per-iteration LAMMPS files.
 # URLs like /runs/benchmark_<id>/report.png open the file in the browser.
-if os.path.isdir("runs"):
-    app.mount("/runs", StaticFiles(directory="runs"), name="runs")
+os.makedirs("runs", exist_ok=True)
+app.mount("/runs", StaticFiles(directory="runs"), name="runs")
 
 
 @app.on_event("startup")
@@ -1078,7 +1078,7 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 @sio.event
 async def connect(sid, environ):
     print(f"[Socket.IO] Client connected: {sid}")
-    await sio.emit("status", {"message": "Connected to ChatMD server"}, to=sid)
+    await sio.emit("status", {"message": "Connected to ChatAtom server"}, to=sid)
 
 
 @sio.event
