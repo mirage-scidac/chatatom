@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """Render publication-quality stills from a run, colored the way that run was.
 
 The live trajectory viewer colors each run with the `ovito_script.py` the

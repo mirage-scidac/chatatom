@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """
 Test script to verify that the DSPy-based ReviewLAMMPSScript can catch
 the missing velocity initialization issue that causes 0K simulations.

@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 # ChatMD Configuration Template
 # ─────────────────────────────────────────────────────────────────────────────
 # Copy this file to `config.py` and fill in your own values:

@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """
 Test suite for MVP 3: 3D Trajectory Visualization with Real LAMMPS and OVITO
 """

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """Overlay two stress-strain curves (Cu and Al) on a single publication figure.
 
 Reads the `stress_strain.csv` produced by stress_strain.py for each run and

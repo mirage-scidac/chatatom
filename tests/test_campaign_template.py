@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """Tests for the campaign template contract.
 
 A campaign generates its LAMMPS script once and then fills the same script for

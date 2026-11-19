@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """ChatAtom orchestrator — a langgraph create_react_agent.
 
 The main entry point for ChatAtom. app.py builds this graph at startup

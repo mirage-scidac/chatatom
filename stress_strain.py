@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """Standalone stress-vs-strain curve from a LAMMPS run.
 
 Reads a run's ``log.lammps``, extracts the tensile-loading phase, and computes

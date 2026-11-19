@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """
 SimulationState — TypedDict used by the simulate subgraph nodes and the
 analyze_results_node. Populated by the orchestrator tools that wrap them.

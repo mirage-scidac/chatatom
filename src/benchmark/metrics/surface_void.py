@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """Surface-mesh crack metric — cavity area / volume / area-per-volume.
 
 Per-region surface-mesh approach: build a surface mesh with OVITO's

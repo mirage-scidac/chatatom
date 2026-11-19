@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """Search OpenKIM for potentials and let the user pick one.
 
 Uses the official kim-query package (openkim/kim-query), which wraps

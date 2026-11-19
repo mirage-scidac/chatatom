@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """Run the OVITO DXA frame loop in a child process.
 
 OVITO must not run inside the web server process. Two independent reasons, both

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
 """Dislocation Extraction Algorithm (DXA) analysis for a LAMMPS run folder.
 
 Runs OVITO's DislocationAnalysisModifier over EVERY dump in a run and writes,

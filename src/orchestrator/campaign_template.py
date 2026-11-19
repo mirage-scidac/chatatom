@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """The campaign template contract — parsing and filling the variable block.
 
 A campaign template is an ordinary, runnable LAMMPS script whose first

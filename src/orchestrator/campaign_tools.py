@@ -1,3 +1,6 @@
+# Copyright © 2026, UChicago Argonne, LLC All Rights Reserved
+# Full license accessible at https://github.com/mirage-scidac/chatatom/blob/main/LICENSE
+
 """Campaign v2 tools — the orchestrator drives the whole loop by calling
 these directly. No daemon thread, no _DualQueue, no CampaignManager.
 
